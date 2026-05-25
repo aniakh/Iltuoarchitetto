@@ -7653,6 +7653,20 @@ function App() {
   }, "3-Solution AI Renovation \xB7 Photorealistic Renders \xB7 Compliance"))), React.createElement("div", {
     style: {
       display: "flex",
+      flexDirection: "column",
+      gap: 4
+    }
+  }, React.createElement("label", {
+    style: {
+      fontSize: 9.5,
+      fontWeight: 700,
+      letterSpacing: ".06em",
+      textTransform: "uppercase",
+      color: "#E8C9A0"
+    }
+  }, "\uD83D\uDD11 Chiave API \xB7 Google AI Studio"), React.createElement("div", {
+    style: {
+      display: "flex",
       alignItems: "center",
       gap: 6
     }
@@ -7660,31 +7674,37 @@ function App() {
     type: showKey ? "text" : "password",
     value: apiKey,
     onChange: e => setApiKey(e.target.value.trim()),
-    placeholder: "Google AI Studio key (AIza..).)",
+    placeholder: "Incolla qui la chiave (AIza\u2026)",
     style: {
-      width: 240,
-      padding: "6px 10px",
-      borderRadius: 6,
-      border: "1px solid rgba(255,255,255,.2)",
-      background: "rgba(255,255,255,.1)",
-      color: "#fff",
-      fontSize: 11
+      width: 300,
+      maxWidth: "70vw",
+      padding: "9px 12px",
+      borderRadius: 8,
+      border: "2px solid #C87941",
+      background: "#fff",
+      color: "#1C1917",
+      fontSize: 12.5,
+      fontWeight: 500
     }
   }), React.createElement("button", {
     onClick: () => setShowKey(!showKey),
+    title: "Mostra / Nascondi",
     style: {
-      background: "none",
+      background: "rgba(255,255,255,.18)",
       border: "none",
+      borderRadius: 6,
+      padding: "7px 9px",
       color: "#fff",
       cursor: "pointer",
       fontSize: 13
     }
   }, showKey ? "🙈" : "👁️"), apiKey && React.createElement("span", {
     style: {
-      fontSize: 9.5,
-      color: "#8CC63F"
+      fontSize: 12,
+      color: "#8CC63F",
+      fontWeight: 700
     }
-  }, "\u2713")))), step < 4 && React.createElement("div", {
+  }, "\u2713"))))), step < 4 && React.createElement("div", {
     style: {
       maxWidth: 1020,
       margin: "0 auto",
