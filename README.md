@@ -7,22 +7,33 @@ prototype.
 - **`index.html`** — bilingual (IT / EN) marketing landing page.
 - **`demo.html`** — the live, interactive renovation tool (5-step wizard:
   property → floor plan → interventions → style → 3 solutions).
+- **`src/demo-app.jsx`** — the demo's React source (the editable source of truth).
 - **`assets/`** — fonts (Cormorant Garamond + Source Sans 3), CSS, the i18n
-  script, and the React / Babel runtime used by the demo.
+  script, the React runtime, and `js/demo-app.js` (the compiled demo app).
 
 ## Run locally
 
-It is fully static — serve the folder over HTTP (the demo uses in-browser
-Babel, which needs `http://`, not `file://`):
+It is fully static — serve the folder over HTTP (so the demo's relative
+assets and API calls work; `file://` is not recommended):
 
 ```bash
 python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-The language toggle (IT/EN, top-right) is remembered across visits. The demo's
-photorealistic render generation needs a personal Google AI Studio API key,
-entered in the tool's header.
+The language toggle (IT/EN, top-right) is remembered across visits. The demo
+talks directly to the Google Gemini API, so its listing extraction, floor-plan
+analysis and photorealistic renders need a personal **Google AI Studio API
+key** (`AIza…`), entered in the tool's header.
+
+## Editing the demo
+
+`assets/js/demo-app.js` is generated from `src/demo-app.jsx`. After editing the
+source, recompile it with Babel (JSX → JS):
+
+```bash
+npx babel src/demo-app.jsx --presets @babel/preset-react -o assets/js/demo-app.js
+```
 
 ## Note
 
