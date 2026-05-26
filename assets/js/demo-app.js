@@ -6,6 +6,11 @@ const {
   useCallback,
   useEffect
 } = React;
+const GEMINI_PROXY = typeof window !== 'undefined' && window.GEMINI_PROXY ? String(window.GEMINI_PROXY).replace(/\/+$/, '') : '';
+const HAS_PROXY = !!GEMINI_PROXY;
+function geminiUrl(model, apiKey) {
+  return HAS_PROXY ? GEMINI_PROXY + '/v1beta/models/' + model + ':generateContent' : 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + (apiKey || '');
+}
 const STYLES = {
   Japandi: {
     mat: "light oak, warm white plaster, linen, soft stone, matte finishes",
@@ -2781,7 +2786,7 @@ async function geminiVision(file, textPrompt, apiKey) {
     const b64 = await fileToBase64(file);
     const base = b64.split(",")[1];
     const mime = file.type || "image/jpeg";
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+    const res = await fetch(geminiUrl('gemini-2.0-flash', apiKey), {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -2877,7 +2882,7 @@ WHAT YOU SHOULD CHANGE (the renovation):
 ${prompt}
 
 The result must look like a photograph of the SAME ROOM after renovation — not a different room. A viewer who knows the original should immediately recognise the same spatial layout.`;
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`, {
+      const res = await fetch(geminiUrl('gemini-2.5-flash-image-preview', apiKey), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -2915,7 +2920,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
       console.warn("Image-to-image failed, falling back:", e);
     }
   }
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`, {
+  const res = await fetch(geminiUrl('gemini-2.5-flash-image-preview', apiKey), {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -2972,7 +2977,7 @@ Immovable: ${(spatialData.immovableFeatures || []).join(", ")}` : "No extracted 
         fileUri: base64OrUrl
       }
     };
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+    const res = await fetch(geminiUrl('gemini-2.0-flash', apiKey), {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -3397,7 +3402,7 @@ function S1({
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
       try {
-        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey, {
+        const r = await fetch(geminiUrl(modelName, apiKey), {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -5014,7 +5019,7 @@ function MarketFetchBtn({
     setErr("");
     try {
       const city = d.city || "Milano";
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      const res = await fetch(geminiUrl('gemini-2.0-flash', apiKey), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -7523,7 +7528,7 @@ function Results({
 function App() {
   const [step, setStep] = useState(0);
   const [ld, setLd] = useState(false);
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(HAS_PROXY ? "__proxy__" : "");
   const [showKey, setShowKey] = useState(false);
   const [d, setD] = useState({
     address: "",
@@ -7650,7 +7655,7 @@ function App() {
       fontSize: 9.5,
       opacity: .7
     }
-  }, "3-Solution AI Renovation \xB7 Photorealistic Renders \xB7 Compliance"))), React.createElement("div", {
+  }, "3-Solution AI Renovation \xB7 Photorealistic Renders \xB7 Compliance"))), !HAS_PROXY && React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",

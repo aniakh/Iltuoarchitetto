@@ -9,7 +9,11 @@ prototype.
   property → floor plan → interventions → style → 3 solutions).
 - **`src/demo-app.jsx`** — the demo's React source (the editable source of truth).
 - **`assets/`** — fonts (Cormorant Garamond + Source Sans 3), CSS, the i18n
-  script, the React runtime, and `js/demo-app.js` (the compiled demo app).
+  script, the React runtime, `js/demo-app.js` (the compiled demo) and
+  `js/config.js` (runtime config; see proxy section below).
+- **`worker/gemini-proxy.js`** — Cloudflare Worker that holds your Gemini API
+  key server-side so visitors don't need their own.
+- **`netlify.toml`** — Netlify hosting config.
 
 ## Run locally
 
@@ -34,6 +38,48 @@ source, recompile it with Babel (JSX → JS):
 ```bash
 npx babel src/demo-app.jsx --presets @babel/preset-react -o assets/js/demo-app.js
 ```
+
+## Hosting on Netlify (cleaner URL than GitHub Pages)
+
+1. Sign up at https://app.netlify.com/signup (free, no card).
+2. **Add new site → Import an existing project → GitHub** → pick
+   `aniakh/Iltuoarchitetto` → branch `main`. Leave the build command **empty**
+   and set the publish directory to `.` (or accept what `netlify.toml` provides).
+   Click **Deploy**.
+3. After deploy, open **Site configuration → Change site name** and set it to
+   `iltuoarchitetto`. The site is now live at
+   **https://iltuoarchitetto.netlify.app**.
+
+Pushes to `main` redeploy automatically.
+
+## Letting visitors use the demo without their own API key
+
+By default each visitor pastes their own Google AI Studio key into the demo
+header. To remove that step — and never expose your key in the public site —
+deploy the included Cloudflare Worker as a proxy:
+
+1. **Sign in** at https://dash.cloudflare.com/ (free).
+2. **Workers & Pages → Create → Create Worker**. Name it
+   `iltuoarchitetto-proxy` and click **Deploy** (the default Hello World
+   placeholder is fine for a first deploy).
+3. Click **Edit code**, replace the whole file with the contents of
+   `worker/gemini-proxy.js`, then **Save and Deploy**.
+4. **Settings → Variables and Secrets → Add Secret**:
+   - Name: `GEMINI_API_KEY`
+   - Value: your `AIza…` key from https://aistudio.google.com/apikey
+
+   Optionally also add a plain variable `ALLOWED_ORIGIN` set to
+   `https://iltuoarchitetto.netlify.app` to restrict who can call the proxy.
+5. Copy the Worker URL (looks like
+   `https://iltuoarchitetto-proxy.<account>.workers.dev`).
+6. Edit **`assets/js/config.js`**, set:
+   ```js
+   window.GEMINI_PROXY = "https://iltuoarchitetto-proxy.<account>.workers.dev";
+   ```
+   Commit and push — Netlify redeploys and the key field disappears from the
+   demo header. Visitors can now use every AI feature with no setup.
+
+Your `AIza…` key stays as a Cloudflare secret; it is never sent to the browser.
 
 ## Note
 

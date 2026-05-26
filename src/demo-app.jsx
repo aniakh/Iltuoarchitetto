@@ -2,6 +2,17 @@
    Source of truth: edit this file, then recompile to assets/js/demo-app.js with Babel (preset-react). */
 
 const {useState, useRef, useMemo, useCallback, useEffect} = React;
+/* Proxy support: if window.GEMINI_PROXY is set (in assets/js/config.js),
+   route Gemini calls through your Cloudflare Worker so visitors don't
+   need their own API key. Otherwise fall back to per-visitor key entry. */
+const GEMINI_PROXY = (typeof window!=='undefined' && window.GEMINI_PROXY) ? String(window.GEMINI_PROXY).replace(/\/+$/,'') : '';
+const HAS_PROXY = !!GEMINI_PROXY;
+function geminiUrl(model, apiKey){
+  return HAS_PROXY
+    ? GEMINI_PROXY + '/v1beta/models/' + model + ':generateContent'
+    : 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + (apiKey||'');
+}
+
 
 /* ══════════════════════════════════════════════════════════════
    ENGINE DATA — Updated March 2026 immobiliare.it prices
@@ -1238,7 +1249,7 @@ async function geminiVision(file, textPrompt, apiKey){
     const base=b64.split(",")[1];
     const mime=file.type||"image/jpeg";
     const res=await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      geminiUrl('gemini-2.0-flash', apiKey),
       {method:"POST",headers:{"Content-Type":"application/json"},
        body:JSON.stringify({contents:[{parts:[
          {inlineData:{mimeType:mime,data:base}},
@@ -1335,7 +1346,7 @@ ${prompt}
 The result must look like a photograph of the SAME ROOM after renovation — not a different room. A viewer who knows the original should immediately recognise the same spatial layout.`;
 
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`,
+        geminiUrl('gemini-2.5-flash-image-preview', apiKey),
         {method:"POST", headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
            contents:[{parts:[
@@ -1359,7 +1370,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
 
   /* ── Fallback: text-to-image with full constraints ── */
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`,
+    geminiUrl('gemini-2.5-flash-image-preview', apiKey),
     {method:"POST", headers:{"Content-Type":"application/json"},
      body:JSON.stringify({
        contents:[{parts:[{text: prompt.slice(0,4000)}]}],
@@ -1394,7 +1405,7 @@ Immovable: ${(spatialData.immovableFeatures||[]).join(", ")}` : "No extracted sp
       : {fileData:{mimeType:"image/jpeg", fileUri: base64OrUrl}};
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      geminiUrl('gemini-2.0-flash', apiKey),
       { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({contents:[{parts:[
           imgPart,
@@ -1605,7 +1616,7 @@ function S1({d,u,apiKey}){
       const controller = new AbortController();
       const timer = setTimeout(()=>controller.abort(), TIMEOUT_MS);
       try {
-        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+modelName+':generateContent?key='+apiKey,
+        const r = await fetch(geminiUrl(modelName, apiKey),
           {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:controller.signal});
         clearTimeout(timer);
         if(!r.ok){
@@ -2034,7 +2045,7 @@ function MarketFetchBtn({d, s, area, apiKey}){
     try{
       const city=d.city||"Milano";
       const res=await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        geminiUrl('gemini-2.0-flash', apiKey),
         {method:"POST",headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
            contents:[{parts:[{text:`Search immobiliare.it Lombardia market data and OMI Agenzia Entrate for ${city}, Italy. Return ONLY valid JSON:\n{"omiMin":<€/m²>,"omiMax":<€/m²>,"omiZone":"<zone>","marketAvgSqm":<€/m²>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m²>,"comparableRenovated":<€/m²>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations>"}`}]}],
@@ -2694,7 +2705,7 @@ function Results({d, apiKey}){
 function App(){
   const [step,setStep]=useState(0);
   const [ld,setLd]=useState(false);
-  const [apiKey,setApiKey]=useState("");
+  const [apiKey,setApiKey]=useState(HAS_PROXY ? "__proxy__" : "");
   const [showKey,setShowKey]=useState(false);
   const [d,setD]=useState({address:"",city:"Milano",cap:"",area:"85",rooms:"3",eCls:"E",band:"Major city",floor:"3",ceiling:"2.7",currentStatus:"Da ristrutturare",heatingType:"Centralizzato",annualEnergy:"",pType:"Apartment",listingUrl:"",plans:[],photos:[],roomDetails:{},changes:["Kitchen upgrade","Bathroom upgrade","Finishes refresh","Storage boost"],style:"Japandi",customStyle:"",fengshui:[],preferredPalette:null});
   const steps=[{n:"Proprietà",i:"🏛️"},{n:"Planimetria",i:"📐"},{n:"Interventi",i:"🏗️"},{n:"Stile",i:"🎨"},{n:"Analisi",i:"📊"}];
@@ -2707,7 +2718,7 @@ function App(){
     <div style={{background:"linear-gradient(135deg,#1B3A2D,#2D5F45)",color:"#fff",padding:"12px 22px"}}>
       <div style={{maxWidth:1020,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,.12)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🏛️</div><div><h1 style={{fontSize:16,fontWeight:700}}>Il Tuo Architetto</h1><p style={{fontSize:9.5,opacity:.7}}>3-Solution AI Renovation · Photorealistic Renders · Compliance</p></div></div>
-        <div style={{display:"flex",flexDirection:"column",gap:4}}><label style={{fontSize:9.5,fontWeight:700,letterSpacing:".06em",textTransform:"uppercase",color:"#E8C9A0"}}>🔑 Chiave API · Google AI Studio</label><div style={{display:"flex",alignItems:"center",gap:6}}><input type={showKey?"text":"password"} value={apiKey} onChange={e=>setApiKey(e.target.value.trim())} placeholder="Incolla qui la chiave (AIza…)" style={{width:300,maxWidth:"70vw",padding:"9px 12px",borderRadius:8,border:"2px solid #C87941",background:"#fff",color:"#1C1917",fontSize:12.5,fontWeight:500}}/><button onClick={()=>setShowKey(!showKey)} title="Mostra / Nascondi" style={{background:"rgba(255,255,255,.18)",border:"none",borderRadius:6,padding:"7px 9px",color:"#fff",cursor:"pointer",fontSize:13}}>{showKey?"🙈":"👁️"}</button>{apiKey&&<span style={{fontSize:12,color:"#8CC63F",fontWeight:700}}>✓</span>}</div></div>
+        {!HAS_PROXY && (<div style={{display:"flex",flexDirection:"column",gap:4}}><label style={{fontSize:9.5,fontWeight:700,letterSpacing:".06em",textTransform:"uppercase",color:"#E8C9A0"}}>🔑 Chiave API · Google AI Studio</label><div style={{display:"flex",alignItems:"center",gap:6}}><input type={showKey?"text":"password"} value={apiKey} onChange={e=>setApiKey(e.target.value.trim())} placeholder="Incolla qui la chiave (AIza…)" style={{width:300,maxWidth:"70vw",padding:"9px 12px",borderRadius:8,border:"2px solid #C87941",background:"#fff",color:"#1C1917",fontSize:12.5,fontWeight:500}}/><button onClick={()=>setShowKey(!showKey)} title="Mostra / Nascondi" style={{background:"rgba(255,255,255,.18)",border:"none",borderRadius:6,padding:"7px 9px",color:"#fff",cursor:"pointer",fontSize:13}}>{showKey?"🙈":"👁️"}</button>{apiKey&&<span style={{fontSize:12,color:"#8CC63F",fontWeight:700}}>✓</span>}</div></div>)}
       </div>
     </div>
     {step<4&&<div style={{maxWidth:1020,margin:"0 auto",padding:"12px 22px 0"}}><div style={{display:"flex",alignItems:"center",gap:3}}>{steps.map((x,i)=><div key={x.n} style={{display:"flex",alignItems:"center",flex:1}}><div style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:i<step?"#1B3A2D":i===step?"#C87941":"#ECE8E1",color:i<=step?"#fff":"#78716C",fontWeight:600,fontSize:11,flexShrink:0}}>{x.i}</div><span style={{fontSize:9.5,marginLeft:5,color:i===step?"#1C1917":"#78716C",fontWeight:i===step?600:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{x.n}</span>{i<steps.length-1&&<div style={{flex:1,height:2,background:i<step?"#1B3A2D":"#ECE8E1",margin:"0 7px",minWidth:8}}/>}</div>)}</div></div>}
