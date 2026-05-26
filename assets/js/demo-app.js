@@ -3638,7 +3638,80 @@ function S1({
       log('E:mine ' + keys.length + 'k');
       return keys.length > 0 ? mined : null;
     };
-    const results = await Promise.all([attemptPlain().catch(() => null), attemptSearch().catch(() => null), attemptUrlCtx().catch(() => null), attempt20().catch(() => null), attemptScrape().catch(() => null)]);
+    const attemptWorkerScrape = async () => {
+      if (!HAS_PROXY) return null;
+      let html = '';
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 12000);
+        const r = await fetch(GEMINI_PROXY + '/fetch-listing?url=' + encodeURIComponent(url), {
+          signal: ctrl.signal
+        });
+        clearTimeout(t);
+        if (!r.ok) {
+          log('F:worker HTTP ' + r.status);
+          return null;
+        }
+        html = await r.text();
+        if (!html || html.length < 1500) {
+          log('F:worker too short ' + html.length);
+          return null;
+        }
+        log('F:worker fetched ' + html.length + 'ch');
+      } catch (e) {
+        log('F:worker err ' + (e.name === 'AbortError' ? 'TIMEOUT' : e.message));
+        return null;
+      }
+      const mined = {};
+      [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].forEach(m => {
+        try {
+          const j = JSON.parse(m[1]);
+          (Array.isArray(j) ? j : [j]).forEach(o => {
+            if (o['@graph']) o['@graph'].forEach(x => Object.assign(mined, extractFromSchema(x)));
+            Object.assign(mined, extractFromSchema(o));
+          });
+        } catch (e) {}
+      });
+      const txt = html.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const rx = {
+        area: /(\d{2,4})\s*(?:m²|mq)/i,
+        rooms: /(\d{1,2})\s*(?:locali|stanze|vani)/i,
+        bathrooms: /(\d{1,2})\s*bagn/i,
+        eCls: /classe energetica[:\s]*([A-G][1-4]?)/i,
+        price: /€\s*([\d.,]{4,})/,
+        cap: /\b(\d{5})\b/
+      };
+      const mm = k => (txt.match(rx[k]) || [])[1];
+      if (!mined.area && mm('area')) mined.area = parseFloat(mm('area'));
+      if (!mined.rooms && mm('rooms')) mined.rooms = parseInt(mm('rooms'));
+      if (!mined.bathrooms && mm('bathrooms')) mined.bathrooms = parseInt(mm('bathrooms'));
+      if (!mined.eCls && mm('eCls')) mined.eCls = mm('eCls').toUpperCase();
+      if (!mined.price && mm('price')) mined.price = parseInt(mm('price').replace(/[.,]/g, ''));
+      if (!mined.cap && mm('cap')) mined.cap = mm('cap');
+      const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ').slice(0, 50000);
+      const body = {
+        contents: [{
+          parts: [{
+            text: 'Extract every property detail from this Italian real-estate listing HTML. ' + ANTI_RECITATION + ' Output JSON only, schema:\n' + SCHEMA + '\n\nHTML:\n' + cleaned
+          }]
+        }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 1500,
+          responseMimeType: 'application/json'
+        }
+      };
+      const ai = await tryGemini('gemini-2.5-flash', body, 'F:worker-ai', 22000);
+      const aiObj = ai && ai !== 'RETRY_PARAPHRASE' ? ai : null;
+      const merged = {
+        ...mined,
+        ...(aiObj || {})
+      };
+      const keys = Object.keys(merged).filter(k => merged[k] != null && merged[k] !== '');
+      log('F:worker total ' + keys.length + 'k');
+      return keys.length > 0 ? merged : null;
+    };
+    const results = await Promise.all([attemptWorkerScrape().catch(() => null), attemptPlain().catch(() => null), attemptSearch().catch(() => null), attemptUrlCtx().catch(() => null), attempt20().catch(() => null), attemptScrape().catch(() => null)]);
     log('done ' + results.map(x => x && x !== 'RETRY_PARAPHRASE' ? Object.keys(x).filter(k => x[k]).length : '-').join('/'));
     const parsed = {};
     results.filter(r => r && r !== 'RETRY_PARAPHRASE').forEach(r => {
