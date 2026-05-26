@@ -2882,7 +2882,7 @@ WHAT YOU SHOULD CHANGE (the renovation):
 ${prompt}
 
 The result must look like a photograph of the SAME ROOM after renovation — not a different room. A viewer who knows the original should immediately recognise the same spatial layout.`;
-      const res = await fetch(geminiUrl('gemini-2.5-flash-image-preview', apiKey), {
+      const res = await fetch(geminiUrl('gemini-2.5-flash-image', apiKey), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -2920,7 +2920,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
       console.warn("Image-to-image failed, falling back:", e);
     }
   }
-  const res = await fetch(geminiUrl('gemini-2.5-flash-image-preview', apiKey), {
+  const res = await fetch(geminiUrl('gemini-2.5-flash-image', apiKey), {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
