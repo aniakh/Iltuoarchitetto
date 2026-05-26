@@ -1346,7 +1346,7 @@ ${prompt}
 The result must look like a photograph of the SAME ROOM after renovation — not a different room. A viewer who knows the original should immediately recognise the same spatial layout.`;
 
       const res = await fetch(
-        geminiUrl('gemini-2.5-flash-image-preview', apiKey),
+        geminiUrl('gemini-2.5-flash-image', apiKey),
         {method:"POST", headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
            contents:[{parts:[
@@ -1370,7 +1370,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
 
   /* ── Fallback: text-to-image with full constraints ── */
   const res = await fetch(
-    geminiUrl('gemini-2.5-flash-image-preview', apiKey),
+    geminiUrl('gemini-2.5-flash-image', apiKey),
     {method:"POST", headers:{"Content-Type":"application/json"},
      body:JSON.stringify({
        contents:[{parts:[{text: prompt.slice(0,4000)}]}],
