@@ -1613,6 +1613,7 @@ function S1({d,u,apiKey}){
   const [fetching,setFetching]=useState(false);
   const [listingData,setListingData]=useState(null);
   const [fetchErr,setFetchErr]=useState("");
+  const [fetchDbg,setFetchDbg]=useState([]);
 
   const fetchListing=async()=>{
     if(!d.listingUrl){ setFetchErr("Enter a listing URL first"); return; }
@@ -1815,7 +1816,33 @@ function S1({d,u,apiKey}){
       return keys.length > 0 ? merged : null;
     };
 
+    /* === Attempt 0: deterministic URL slug parser — always returns something useful === */
+    const urlSlug = (()=>{
+      const out = {};
+      const slug = url.toLowerCase();
+      const cityRe = /(milano|milan|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese|torino|roma|napoli|firenze|venezia|bologna|genova|verona|padova|trieste|trento|bolzano|parma|modena|reggio|rimini|ancona|perugia|pescara|bari|lecce|catania|palermo|cagliari)/i;
+      const cm = slug.match(cityRe);
+      if(cm) out.city = cm[1].charAt(0).toUpperCase()+cm[1].slice(1).toLowerCase();
+      const tm = slug.match(/(attico|monolocale|villa|loft|mansarda|bilocale|trilocale|quadrilocale)/);
+      if(tm){
+        const map={attico:'Attico',monolocale:'Monolocale',villa:'Villa',loft:'Loft',mansarda:'Mansarda',bilocale:'Apartment',trilocale:'Apartment',quadrilocale:'Apartment'};
+        out.pType = map[tm[1]] || 'Apartment';
+        const rmap={bilocale:2,trilocale:3,quadrilocale:4,monolocale:1};
+        if(rmap[tm[1]]) out.rooms = rmap[tm[1]];
+      }
+      const am = slug.match(/(\d{2,4})[\s_-]*(?:m[q²]|mq|metri[\s-]quadri)/);
+      if(am) out.area = parseInt(am[1]);
+      const rm = slug.match(/(\d{1,2})[\s_-]*(?:locali|stanze|vani|camere)/);
+      if(rm && !out.rooms) out.rooms = parseInt(rm[1]);
+      const fm = slug.match(/piano[\s_-]*(\d{1,2})/);
+      if(fm) out.floor = fm[1];
+      const k = Object.keys(out).filter(x=>out[x]!=null&&out[x]!=='').length;
+      log('0:slug '+k+'k '+Object.keys(out).join(','));
+      return k>0 ? out : null;
+    })();
+
     const results = await Promise.all([
+      Promise.resolve(urlSlug),
       attemptWorkerScrape().catch(()=>null),
       attemptPlain().catch(()=>null),
       attemptSearch().catch(()=>null),
@@ -1857,10 +1884,15 @@ function S1({d,u,apiKey}){
 
     const filled = Object.keys(updates).filter(k => k !== 'listingExtracted').length;
     if(filled === 0){
-      setFetchErr('No data extracted. All paths failed — likely all Gemini calls hit RECITATION filter on this URL. Check console for details. Try a different listing URL or fill manually.');
+      const workerStatus = dbg.find(l=>l.includes('F:worker'));
+      const hint = HAS_PROXY && workerStatus && /HTTP 4(0[35]|04)/.test(workerStatus)
+        ? ' (Your Cloudflare Worker still has the old code — redeploy worker/gemini-proxy.js to enable reliable extraction.)'
+        : '';
+      setFetchErr('No data extracted from this URL — see details below.'+hint);
     } else {
       setFetchErr('✓ '+filled+' fields in '+((Date.now()-t0)/1000).toFixed(1)+'s');
     }
+    setFetchDbg(dbg);
     setFetching(false);
   };
 
@@ -1897,7 +1929,7 @@ function S1({d,u,apiKey}){
       </div>
       {!apiKey&&d.listingUrl&&<div className="note note-warn" style={{marginBottom:8,fontSize:11}}>⚠️ Enter your Google AI Studio key in the header to enable listing extraction.</div>}
       {fetching&&<div style={{display:"flex",alignItems:"center",gap:8,padding:"10px",background:"#EDF3EE",borderRadius:8,fontSize:11,color:"#1B3A2D"}}><div className="spinner" style={{width:18,height:18,borderWidth:2}}/> Gemini is reading the listing and auto-filling all property fields…</div>}
-      {fetchErr&&!fetching&&<div className="note note-warn" style={{marginTop:8,fontSize:11,lineHeight:1.5}}>⚠️ {fetchErr}</div>}
+      {fetchErr&&!fetching&&<div className="note note-warn" style={{marginTop:8,fontSize:11,lineHeight:1.5}}>⚠️ {fetchErr}{fetchDbg.length>0&&<details style={{marginTop:6}}><summary style={{cursor:"pointer",fontWeight:600,fontSize:10.5}}>Show attempt log ({fetchDbg.length} lines)</summary><pre style={{marginTop:6,padding:8,background:"#fff",border:"1px solid #ECE8E1",borderRadius:6,fontSize:10,lineHeight:1.4,maxHeight:200,overflow:"auto",fontFamily:"ui-monospace,monospace",whiteSpace:"pre-wrap"}}>{fetchDbg.join("\n")}</pre></details>}</div>}
       {le&&<div style={{marginTop:8,padding:14,background:"linear-gradient(135deg,#EDF3EE,#F5F0E8)",borderRadius:10,border:"1px solid #B5CDB8"}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
           <span style={{fontSize:18}}>✅</span>
