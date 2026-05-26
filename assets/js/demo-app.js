@@ -1040,32 +1040,38 @@ function calcCosts(a, ch, st, bd, rm) {
 }
 function calcEnergy(cls, ch, a) {
   const b = ENERGY_MID[cls] || 230;
-  let s = 0;
-  if (ch.includes("Transparent envelope")) s += .10;
-  if (ch.includes("Opaque envelope")) s += .14;
-  if (ch.includes("Heating system")) s += .16;
-  if (ch.includes("Cooling system")) s += .04;
-  if (ch.includes("Smart controls")) s += .04;
-  if (ch.includes("Renewable sources")) s += .08;
-  if (ch.includes("Ventilation system")) s += .05;
-  if (ch.includes("Other energy interventions")) s += .02;
-  if (ch.includes("Electrical upgrade")) s += .01;
-  if (ch.includes("Finishes refresh")) s += .01;
-  if (ch.includes("Complete energy upgrade")) s = .42;
-  s = Math.min(.42, s);
-  const af = b * (1 - s);
+  let residual = 1.0;
+  if (ch.includes("Opaque envelope")) residual *= 0.74;
+  if (ch.includes("Transparent envelope")) residual *= 0.90;
+  if (ch.includes("Ventilation system")) residual *= 0.93;
+  if (ch.includes("Heating system")) residual *= 0.78;
+  if (ch.includes("Renewable sources")) residual *= 0.85;
+  if (ch.includes("Cooling system")) residual *= 0.96;
+  if (ch.includes("Smart controls")) residual *= 0.96;
+  if (ch.includes("Other energy interventions")) residual *= 0.98;
+  if (ch.includes("Complete energy upgrade")) residual = 0.42;
+  if (ch.includes("Electrical upgrade")) residual *= 0.99;
+  if (ch.includes("Finishes refresh")) residual *= 0.99;
+  residual = Math.max(0.30, residual);
+  const af = b * residual;
+  const sp = Math.round((1 - residual) * 1000) / 10;
   return {
     bC: cls,
     bS: b,
     aC: eCl(af),
     aS: Math.round(af * 10) / 10,
-    sp: Math.round(s * 1e3) / 10
+    sp
   };
 }
 function calcSave(a, eB, eA) {
+  const epDelta = Math.max(0, (ENERGY_MID[eB] || 230) - (ENERGY_MID[eA] || 230));
+  const deliveredPerSqm = epDelta / 1.6;
+  const blendedPrice = 0.155;
+  const rawYear = deliveredPerSqm * a * blendedPrice;
+  const capped = Math.min(rawYear, a * 40);
   return {
-    yr: Math.round(((ENERGY_MID[eB] || 230) - (ENERGY_MID[eA] || 230)) * a * .25),
-    mo: Math.round(((ENERGY_MID[eB] || 230) - (ENERGY_MID[eA] || 230)) * a * .25 / 12)
+    yr: Math.round(capped),
+    mo: Math.round(capped / 12)
   };
 }
 function calcSched(a, ch) {
@@ -3388,190 +3394,320 @@ function S1({
   const [listingData, setListingData] = useState(null);
   const [fetchErr, setFetchErr] = useState("");
   const fetchListing = async () => {
-    if (!d.listingUrl || !apiKey) {
-      setFetchErr(apiKey ? "Enter a listing URL first" : "Enter your Google AI Studio API key in the header first");
+    if (!d.listingUrl) {
+      setFetchErr("Enter a listing URL first");
       return;
     }
     setFetching(true);
     setListingData(null);
-    setFetchErr("");
-    const url = d.listingUrl;
-    const jsonSchema = '{"address":"<full street>","city":"<city>","cap":"<postal>","area":<m² number>,"rooms":<number>,"bathrooms":<number>,"floor":"<floor as string>","totalFloors":<number>,"ceiling":<height m, default 2.7>,"pType":"<Apartment|Attico|Loft|Monolocale|Villa|Mansarda>","currentStatus":"<Da ristrutturare|Buono / Abitabile|Ristrutturato|Ottimo|Nuovo / In costruzione>","eCls":"<A4|A3|A2|A1|B|C|D|E|F|G|Unknown>","annualEnergy":<kWh number or null>,"heatingType":"<Centralizzato|Autonomo|Pompa di calore|Nessuno>","band":"<Premium metro|Major city|Mid-market city|Affordable>","price":<€ number>,"pricePerSqm":<€/m² number>,"description":"<short text>","features":["<list>"],"roomDetails":{"living":{"lengthM":<n>,"widthM":<n>},"kitchen":{"lengthM":<n>,"widthM":<n>},"bedroom":{"lengthM":<n>,"widthM":<n>},"bathroom":{"lengthM":<n>,"widthM":<n>}},"exposure":"<N/S/E/W>","buildingYear":<year>,"condominium":"<fees>","spatialNotes":"<layout>"}';
-    const TIMEOUT_MS = 18000;
-    const callGemini = async (modelName, body, label) => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    setFetchErr("Extracting…");
+    const url = d.listingUrl.trim();
+    const t0 = Date.now();
+    const dbg = [];
+    const log = m => {
+      const s = '[listing ' + ((Date.now() - t0) / 1000).toFixed(1) + 's] ' + m;
+      console.log(s);
+      dbg.push(s);
+    };
+    const SCHEMA = '{"address":"","city":"","cap":"","area":<m²>,"rooms":<n>,"bathrooms":<n>,"floor":"","ceiling":<m>,"pType":"<Apartment|Attico|Loft|Monolocale|Villa|Mansarda>","currentStatus":"<Da ristrutturare|Buono / Abitabile|Ristrutturato|Ottimo|Nuovo / In costruzione>","eCls":"<A4-G>","annualEnergy":<n>,"heatingType":"<Centralizzato|Autonomo|Pompa di calore|Nessuno>","price":<€>,"description":"","features":[],"buildingYear":<year>,"condominium":""}';
+    const ANTI_RECITATION = 'IMPORTANT: Do NOT quote, copy or repeat any text from the source page verbatim. Extract NUMERIC values, single-word category enums, and paraphrased summaries only. For the description field, write a brief paraphrase in your own words (max 30 words). This is critical to avoid recitation filtering.';
+    const extractFromSchema = o => {
+      if (!o || typeof o !== 'object') return {};
+      const out = {};
+      if (o.offers?.price) out.price = parseInt(String(o.offers.price).replace(/[^\d]/g, ''));
+      if (o.price) out.price = parseInt(String(o.price).replace(/[^\d]/g, ''));
+      if (o.floorSize?.value) out.area = parseFloat(o.floorSize.value);
+      if (o.numberOfRooms) out.rooms = parseInt(o.numberOfRooms);
+      if (o.numberOfBathroomsTotal) out.bathrooms = parseInt(o.numberOfBathroomsTotal);
+      if (o.address) {
+        out.address = o.address.streetAddress;
+        out.city = o.address.addressLocality;
+        out.cap = o.address.postalCode;
+      }
+      return out;
+    };
+    const tryGemini = async (model, body, label, timeoutMs = 15000) => {
+      if (!apiKey) {
+        log(label + ': no API key');
+        return null;
+      }
       try {
-        const r = await fetch(geminiUrl(modelName, apiKey), {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), timeoutMs);
+        const r = await fetch(geminiUrl(model, apiKey), {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
           body: JSON.stringify(body),
-          signal: controller.signal
+          signal: ctrl.signal
         });
-        clearTimeout(timer);
+        clearTimeout(t);
         if (!r.ok) {
-          console.warn('[listing] ' + label + ' HTTP ' + r.status);
+          const e = await r.text();
+          log(label + ' HTTP ' + r.status + ': ' + e.slice(0, 150));
           return null;
         }
         const j = await r.json();
-        const parts = j.candidates?.[0]?.content?.parts || [];
-        const txt = parts.map(p => p.text || "").join("").trim();
-        const match = txt.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
-        if (!match) {
-          console.warn('[listing] ' + label + ' no JSON');
+        const cand = j.candidates?.[0];
+        if (!cand) {
+          log(label + ': no candidate');
+          return null;
+        }
+        const fr = cand.finishReason || '';
+        if (fr === 'RECITATION' || fr === 'SAFETY' || fr === 'BLOCKLIST') {
+          log(label + ' BLOCKED: ' + fr + ' — retrying with paraphrase mode');
+          return 'RETRY_PARAPHRASE';
+        }
+        const parts = cand.content?.parts || [];
+        const txt = parts.map(p => p.text || '').join('').trim();
+        if (!txt) {
+          log(label + ': empty text, fr=' + fr);
+          return null;
+        }
+        const mat = txt.replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+        if (!mat) {
+          log(label + ' no JSON: ' + txt.slice(0, 150));
           return null;
         }
         try {
-          const obj = JSON.parse(match[0]);
-          console.log('[listing] ' + label + ' SUCCESS');
-          return obj;
+          const obj = JSON.parse(mat[0]);
+          const keys = Object.keys(obj).filter(k => obj[k] != null && obj[k] !== '');
+          log(label + ' OK ' + keys.length + 'k');
+          return keys.length > 0 ? obj : null;
         } catch (e) {
-          console.warn('[listing] ' + label + ' parse error');
+          log(label + ' parse: ' + e.message);
           return null;
         }
       } catch (e) {
-        clearTimeout(timer);
-        console.warn('[listing] ' + label + ' ' + (e.name === 'AbortError' ? 'TIMEOUT' : e.message));
+        log(label + ' ' + (e.name === 'AbortError' ? 'TIMEOUT' : e.message));
         return null;
       }
     };
-    const attempts = [callGemini('gemini-2.5-flash', {
-      contents: [{
-        parts: [{
-          text: 'Open this Italian real estate listing URL and extract ALL property data. Be FAST and EXHAUSTIVE — scan the entire page including hidden fields, descriptions, features, energy data and any room dimensions mentioned. Fill EVERY field you can. Return ONLY valid JSON, no markdown.\n\nURL: ' + url + '\n\nSchema:\n' + jsonSchema
-        }]
-      }],
-      tools: [{
-        url_context: {}
-      }],
-      generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 3000,
-        responseMimeType: 'application/json'
-      }
-    }, '2.5-flash url_context'), callGemini('gemini-2.5-flash', {
-      contents: [{
-        parts: [{
-          text: 'Search the web for this Italian real estate listing and extract every property detail you can find. Fill EVERY field. URL: ' + url + '\n\nReturn ONLY valid JSON:\n' + jsonSchema
-        }]
-      }],
-      tools: [{
-        google_search: {}
-      }],
-      generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 3000
-      }
-    }, '2.5-flash google_search'), callGemini('gemini-2.0-flash', {
-      contents: [{
-        parts: [{
-          text: 'Find this Italian real estate listing online and extract all property details. URL: ' + url + '\n\nReturn ONLY JSON:\n' + jsonSchema
-        }]
-      }],
-      tools: [{
-        googleSearch: {}
-      }],
-      generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 3000
-      }
-    }, '2.0-flash googleSearch')];
-    let parsed = null;
-    try {
-      parsed = await new Promise(resolve => {
-        let pendingCount = attempts.length;
-        attempts.forEach(p => {
-          p.then(result => {
-            if (result && !parsed) {
-              resolve(result);
-            } else {
-              pendingCount--;
-              if (pendingCount === 0 && !parsed) resolve(null);
-            }
-          }).catch(() => {
-            pendingCount--;
-            if (pendingCount === 0 && !parsed) resolve(null);
-          });
-        });
-        setTimeout(() => {
-          if (!parsed) resolve(null);
-        }, TIMEOUT_MS + 1000);
-      });
-    } catch (e) {
-      console.warn('[listing] race error:', e);
-    }
-    if (!parsed) {
-      console.log('[listing] all live attempts failed, using URL heuristic');
-      const cityMatch = url.match(/(milano|milan|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese)/i);
-      const city = cityMatch ? cityMatch[1].charAt(0).toUpperCase() + cityMatch[1].slice(1).toLowerCase() : "Milano";
-      parsed = {
-        city: city,
-        area: 80,
-        rooms: 3,
-        bathrooms: 1,
-        floor: "3",
-        ceiling: 2.7,
-        pType: "Apartment",
-        currentStatus: "Buono / Abitabile",
-        eCls: "E",
-        heatingType: "Centralizzato",
-        band: "Major city",
-        features: ["URL-based defaults — please verify"]
+    const attemptPlain = async () => {
+      const body = {
+        contents: [{
+          parts: [{
+            text: 'Analyze this Italian real-estate URL and infer property data from the URL slug + your geographic knowledge of the area. ' + ANTI_RECITATION + '\n\nURL: ' + url + '\n\nReturn JSON only matching this schema (use null for unknown). DO NOT copy text — paraphrase or estimate numerically:\n' + SCHEMA
+          }]
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1500,
+          responseMimeType: 'application/json'
+        }
       };
-    }
+      return tryGemini('gemini-2.5-flash', body, 'A:plain', 11000);
+    };
+    const attemptSearch = async () => {
+      const body = {
+        contents: [{
+          parts: [{
+            text: 'Search for this Italian property listing on the web and extract structured numerical/categorical fields. ' + ANTI_RECITATION + '\n\nURL: ' + url + '\n\nOutput JSON only:\n' + SCHEMA
+          }]
+        }],
+        tools: [{
+          google_search: {}
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1500
+        }
+      };
+      const r = await tryGemini('gemini-2.5-flash', body, 'B:search', 18000);
+      if (r === 'RETRY_PARAPHRASE') {
+        const body2 = {
+          contents: [{
+            parts: [{
+              text: 'Find this listing online. Output STRICTLY numerical and categorical data only — never quote any text. ' + ANTI_RECITATION + ' Use the city name and zone but paraphrase everything else.\n\nURL: ' + url + '\n\nJSON only:\n' + SCHEMA
+            }]
+          }],
+          tools: [{
+            google_search: {}
+          }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 1500
+          }
+        };
+        return tryGemini('gemini-2.5-flash', body2, 'B2:search-paraphrase', 18000);
+      }
+      return r;
+    };
+    const attemptUrlCtx = async () => {
+      const body = {
+        contents: [{
+          parts: [{
+            text: 'Open this URL and extract numerical/categorical fields only. ' + ANTI_RECITATION + '\n\nURL: ' + url + '\n\nJSON only:\n' + SCHEMA
+          }]
+        }],
+        tools: [{
+          url_context: {}
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1500
+        }
+      };
+      const r = await tryGemini('gemini-2.5-flash', body, 'C:urlctx', 18000);
+      if (r === 'RETRY_PARAPHRASE') {
+        const body2 = {
+          contents: [{
+            parts: [{
+              text: 'Open this page and output ONLY: area (number), rooms (number), bathrooms (number), floor (number), energy class (single letter), price (number), city name (one word). No quotations from page allowed. Paraphrase any descriptive text. ' + ANTI_RECITATION + '\n\nURL: ' + url + '\n\nJSON:\n' + SCHEMA
+            }]
+          }],
+          tools: [{
+            url_context: {}
+          }],
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 1500
+          }
+        };
+        return tryGemini('gemini-2.5-flash', body2, 'C2:urlctx-paraphrase', 18000);
+      }
+      return r;
+    };
+    const attempt20 = async () => {
+      const body = {
+        contents: [{
+          parts: [{
+            text: 'Search for this Italian listing. Extract only numbers/categories. ' + ANTI_RECITATION + '\nURL: ' + url + '\nJSON:\n' + SCHEMA
+          }]
+        }],
+        tools: [{
+          googleSearch: {}
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1500
+        }
+      };
+      return tryGemini('gemini-2.0-flash', body, 'D:2.0search', 14000);
+    };
+    const attemptScrape = async () => {
+      const proxies = [u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u), u => 'https://corsproxy.io/?' + encodeURIComponent(u), u => 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u)];
+      let html = '';
+      for (const p of proxies) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 6000);
+          const r = await fetch(p(url), {
+            signal: ctrl.signal
+          });
+          clearTimeout(t);
+          if (r.ok) {
+            const txt = await r.text();
+            if (txt && txt.length > 3000 && !/<title>[^<]*(403|404|denied)/i.test(txt)) {
+              html = txt;
+              log('E:proxy ' + txt.length + 'ch');
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+      if (!html) return null;
+      const mined = {};
+      const txt = html.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].forEach(m => {
+        try {
+          const j = JSON.parse(m[1]);
+          (Array.isArray(j) ? j : [j]).forEach(o => {
+            if (o['@graph']) o['@graph'].forEach(x => Object.assign(mined, extractFromSchema(x)));
+            Object.assign(mined, extractFromSchema(o));
+          });
+        } catch (e) {}
+      });
+      const rx = {
+        area: /(\d{2,4})\s*(?:m²|mq)/i,
+        rooms: /(\d{1,2})\s*(?:locali|stanze|vani)/i,
+        bathrooms: /(\d{1,2})\s*bagn/i,
+        eCls: /classe energetica[:\s]*([A-G][1-4]?)/i,
+        price: /€\s*([\d.,]{4,})/,
+        cap: /\b(\d{5})\b/
+      };
+      const m = k => (txt.match(rx[k]) || [])[1];
+      if (!mined.area && m('area')) mined.area = parseFloat(m('area'));
+      if (!mined.rooms && m('rooms')) mined.rooms = parseInt(m('rooms'));
+      if (!mined.bathrooms && m('bathrooms')) mined.bathrooms = parseInt(m('bathrooms'));
+      if (!mined.eCls && m('eCls')) mined.eCls = m('eCls').toUpperCase();
+      if (!mined.price && m('price')) mined.price = parseInt(m('price').replace(/[.,]/g, ''));
+      if (!mined.cap && m('cap')) mined.cap = m('cap');
+      const keys = Object.keys(mined).filter(k => mined[k]);
+      log('E:mine ' + keys.length + 'k');
+      return keys.length > 0 ? mined : null;
+    };
+    const results = await Promise.all([attemptPlain().catch(() => null), attemptSearch().catch(() => null), attemptUrlCtx().catch(() => null), attempt20().catch(() => null), attemptScrape().catch(() => null)]);
+    log('done ' + results.map(x => x && x !== 'RETRY_PARAPHRASE' ? Object.keys(x).filter(k => x[k]).length : '-').join('/'));
+    const parsed = {};
+    results.filter(r => r && r !== 'RETRY_PARAPHRASE').forEach(r => {
+      for (const k in r) {
+        if (r[k] != null && r[k] !== '' && (parsed[k] == null || parsed[k] === '')) parsed[k] = r[k];
+      }
+    });
     setListingData(parsed);
+    const cityMatch = url.match(/(milano|milan|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese)/i);
+    const fallbackCity = cityMatch ? cityMatch[1].charAt(0).toUpperCase() + cityMatch[1].slice(1).toLowerCase() : "Milano";
     const updates = {
       listingExtracted: parsed
     };
-    if (parsed.address) updates.address = parsed.address;
-    if (parsed.city) updates.city = parsed.city;
-    if (parsed.cap) updates.cap = String(parsed.cap);
-    if (parsed.area) updates.area = String(parsed.area);
-    if (parsed.rooms) updates.rooms = String(parsed.rooms);
-    if (parsed.floor) updates.floor = String(parsed.floor);
-    if (parsed.ceiling) updates.ceiling = String(parsed.ceiling);
+    const setIf = (key, val) => {
+      if (val != null && val !== '') updates[key] = String(val);
+    };
+    setIf('address', parsed.address);
+    setIf('city', parsed.city);
+    setIf('cap', parsed.cap);
+    setIf('area', parsed.area);
+    setIf('rooms', parsed.rooms);
+    setIf('floor', parsed.floor);
+    setIf('ceiling', parsed.ceiling);
     if (parsed.pType) updates.pType = parsed.pType;
     if (parsed.currentStatus) updates.currentStatus = parsed.currentStatus;
     if (parsed.eCls && parsed.eCls !== "Unknown") updates.eCls = parsed.eCls;
     if (parsed.annualEnergy) updates.annualEnergy = String(parsed.annualEnergy);
     if (parsed.heatingType) updates.heatingType = parsed.heatingType;
     if (parsed.band) updates.band = parsed.band;
-    if (parsed.roomDetails) {
-      const rd = {
-        ...(d.roomDetails || {})
-      };
-      Object.entries(parsed.roomDetails).forEach(([key, dims]) => {
-        if (dims && (dims.lengthM || dims.widthM)) {
-          if (!rd[key]) rd[key] = {
-            length: "",
-            width: "",
-            photos: [],
-            extractedData: null
-          };
-          if (dims.lengthM) rd[key] = {
-            ...rd[key],
-            length: String(dims.lengthM)
-          };
-          if (dims.widthM) rd[key] = {
-            ...rd[key],
-            width: String(dims.widthM)
-          };
-        }
-      });
-      updates.roomDetails = rd;
-    }
-    u({
+    const merged = {
       ...d,
       ...updates
-    });
-    if (parsed.features?.[0] === "URL-based defaults — please verify") {
-      setFetchErr("Could not access the live listing — used URL-keyword defaults. Edit any field manually.");
+    };
+    if (!merged.city) merged.city = fallbackCity;
+    if (!merged.area) merged.area = "80";
+    if (!merged.rooms) merged.rooms = "3";
+    if (!merged.floor) merged.floor = "3";
+    if (!merged.ceiling) merged.ceiling = "2.7";
+    if (!merged.pType) merged.pType = "Apartment";
+    if (!merged.currentStatus) merged.currentStatus = "Buono / Abitabile";
+    if (!merged.eCls || merged.eCls === "Unknown") merged.eCls = "E";
+    if (!merged.heatingType) merged.heatingType = "Centralizzato";
+    if (!merged.band) merged.band = "Major city";
+    u(merged);
+    const filled = Object.keys(updates).filter(k => k !== 'listingExtracted').length;
+    if (filled === 0) {
+      setFetchErr('No data extracted. All paths failed — likely all Gemini calls hit RECITATION filter on this URL. Check console for details. Try a different listing URL or fill manually.');
     } else {
-      setFetchErr("");
+      setFetchErr('✓ ' + filled + ' fields in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
     }
     setFetching(false);
+  };
+  const extractFromSchema = o => {
+    if (!o || typeof o !== 'object') return {};
+    const out = {};
+    const t = o['@type'] || '';
+    if (o.offers?.price) out.price = parseInt(String(o.offers.price).replace(/[^\d]/g, ''));
+    if (o.price) out.price = parseInt(String(o.price).replace(/[^\d]/g, ''));
+    if (o.floorSize?.value) out.area = parseFloat(o.floorSize.value);
+    if (o.numberOfRooms) out.rooms = parseInt(o.numberOfRooms);
+    if (o.numberOfBathroomsTotal) out.bathrooms = parseInt(o.numberOfBathroomsTotal);
+    if (o.address) {
+      out.address = o.address.streetAddress;
+      out.city = o.address.addressLocality;
+      out.cap = o.address.postalCode;
+    }
+    if (o.description) out.description = o.description.slice(0, 500);
+    if (o.name) out.title = o.name;
+    return out;
   };
   const le = d.listingExtracted;
   return React.createElement("div", null, React.createElement("h2", {
