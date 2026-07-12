@@ -3497,11 +3497,11 @@ function Results({d, apiKey}){
 function App(){
   const [step,setStep]=useState(0);
   const [ld,setLd]=useState(false);
-  /* Nano Banana 2 (Gemini 3 Pro Image) key — pre-connected.
-     SECURITY NOTE: embedding a live key client-side exposes it to anyone
-     who opens this file. Rotate it / move to the Cloudflare Worker proxy
-     before any public deployment. */
-  const [apiKey,setApiKey]=useState("AIzaSyD_gHcOrzWPsKNiEJ--ng0urNycF-v6wfs");
+  /* Nano Banana 2 (Gemini 3 Pro Image) key — pasted at runtime, never stored.
+     Do NOT hardcode a key here: any key committed to the repo is auto-revoked
+     by Google's secret scanning ("API key reported as leaked"). Paste your key
+     into the header field each session, or use the Cloudflare Worker proxy. */
+  const [apiKey,setApiKey]=useState("");
   const [showKey,setShowKey]=useState(false);
   const [d,setD]=useState({address:"",city:"Milano",cap:"",area:"85",rooms:"3",eCls:"E",band:"Major city",floor:"3",ceiling:"2.7",currentStatus:"Da ristrutturare",heatingType:"Centralizzato",annualEnergy:"",pType:"Apartment",listingUrl:"",plans:[],photos:[],roomDetails:{},changes:["Kitchen upgrade","Bathroom upgrade","Finishes refresh","Storage boost"],style:"Japandi",customStyle:"",fengshui:[],preferredPalette:null});
   const steps=[{n:"Proprietà · Property",i:"🏛️"},{n:"Planimetria · Floor Plan",i:"📐"},{n:"Interventi · Interventions",i:"🏗️"},{n:"Stile · Style",i:"🎨"},{n:"Analisi · Analysis",i:"📊"}];
