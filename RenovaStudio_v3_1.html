@@ -1796,6 +1796,90 @@ HARD GATE (Unified Agent v7): if ANY of outerWallsUnchanged, overallShapeUnchang
   }catch(e){ console.warn("Validation failed:",e); return {overallScore:null,approved:true,issues:[]}; }
 }
 
+/* Build a Gemini image part from a File, a data: URL, or an http(s) URL */
+async function imgPartFromAny(src){
+  if(src instanceof File){
+    const b64=await fileToBase64(src);
+    return {inlineData:{mimeType:src.type||"image/jpeg", data:b64.split(",")[1]}};
+  }
+  if(typeof src==="string" && src.startsWith("data:")){
+    return {inlineData:{mimeType:src.split(";")[0].replace("data:",""), data:src.split(",")[1]}};
+  }
+  if(typeof src==="string" && src) return {fileData:{mimeType:"image/jpeg", fileUri:src}};
+  return null;
+}
+
+/* Parse a JSON object out of a Gemini text response */
+function parseJsonLoose(txt){
+  const clean=(txt||"{}").replace(/```json|```/g,"").trim();
+  const m=clean.match(/\{[\s\S]*\}/);
+  return JSON.parse(m?m[0]:clean);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   CROSS-CHECK 1 — POST-INTERVENTION PLAN vs INITIAL PLAN
+   Two-image comparison: confirm the generated plan presents the SAME
+   space/envelope as the original (only internal partitions/doors differ).
+   ══════════════════════════════════════════════════════════════ */
+async function comparePlanToOriginal(originalSrc, generatedSrc, spatialData, apiKey){
+  if(!apiKey) return null;
+  try{
+    const a=await imgPartFromAny(originalSrc), b=await imgPartFromAny(generatedSrc);
+    if(!a||!b) return null;
+    const ctx=spatialData?`Reference data for the ORIGINAL: total area ${spatialData.totalArea||"?"}m², shape "${spatialData.overallShape||"?"}", entrance ${spatialData.entranceDoor?spatialData.entranceDoor.wall+" wall":"as drawn"}.`:"";
+    const res=await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({contents:[{parts:[
+         {text:"IMAGE 1 = ORIGINAL floor plan (existing apartment). IMAGE 2 = AI-generated POST-INTERVENTION floor plan of the SAME apartment."},
+         a,
+         {text:"IMAGE 2 follows:"},
+         b,
+         {text:`You are a strict Italian/Lombardy building-code reviewer verifying ENVELOPE INVARIANCE (D.P.R. 380/2001 sagoma) between the two plans. ${ctx}
+The post-intervention plan is ACCEPTABLE only if it depicts the SAME SPACE as the original: identical external/perimeter walls, identical overall shape & footprint, identical total floor area, identical main entrance (wall/position/width), identical windows (count/position/size) and identical balcony/French doors (porte-finestra). The ONLY differences allowed are INTERNAL non-load-bearing partitions and INTERNAL doors (rooms may be merged/split, kitchen opened to living). Anything else = HARD CONSTRAINT VIOLATION.
+Return ONLY valid JSON (no markdown):
+{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"onlyInternalChanged":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every difference beyond internal partitions/doors"],"summary":"one line"}
+HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, entranceMatch, windowsMatch, balconyDoorsMatch, onlyInternalChanged is false → approved:false and overallScore ≤ 40.`}
+       ]}],generationConfig:{temperature:0.1,maxOutputTokens:500}})
+      }
+    );
+    if(!res.ok) return null;
+    const data=await res.json();
+    return parseJsonLoose(data.candidates?.[0]?.content?.parts?.[0]?.text);
+  }catch(e){ console.warn("Plan-vs-original compare failed:",e); return null; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   CROSS-CHECK 2 — 3D RENDER vs FLOOR PLAN
+   Two-image comparison: confirm the room render is consistent with the
+   post-intervention plan (same openings, proportions, layout).
+   ══════════════════════════════════════════════════════════════ */
+async function comparePlanToRender(planSrc, renderSrc, roomType, apiKey){
+  if(!apiKey) return null;
+  try{
+    const a=await imgPartFromAny(planSrc), b=await imgPartFromAny(renderSrc);
+    if(!a||!b) return null;
+    const res=await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({contents:[{parts:[
+         {text:`IMAGE 1 = the post-intervention FLOOR PLAN (2D). IMAGE 2 = a 3D photorealistic RENDER of the ${roomType} in that same apartment.`},
+         a,
+         {text:"IMAGE 2 (the 3D render) follows:"},
+         b,
+         {text:`Verify the 3D render is CONSISTENT with the floor plan for the ${roomType}. Check that: the number and position of windows and balcony/French doors (porte-finestra) shown in the render match what the plan shows for that room; the room proportions (width/length ratio) match; door/opening positions match; no wall exists in the render that the plan does not show and vice-versa. Ignore furniture, finishes, colours and lighting — compare only spatial structure and openings.
+Return ONLY valid JSON (no markdown):
+{"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list inconsistencies between render and plan"],"summary":"one line"}
+HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent is false → approved:false and overallScore ≤ 45.`}
+       ]}],generationConfig:{temperature:0.1,maxOutputTokens:450}})
+      }
+    );
+    if(!res.ok) return null;
+    const data=await res.json();
+    return parseJsonLoose(data.candidates?.[0]?.content?.parts?.[0]?.text);
+  }catch(e){ console.warn("Plan-vs-render compare failed:",e); return null; }
+}
+
 /* ══════════════════════════════════════════════════════════════
    FAST IMAGE-TO-IMAGE PIPELINE
    - One render per uploaded photo (parallel)
@@ -1803,22 +1887,41 @@ HARD GATE (Unified Agent v7): if ANY of outerWallsUnchanged, overallShapeUnchang
    - Multi-round only for text-to-image fallback
    ══════════════════════════════════════════════════════════════ */
 
+const _envBad = v => v && [v.outerWallsUnchanged,v.overallShapeUnchanged,v.entranceDoorUnchanged,v.balconyDoorsUnchanged,v.noWallMoves,v.totalAreaPreserved].some(x=>x===false);
+
 async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onProgress, originalPhotoFile){
-  /* ── Fast path: image-to-image needs only 1 round ── */
+  const isPlan = roomType==="Floor Plan";
+
+  /* ── Image-to-image path (original photo/plan provided) ── */
   if(originalPhotoFile){
-    onProgress({stage:"generating", round:1, total:1});
-    const result = await generateWithImagen(prompt, apiKey, originalPhotoFile);
-    /* Floor plans still get the v7 envelope-invariance vision check */
-    if(spatialData && roomType==="Floor Plan"){
-      onProgress({stage:"validating", round:1, total:1});
-      const v=await validateRender(result.dataUrl, roomType, spatialData, apiKey);
-      const hardViolation = v && [v.outerWallsUnchanged,v.overallShapeUnchanged,v.entranceDoorUnchanged,v.balconyDoorsUnchanged,v.noWallMoves,v.totalAreaPreserved].some(x=>x===false);
-      return {url:result.dataUrl, score:hardViolation?Math.min(v?.overallScore??0,40):(v?.overallScore??95), validation:v, mode:"image-edit"};
+    /* Plans get one corrective retry if the same-space cross-check fails */
+    const rounds = isPlan ? 2 : 1;
+    let best=null;
+    for(let r=0;r<rounds;r++){
+      onProgress({stage:r===0?"generating":"refining", round:r+1, total:rounds});
+      const corrective = r>0 ? RETRY_ADDENDUM[1] : "";
+      const result = await generateWithImagen((prompt+corrective).slice(0,4000), apiKey, originalPhotoFile);
+      if(spatialData && isPlan){
+        onProgress({stage:"validating", round:r+1, total:rounds});
+        const v=await validateRender(result.dataUrl, roomType, spatialData, apiKey);
+        /* CROSS-CHECK 1: generated plan vs the ORIGINAL uploaded plan image */
+        onProgress({stage:"comparing", round:r+1, total:rounds});
+        const cmp=await comparePlanToOriginal(originalPhotoFile, result.dataUrl, spatialData, apiKey);
+        const hardViolation = _envBad(v) || (cmp && cmp.approved===false);
+        const score = hardViolation ? Math.min(v?.overallScore??cmp?.overallScore??0,40)
+                                    : Math.min(v?.overallScore??95, cmp?.overallScore??95);
+        const cand={url:result.dataUrl, score, validation:v, planCompare:cmp, mode:"image-edit"};
+        if(!best || cand.score>best.score) best=cand;
+        if(!hardViolation) break;
+      } else {
+        best={url:result.dataUrl, score:95, validation:null, planCompare:null, mode:"image-edit"};
+        break;
+      }
     }
-    return {url:result.dataUrl, score:95, validation:null, mode:"image-edit"};
+    return best;
   }
 
-  /* ── Slower path: text-to-image with up to MAX_ROUNDS ── */
+  /* ── Text-to-image path with up to MAX_ROUNDS (no original image to compare against) ── */
   let bestDataUrl=null, bestScore=-1, bestValidation=null;
   for(let round=0; round<MAX_ROUNDS; round++){
     onProgress({stage:round===0?"generating":"refining", round:round+1, total:MAX_ROUNDS});
@@ -1827,7 +1930,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
     if(spatialData){
       onProgress({stage:"validating", round:round+1, total:MAX_ROUNDS});
       const v=await validateRender(`data:${mime};base64,${base64}`, roomType, spatialData, apiKey);
-      const hardViolation = v && [v.outerWallsUnchanged,v.overallShapeUnchanged,v.entranceDoorUnchanged,v.balconyDoorsUnchanged,v.noWallMoves,v.totalAreaPreserved].some(x=>x===false);
+      const hardViolation = _envBad(v);
       const score=hardViolation?Math.min(v?.overallScore??0,40):(v?.overallScore??50);
       if(score>bestScore){bestScore=score; bestDataUrl=dataUrl; bestValidation=v;}
       if(score>=PASS_SCORE && !hardViolation) break;
@@ -1835,21 +1938,24 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
       bestDataUrl=dataUrl; bestScore=100; bestValidation=null; break;
     }
   }
-  return {url:bestDataUrl, score:bestScore, validation:bestValidation, mode:"text-to-image"};
+  return {url:bestDataUrl, score:bestScore, validation:bestValidation, planCompare:null, mode:"text-to-image"};
 }
 
 /* ══════ RENDER TILE — shows only the final approved render ══════ */
-function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, originalPhotoFile, batchTrigger}) {
+function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, originalPhotoFile, batchTrigger, planImg, onPlanReady}) {
+  const isPlan = room==="Floor Plan";
   const [phase, setPhase] = useState("idle"); // idle | pipeline | done | error
   const [progress, setProgress] = useState({stage:"generating",round:1,total:MAX_ROUNDS});
   const [imgUrl, setImgUrl] = useState("");
   const [finalScore, setFinalScore] = useState(null);
   const [validation, setValidation] = useState(null);
+  const [planCompare, setPlanCompare] = useState(null); // plan-tile: generated plan vs original plan
+  const [planConsistency, setPlanConsistency] = useState(undefined); // room-tile: render vs plan (undefined=not run)
   const [error, setError] = useState("");
 
   const start = useCallback(async () => {
     if(!apiKey){ setError("Set Nano Banana API key above"); setPhase("error"); return; }
-    setPhase("pipeline"); setError(""); setImgUrl(""); setFinalScore(null);
+    setPhase("pipeline"); setError(""); setImgUrl(""); setFinalScore(null); setPlanCompare(null); setPlanConsistency(undefined);
     try{
       const result = await runRefinementPipeline(
         prompt, apiKey, spatialData, room,
@@ -1859,24 +1965,51 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       setImgUrl(result.url);
       setFinalScore(result.score);
       setValidation(result.validation||null);
+      setPlanCompare(result.planCompare||null);
       setPhase("done");
+      /* Share the generated plan image so room renders can be cross-checked against it */
+      if(isPlan && onPlanReady) onPlanReady(result.url);
     }catch(e){ setError(e.message||"Failed"); setPhase("error"); }
-  }, [prompt, apiKey, spatialData, room, originalPhotoFile]);
+  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady]);
 
   /* Auto-start when batch trigger fires (only if idle) */
   useEffect(()=>{ if(batchTrigger>0 && phase==="idle") start(); },[batchTrigger]);
 
+  /* CROSS-CHECK 2 — room render vs the post-intervention plan.
+     Runs once this tile's render is done AND the plan image is available.
+     A ref keyed on (render,plan) ensures we kick exactly once per pair —
+     planConsistency is deliberately NOT a dependency so setting "running"
+     does not retrigger this effect and cancel its own in-flight request. */
+  const xcheckRef = useRef("");
+  useEffect(()=>{
+    if(isPlan || phase!=="done" || !imgUrl || !planImg || !apiKey) return;
+    const sig = imgUrl+"|"+planImg;
+    if(xcheckRef.current===sig) return; // already checked this pair
+    xcheckRef.current=sig;
+    let cancelled=false;
+    setPlanConsistency("running");
+    comparePlanToRender(planImg, imgUrl, room, apiKey).then(r=>{ if(!cancelled) setPlanConsistency(r||null); });
+    return ()=>{cancelled=true;};
+  },[isPlan, phase, imgUrl, planImg, apiKey, room]);
+
   const stageLabel = {
     generating: originalPhotoFile ? "Editing your original photo…" : "Generating render…",
     validating: "Verifying spatial accuracy…",
+    comparing:  isPlan ? "Cross-checking against the original plan…" : "Cross-checking against the plan…",
     refining:   "Refining spatial fidelity…"
   };
-  const stageIcon = {generating:"🎨", validating:"🔍", refining:"🔧"};
+  const stageIcon = {generating:"🎨", validating:"🔍", comparing:"🧭", refining:"🔧"};
 
   /* Score badge colour */
   const sc = finalScore;
   const scoreClr = sc==null?"#78716C":sc>=80?"#1B3A2D":sc>=60?"#C87941":"#B91C1C";
   const scoreLabel = sc==null?"":sc>=80?"✓ Verified":sc>=60?"~ Acceptable":"⚠ Best attempt";
+
+  /* Cross-check outcome (plan-vs-original for the plan tile, render-vs-plan for rooms) */
+  const xcheckFailed = isPlan
+    ? !!(planCompare && (planCompare.approved===false || planCompare.sameSpace===false))
+    : !!(planConsistency && planConsistency!=="running" && (planConsistency.approved===false || planConsistency.consistent===false));
+  const xcheckDone = isPlan ? !!planCompare : (planConsistency!==undefined && planConsistency!=="running" && planConsistency!==null);
 
   return (
     <div className="card" style={{padding:0,overflow:"hidden",border:"1px solid #E2DCD2"}}>
@@ -1907,21 +2040,25 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
             </div>
           </div>
           {/* Progress steps */}
-          <div style={{display:"flex",gap:6,alignItems:"center",width:"100%",maxWidth:320}}>
-            {[{k:"generating",l:"Generate"},{k:"validating",l:"Verify"},{k:"refining",l:"Refine"}].map((s,i)=>{
-              const active=progress.stage===s.k;
-              const done=(progress.stage==="validating"&&s.k==="generating")||(progress.stage==="refining"&&s.k!=="refining");
-              return<React.Fragment key={s.k}>
-                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
-                  <div style={{width:28,height:28,borderRadius:"50%",background:active?"#1B3A2D":done?"#87A98F":"#E2DCD2",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,transition:"all .3s"}}>{done?"✓":<span style={{color:active?"#fff":"#B8AFA5"}}>{i+1}</span>}</div>
-                  <span style={{fontSize:9,color:active?"#1B3A2D":"#78716C",fontWeight:active?700:400}}>{s.l}</span>
-                </div>
-                {i<2&&<div style={{flex:1,height:2,background:done?"#87A98F":"#E2DCD2",borderRadius:1,marginBottom:16,transition:"background .3s"}}/>}
-              </React.Fragment>;
-            })}
-          </div>
+          {(()=>{
+            const steps=isPlan?[["generating","Generate"],["validating","Verify"],["comparing","Cross-check"]]:[["generating","Generate"],["validating","Verify"]];
+            const rank={generating:0,refining:0,validating:1,comparing:2};
+            const cur=rank[progress.stage]??0;
+            return(<div style={{display:"flex",gap:6,alignItems:"center",width:"100%",maxWidth:340}}>
+              {steps.map(([k,l],i)=>{
+                const active=i===cur, done=i<cur;
+                return<React.Fragment key={k}>
+                  <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                    <div style={{width:28,height:28,borderRadius:"50%",background:active?"#1B3A2D":done?"#87A98F":"#E2DCD2",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,transition:"all .3s"}}>{done?"✓":<span style={{color:active?"#fff":"#B8AFA5"}}>{i+1}</span>}</div>
+                    <span style={{fontSize:9,color:active?"#1B3A2D":"#78716C",fontWeight:active?700:400}}>{l}</span>
+                  </div>
+                  {i<steps.length-1&&<div style={{flex:1,height:2,background:done?"#87A98F":"#E2DCD2",borderRadius:1,marginBottom:16,transition:"background .3s"}}/>}
+                </React.Fragment>;
+              })}
+            </div>);
+          })()}
           <div style={{fontSize:10,color:"#87A98F",marginTop:14,textAlign:"center"}}>
-            Auto-refining for spatial fidelity — only the approved result will be shown
+            {isPlan?"Verifying the new plan presents the SAME space as the original — only approved plans are shown":"Auto-refining for spatial fidelity — only the approved result will be shown"}
           </div>
         </div>
       )}
@@ -1976,6 +2113,53 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>);
       })()}
 
+      {/* CROSS-CHECK 1 — post-intervention PLAN vs INITIAL plan (plan tile only) */}
+      {phase==="done"&&isPlan&&planCompare&&(()=>{
+        const rows=[
+          ["Muri esterni",planCompare.outerWallsMatch],
+          ["Sagoma/impronta",planCompare.overallShapeMatch],
+          ["Superficie",planCompare.totalAreaMatch],
+          ["Ingresso",planCompare.entranceMatch],
+          ["Finestre",planCompare.windowsMatch],
+          ["Porte-finestra",planCompare.balconyDoorsMatch],
+          ["Solo modifiche interne",planCompare.onlyInternalChanged],
+        ];
+        const fail=planCompare.approved===false||rows.some(([,v])=>v===false)||planCompare.sameSpace===false;
+        const ms=(planCompare.mismatches||[]).filter(Boolean).slice(0,4);
+        return(<div style={{padding:"8px 12px",borderTop:"1px solid #ECE8E1",background:fail?"#FEF2F2":"#EEF4FA"}}>
+          <div style={{fontSize:9,fontWeight:700,letterSpacing:".05em",color:fail?"#B91C1C":"#2E5A82",marginBottom:5}}>🧭 PIANO NUOVO ↔ PIANO INIZIALE {fail?"— SPAZIO NON COINCIDENTE":"— STESSO SPAZIO CONFERMATO"}{planCompare.overallScore!=null?` · ${planCompare.overallScore}/100`:""}</div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+            {rows.map(([l,v],i)=>(
+              <span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:10,fontSize:9.5,fontWeight:700,background:v===false?"#FEE2E2":v===true?"#D1E7DD":"#FEF3C7",color:v===false?"#B91C1C":v===true?"#1B3A2D":"#A16207"}}>{v===false?"✗":v===true?"✓":"⚠"} {l}</span>
+            ))}
+          </div>
+          {ms.length>0&&<ul style={{margin:"5px 0 0",paddingLeft:16,fontSize:9.5,color:"#B91C1C",lineHeight:1.5}}>{ms.map((m,i)=><li key={i}>{m}</li>)}</ul>}
+        </div>);
+      })()}
+
+      {/* CROSS-CHECK 2 — 3D render vs the post-intervention PLAN (room tiles) */}
+      {phase==="done"&&!isPlan&&planConsistency!==undefined&&(()=>{
+        if(planConsistency==="running") return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#EEF4FA",fontSize:9.5,color:"#2E5A82",display:"flex",alignItems:"center",gap:7}}><div className="spinner" style={{width:14,height:14,borderWidth:2}}/> Verifica coerenza render ↔ piano…</div>);
+        if(planConsistency===null) return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#F6F4EF",fontSize:9,color:"#78716C"}}>Render ↔ piano: confronto non disponibile (piano non ancora generato).</div>);
+        const rows=[
+          ["Finestre",planConsistency.windowsConsistent],
+          ["Porte-finestra",planConsistency.balconyDoorsConsistent],
+          ["Proporzioni",planConsistency.proportionsConsistent],
+          ["Aperture/muri",planConsistency.openingsConsistent],
+        ];
+        const fail=planConsistency.approved===false||planConsistency.consistent===false||rows.some(([,v])=>v===false);
+        const ms=(planConsistency.mismatches||[]).filter(Boolean).slice(0,4);
+        return(<div style={{padding:"8px 12px",borderTop:"1px solid #ECE8E1",background:fail?"#FEF2F2":"#F6F9F6"}}>
+          <div style={{fontSize:9,fontWeight:700,letterSpacing:".05em",color:fail?"#B91C1C":"#1B3A2D",marginBottom:5}}>🧭 RENDER 3D ↔ PIANO {fail?"— INCOERENTE":"— COERENTE"}{planConsistency.overallScore!=null?` · ${planConsistency.overallScore}/100`:""}</div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+            {rows.map(([l,v],i)=>(
+              <span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:10,fontSize:9.5,fontWeight:700,background:v===false?"#FEE2E2":v===true?"#D1E7DD":"#FEF3C7",color:v===false?"#B91C1C":v===true?"#1B3A2D":"#A16207"}}>{v===false?"✗":v===true?"✓":"⚠"} {l}</span>
+            ))}
+          </div>
+          {ms.length>0&&<ul style={{margin:"5px 0 0",paddingLeft:16,fontSize:9.5,color:"#B91C1C",lineHeight:1.5}}>{ms.map((m,i)=><li key={i}>{m}</li>)}</ul>}
+        </div>);
+      })()}
+
       {/* ERROR */}
       {phase==="error"&&(
         <div className="render-idle" onClick={start} style={{background:"#FEF2F2"}}>
@@ -1989,7 +2173,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       <div style={{padding:"8px 12px",borderTop:"1px solid #ECE8E1",background:"#fff",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div>
           <div style={{fontSize:12,fontWeight:600}}>{room} — {solName}</div>
-          <div style={{fontSize:10,color:"#78716C"}}>{style}{phase==="done"?" · spatially verified render":""}</div>
+          <div style={{fontSize:10,color:xcheckFailed?"#B91C1C":"#78716C"}}>{style}{phase==="done"?(xcheckFailed?" · ⚠ cross-check failed — review before use":xcheckDone?" · cross-checked vs "+(isPlan?"original plan":"plan"):" · spatially verified render"):""}</div>
         </div>
         <div style={{display:"flex",gap:4}}>
           {phase==="done"&&<button className="btn btn-g" style={{padding:"3px 8px",fontSize:10}} onClick={()=>{setPhase("idle");setImgUrl("");setFinalScore(null);}}>🔄</button>}
@@ -2548,6 +2732,7 @@ function S4({d,u}){
 function SolRenderCard({x, solIdx, d, apiKey}){
   const m=SM[solIdx];
   const [batchTrigger,setBatchTrigger]=useState(0);
+  const [planImg,setPlanImg]=useState(""); // generated post-intervention plan image, shared to room tiles for cross-check
   const tiles=[];
   [{roomKey:"living",label:"Living Area"},{roomKey:"kitchen",label:"Kitchen"},{roomKey:"bedroom",label:"Bedroom"},{roomKey:"bathroom",label:"Bathroom"}].forEach(({roomKey,label})=>{
     const photos=(d.roomDetails?.[roomKey]?.photos||[]).filter(f=>f instanceof File);
@@ -2571,11 +2756,12 @@ function SolRenderCard({x, solIdx, d, apiKey}){
           <div style={{fontFamily:"'Cormorant Garamond'",fontSize:17,fontWeight:700,color:m.color}}>{x.nm} — {fmt(x.co.total)}</div>
           <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · {imgToImg>0?imgToImg+" image-to-image":"text-to-image only"}</div>
         </div>
-        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>setBatchTrigger(t=>t+1)}>⚡ Generate All</button>}
+        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setPlanImg("");setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
       </div>
+      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Doppio controllo di conformità prima di presentare: <strong>piano nuovo ↔ piano iniziale</strong> (stesso spazio) e <strong>render 3D ↔ piano</strong> (coerenza).</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
         {tiles.map((t,ti)=>(
-          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger}/>
+          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={planImg} onPlanReady={setPlanImg}/>
         ))}
       </div>
       <div style={{marginTop:8,padding:7,background:"#F6F4EF",borderRadius:6,fontSize:10.5,color:"#78716C"}}><strong>Materials:</strong> {x.mg}</div>
