@@ -2192,6 +2192,58 @@ function S1({d,u,apiKey}){
   const [listingData,setListingData]=useState(null);
   const [fetchErr,setFetchErr]=useState("");
 
+  const LISTING_SCHEMA = '{"address":"","city":"","cap":"","area":<m²>,"rooms":<n>,"bathrooms":<n>,"floor":"","ceiling":<m>,"pType":"<Apartment|Attico|Loft|Monolocale|Villa|Mansarda>","currentStatus":"<Da ristrutturare|Buono / Abitabile|Ristrutturato|Ottimo|Nuovo / In costruzione>","eCls":"<A4-G>","annualEnergy":<n>,"heatingType":"<Centralizzato|Autonomo|Pompa di calore|Nessuno>","price":<€>,"description":"","features":[],"buildingYear":<year>,"condominium":""}';
+
+  /* Shared: map a parsed listing object onto the form and report the outcome */
+  const applyParsed = (parsed, secs, srcLabel) => {
+    parsed = parsed || {};
+    setListingData(parsed);
+    const urlStr = (d.listingUrl||"").toLowerCase();
+    const cityMatch = urlStr.match(/(milano|milan|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese)/i);
+    const fallbackCity = cityMatch ? cityMatch[1].charAt(0).toUpperCase()+cityMatch[1].slice(1).toLowerCase() : (parsed.city||"Milano");
+    const updates = {listingExtracted: parsed};
+    const setIf = (key, val) => { if(val != null && val !== '') updates[key] = String(val); };
+    setIf('address', parsed.address); setIf('city', parsed.city); setIf('cap', parsed.cap);
+    setIf('area', parsed.area); setIf('rooms', parsed.rooms); setIf('floor', parsed.floor); setIf('ceiling', parsed.ceiling);
+    if(parsed.pType) updates.pType = parsed.pType;
+    if(parsed.currentStatus) updates.currentStatus = parsed.currentStatus;
+    if(parsed.eCls && parsed.eCls !== "Unknown") updates.eCls = parsed.eCls;
+    if(parsed.annualEnergy) updates.annualEnergy = String(parsed.annualEnergy);
+    if(parsed.heatingType) updates.heatingType = parsed.heatingType;
+    if(parsed.band) updates.band = parsed.band;
+    const merged = {...d, ...updates};
+    if(!merged.city) merged.city = fallbackCity;
+    if(!merged.area) merged.area = "80";
+    if(!merged.rooms) merged.rooms = "3";
+    if(!merged.floor) merged.floor = "3";
+    if(!merged.ceiling) merged.ceiling = "2.7";
+    if(!merged.pType) merged.pType = "Apartment";
+    if(!merged.currentStatus) merged.currentStatus = "Buono / Abitabile";
+    if(!merged.eCls || merged.eCls === "Unknown") merged.eCls = "E";
+    if(!merged.heatingType) merged.heatingType = "Centralizzato";
+    if(!merged.band) merged.band = "Major city";
+    u(merged);
+    const filled = Object.keys(updates).filter(k => k !== 'listingExtracted').length;
+    if(filled === 0){
+      setFetchErr('No data extracted from '+(srcLabel||'the URL')+'. Real-estate sites (immobiliare.it, idealista…) block automated reading and trip Gemini’s recitation filter. Most reliable fix: take a screenshot of the listing and use “🖼 Extract from screenshot” below — or just fill the fields in manually.');
+    } else {
+      setFetchErr('✓ '+filled+' field'+(filled===1?'':'s')+' filled'+(secs?(' in '+secs.toFixed(1)+'s'):'')+(srcLabel?(' · '+srcLabel):''));
+    }
+    setFetching(false);
+  };
+
+  /* Reliable path: read a screenshot of the listing with vision (no scraping,
+     no recitation filter — the user supplies the image directly) */
+  const extractFromScreenshot = async (file) => {
+    if(!file) return;
+    if(!apiKey){ setFetchErr('Enter your Nano Banana 2 / Google AI Studio key in the header first.'); return; }
+    setFetching(true); setListingData(null); setFetchErr('Reading the screenshot…');
+    const prompt = 'You are reading a screenshot of an Italian real-estate listing (annuncio immobiliare). Extract every property field you can see. Return ONLY valid JSON, no markdown, matching this schema (use null for anything not visible):\n'+LISTING_SCHEMA+'\nFor the description field, write a short paraphrase in your own words (max 30 words) — never copy the listing text verbatim.';
+    let parsed = null;
+    try{ parsed = await geminiVision(file, prompt, apiKey); }catch(e){ console.warn('screenshot extract failed', e); }
+    applyParsed(parsed||{}, null, 'screenshot');
+  };
+
   const fetchListing=async()=>{
     if(!d.listingUrl){ setFetchErr("Enter a listing URL first"); return; }
     setFetching(true); setListingData(null); setFetchErr("Extracting…");
@@ -2335,6 +2387,20 @@ function S1({d,u,apiKey}){
       [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].forEach(m=>{
         try{ const j=JSON.parse(m[1]); (Array.isArray(j)?j:[j]).forEach(o=>{ if(o['@graph'])o['@graph'].forEach(x=>Object.assign(mined,extractFromSchema(x))); Object.assign(mined,extractFromSchema(o));});}catch(e){}
       });
+      /* Next.js embedded state (immobiliare.it, idealista, casa.it) — the richest source */
+      const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+      if(nd){ try{
+        const flat = JSON.stringify(JSON.parse(nd[1]));
+        const g = re => { const mm = flat.match(re); return mm ? mm[1] : null; };
+        if(!mined.area){ const a = g(/"surface"\s*:\s*"?(\d{2,4})/i) || g(/"caption"\s*:\s*"(\d{2,4})\s*m/i); if(a) mined.area = parseFloat(a); }
+        if(!mined.rooms){ const r0 = g(/"rooms"\s*:\s*"?(\d{1,2})/i); if(r0) mined.rooms = parseInt(r0); }
+        if(!mined.bathrooms){ const b0 = g(/"bathrooms"\s*:\s*"?(\d{1,2})/i); if(b0) mined.bathrooms = parseInt(b0); }
+        if(!mined.price){ const p0 = g(/"price"\s*:\s*\{[^}]*?"value"\s*:\s*(\d{4,})/i) || g(/"price"\s*:\s*(\d{4,})/i); if(p0) mined.price = parseInt(p0); }
+        if(!mined.floor){ const f0 = g(/"floor"\s*:\s*\{[^}]*?"(?:abbreviation|value)"\s*:\s*"?([\wÀ-ÿ\d]+)/i); if(f0) mined.floor = f0; }
+        if(!mined.eCls){ const e0 = g(/"energ(?:y|ia)[^"]*"\s*:\s*"?([A-G][1-4]?)\b/i); if(e0) mined.eCls = e0.toUpperCase(); }
+        if(!mined.cap){ const c0 = g(/"zipCode"\s*:\s*"?(\d{5})/i); if(c0) mined.cap = c0; }
+        if(!mined.city){ const ci = g(/"city"\s*:\s*"([^"]{2,40})"/i); if(ci) mined.city = ci; }
+      }catch(e){} }
       const rx = {area:/(\d{2,4})\s*(?:m²|mq)/i, rooms:/(\d{1,2})\s*(?:locali|stanze|vani)/i, bathrooms:/(\d{1,2})\s*bagn/i, eCls:/classe energetica[:\s]*([A-G][1-4]?)/i, price:/€\s*([\d.,]{4,})/, cap:/\b(\d{5})\b/};
       const m = k => (txt.match(rx[k])||[])[1];
       if(!mined.area && m('area')) mined.area = parseFloat(m('area'));
@@ -2360,40 +2426,7 @@ function S1({d,u,apiKey}){
     const parsed = {};
     results.filter(r=>r && r !== 'RETRY_PARAPHRASE').forEach(r=>{ for(const k in r){ if(r[k]!=null && r[k]!=='' && (parsed[k]==null || parsed[k]==='')) parsed[k]=r[k]; }});
 
-    setListingData(parsed);
-    const cityMatch = url.match(/(milano|milan|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese)/i);
-    const fallbackCity = cityMatch ? cityMatch[1].charAt(0).toUpperCase()+cityMatch[1].slice(1).toLowerCase() : "Milano";
-    const updates = {listingExtracted: parsed};
-    const setIf = (key, val) => { if(val != null && val !== '') updates[key] = String(val); };
-    setIf('address', parsed.address); setIf('city', parsed.city); setIf('cap', parsed.cap);
-    setIf('area', parsed.area); setIf('rooms', parsed.rooms); setIf('floor', parsed.floor); setIf('ceiling', parsed.ceiling);
-    if(parsed.pType) updates.pType = parsed.pType;
-    if(parsed.currentStatus) updates.currentStatus = parsed.currentStatus;
-    if(parsed.eCls && parsed.eCls !== "Unknown") updates.eCls = parsed.eCls;
-    if(parsed.annualEnergy) updates.annualEnergy = String(parsed.annualEnergy);
-    if(parsed.heatingType) updates.heatingType = parsed.heatingType;
-    if(parsed.band) updates.band = parsed.band;
-
-    const merged = {...d, ...updates};
-    if(!merged.city) merged.city = fallbackCity;
-    if(!merged.area) merged.area = "80";
-    if(!merged.rooms) merged.rooms = "3";
-    if(!merged.floor) merged.floor = "3";
-    if(!merged.ceiling) merged.ceiling = "2.7";
-    if(!merged.pType) merged.pType = "Apartment";
-    if(!merged.currentStatus) merged.currentStatus = "Buono / Abitabile";
-    if(!merged.eCls || merged.eCls === "Unknown") merged.eCls = "E";
-    if(!merged.heatingType) merged.heatingType = "Centralizzato";
-    if(!merged.band) merged.band = "Major city";
-    u(merged);
-
-    const filled = Object.keys(updates).filter(k => k !== 'listingExtracted').length;
-    if(filled === 0){
-      setFetchErr('No data extracted. All paths failed — likely all Gemini calls hit RECITATION filter on this URL. Check console for details. Try a different listing URL or fill manually.');
-    } else {
-      setFetchErr('✓ '+filled+' fields in '+((Date.now()-t0)/1000).toFixed(1)+'s');
-    }
-    setFetching(false);
+    applyParsed(parsed, (Date.now()-t0)/1000, 'URL');
   };
 
   /* Schema.org extractor for JSON-LD blocks */
@@ -2420,14 +2453,21 @@ function S1({d,u,apiKey}){
 
   return(<div>
     <h2 style={{fontFamily:"'Cormorant Garamond'",fontSize:24,color:"#1B3A2D",marginBottom:4}}>Proprietà</h2>
-    <p style={{fontSize:12,color:"#78716C",marginBottom:14}}>Enter apartment details. Paste a listing URL to auto-extract dimensions, area, and room data — these become hard spatial constraints.</p>
+    <p style={{fontSize:12,color:"#78716C",marginBottom:14}}>Enter apartment details. Auto-extract dimensions, area and room data from a listing URL — or, more reliably, from a screenshot of the listing. These become hard spatial constraints.</p>
     <div className="card">
       <div className="section-title">📎 Listing URL — AI Spatial Extraction</div>
       <div style={{display:"flex",gap:8,marginBottom:8}}>
         <input value={d.listingUrl||""} onChange={e=>u({...d,listingUrl:e.target.value})} placeholder="https://www.idealista.it/immobile/12345678/ or immobiliare.it link" style={{flex:1}}/>
-        <button className="btn btn-g" onClick={fetchListing} disabled={fetching||!d.listingUrl||!apiKey} style={{whiteSpace:"nowrap",fontSize:12}}>{fetching?"Extracting...":"📥 Extract"}</button>
+        <button className="btn btn-g" onClick={fetchListing} disabled={fetching||!d.listingUrl||!apiKey} style={{whiteSpace:"nowrap",fontSize:12}}>{fetching?"Extracting...":"📥 Extract from URL"}</button>
       </div>
-      {!apiKey&&d.listingUrl&&<div className="note note-warn" style={{marginBottom:8,fontSize:11}}>⚠️ Enter your Google AI Studio key in the header to enable listing extraction.</div>}
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
+        <label className="btn btn-s" style={{fontSize:12,margin:0,cursor:apiKey&&!fetching?"pointer":"not-allowed",opacity:apiKey&&!fetching?1:.5,whiteSpace:"nowrap"}}>
+          🖼 Extract from screenshot
+          <input type="file" accept="image/*" style={{display:"none"}} disabled={fetching||!apiKey} onChange={e=>{const f=e.target.files&&e.target.files[0]; if(f) extractFromScreenshot(f); e.target.value="";}}/>
+        </label>
+        <span style={{fontSize:10,color:"#78716C",lineHeight:1.4}}>Most reliable — a screenshot of the annuncio bypasses site blocking &amp; recitation filters.</span>
+      </div>
+      {!apiKey&&<div className="note note-warn" style={{marginBottom:8,fontSize:11}}>⚠️ Enter your Nano Banana 2 / Google AI Studio key in the header to enable listing extraction.</div>}
       {fetching&&<div style={{display:"flex",alignItems:"center",gap:8,padding:"10px",background:"#EDF3EE",borderRadius:8,fontSize:11,color:"#1B3A2D"}}><div className="spinner" style={{width:18,height:18,borderWidth:2}}/> Gemini is reading the listing and auto-filling all property fields…</div>}
       {fetchErr&&!fetching&&<div className="note note-warn" style={{marginTop:8,fontSize:11,lineHeight:1.5}}>⚠️ {fetchErr}</div>}
       {le&&<div style={{marginTop:8,padding:14,background:"linear-gradient(135deg,#EDF3EE,#F5F0E8)",borderRadius:10,border:"1px solid #B5CDB8"}}>
