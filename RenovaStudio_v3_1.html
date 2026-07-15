@@ -1256,12 +1256,22 @@ internal partitions differ.`;
 
 function renderPrompt(d,sol,room){
   const th=STYLES[d.style]||STYLES.Japandi;
-  const tier=sol.nm==="Premium"?"high-end finish materials and premium furniture (FINISHES & FURNITURE ONLY — layout unchanged)":sol.nm==="Balanced"?"quality mid-range finishes and tasteful furniture (FINISHES & FURNITURE ONLY — layout unchanged)":"clean budget-conscious finishes and practical furniture (FINISHES & FURNITURE ONLY — layout unchanged)";
+  const tier=sol.nm==="Premium"?"high-end finish materials and premium furniture":sol.nm==="Balanced"?"quality mid-range finishes and tasteful furniture":"clean budget-conscious finishes and practical furniture";
   const base=d.style+" interior design, "+th.desc+", "+th.mat+", "+tier;
-  /* Tier invariance — the SAME geometry/constraints apply to all 3 options */
-  const tierClause=`
-████ TIER INVARIANCE — IDENTICAL FOR ALL THREE OPTIONS (Essenziale · Bilanciato · Premium) ████
-This is the "${sol.nm}" option. The tier changes ONLY finish quality, materials and furniture. It grants ZERO additional spatial freedom. The apartment boundary, external/perimeter walls, entrance, windows, balcony/French doors, footprint, room set and internal layout are IDENTICAL across Essential, Balanced and Premium and identical to the original plan. The words "premium", "luxury" and "designer" refer to finishes and furnishings ONLY — never to redesigning, enlarging, extending, opening up beyond permitted internal partitions, or restructuring the space. Every hard constraint in this prompt applies EQUALLY and IN FULL to this option — a more expensive option is NOT allowed to change the geometry more.`;
+  /* Per-scenario INTERNAL flexibility. The envelope (external walls, entrance,
+     windows, balcony doors, footprint, load-bearing structure, risers) is ALWAYS
+     frozen; only the freedom to change INTERNAL partitions/doors/room-placement
+     grows from Essential → Balanced → Premium. This clause overrides the general
+     "internal partitions may change" rule of the boundary protocol above. */
+  const flexClause = sol.nm==="Essential" ? `
+████ SCENARIO: ESSENZIALE — INTERNAL LAYOUT LOCKED ████
+For THIS scenario the internal layout is IDENTICAL to the original plan. Do NOT add, remove or move ANY internal wall or partition. Do NOT add, remove, relocate, widen or resize ANY door. Every wall, partition and door stays EXACTLY where the original plan shows it. The ONLY changes are finishes, materials, furniture and fittings. (This overrides the general "internal partitions/doors may change" allowance — here nothing structural or spatial moves.)`
+ : sol.nm==="Balanced" ? `
+████ SCENARIO: BILANCIATO — MODERATE INTERNAL CHANGES ████
+For THIS scenario SOME non-load-bearing internal partitions may be moved, added or removed, and SOME internal doors may be relocated, added or removed, to improve the layout — moderate, sensible changes only. You may e.g. widen an opening, shift a partition, open a doorway, or lightly merge/split a space. Do NOT relocate whole rooms (kitchen/living/bedroom keep their identity and approximate positions). Load-bearing walls, risers and the whole envelope stay frozen.`
+ : `
+████ SCENARIO: PREMIUM — FULL INTERNAL REORGANISATION ████
+For THIS scenario you may freely add/remove non-load-bearing internal partitions and internal doors, and RELOCATE the kitchen, living and/or bedroom WITHIN the fixed envelope (subject to structural and drainage feasibility) — e.g. create an open-plan kitchen-living, or move the bedroom. Wet rooms may move ONLY toward an existing drainage stack. Load-bearing walls and risers stay in place, and the envelope (external walls, entrance, windows, balcony/French doors, footprint, total area) is still NEVER changed.`;
   const roomData=d.roomDetails||{};
   const ep=d.extractedPlan;
   const roomKey=["living","kitchen","bedroom","bathroom","corridor"].includes(room)?room:null;
@@ -1369,12 +1379,11 @@ EVERYTHING ELSE IS COMPLETELY FROZEN — DO NOT TOUCH:
   const reqBlock = roomReq ? `\nCLIENT'S SPECIFIC INSTRUCTIONS FOR THIS ROOM (follow exactly):\n"${roomReq}"\nThese instructions override style defaults but must NOT conflict with the spatial constraints above.` : "";
 
   const constraints=`${STRICT_BOUNDARY_PROTOCOL}
-${tierClause}
+${flexClause}
 ████████████████████████████████████████████████████████████████████████
    THIS IS A SPATIAL RENOVATION — NOT A NEW DESIGN
-   The apartment envelope is IMMUTABLE. Read every rule below carefully.
-   The layout is IDENTICAL for the Essential, Balanced and Premium options —
-   only finishes and furniture differ between them.
+   The apartment ENVELOPE is IMMUTABLE (external walls, entrance, windows,
+   balcony doors, footprint). Internal freedom depends on the scenario above.
 ████████████████████████████████████████████████████████████████████████
 ${photoNote}
 
@@ -1924,12 +1933,18 @@ function parseJsonLoose(txt){
    Two-image comparison: confirm the generated plan presents the SAME
    space/envelope as the original (only internal partitions/doors differ).
    ══════════════════════════════════════════════════════════════ */
-async function comparePlanToOriginal(originalSrc, generatedSrc, spatialData, apiKey){
+async function comparePlanToOriginal(originalSrc, generatedSrc, spatialData, apiKey, tier){
   if(!apiKey) return null;
   try{
     const a=await imgPartFromAny(originalSrc), b=await imgPartFromAny(generatedSrc);
     if(!a||!b) return null;
     const ctx=spatialData?`Reference data for the ORIGINAL: total area ${spatialData.totalArea||"?"}m², shape "${spatialData.overallShape||"?"}", entrance ${spatialData.entranceDoor?spatialData.entranceDoor.wall+" wall":"as drawn"}.`:"";
+    /* Per-scenario internal freedom (envelope always frozen) */
+    const tierRule = tier==="Essential"
+      ? `SCENARIO = ESSENZIALE (layout locked): the internal layout must ALSO be IDENTICAL to the original — NO internal wall/partition added, removed or moved, and NO door added, removed or relocated. Set internalLayoutRespectsScenario=false if any internal wall or door differs from the original.`
+      : tier==="Balanced"
+      ? `SCENARIO = BILANCIATO (moderate internal changes): some internal partitions/doors may be moved/added/removed, but whole rooms must keep their identity and approximate positions. Set internalLayoutRespectsScenario=false if a whole room (kitchen/living/bedroom) was relocated or the changes are drastic.`
+      : `SCENARIO = PREMIUM (full internal reorganisation): internal partitions/doors may change freely and kitchen/living/bedroom may be relocated within the envelope. Set internalLayoutRespectsScenario=true as long as everything stays inside the frozen envelope and wet rooms stay near existing stacks.`;
     const res=await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
       {method:"POST",headers:{"Content-Type":"application/json"},
@@ -1944,14 +1959,15 @@ CRITICAL BOUNDARY RULES:
 - The post-intervention plan must stay ENTIRELY WITHIN the original apartment perimeter — nothing may extend beyond it.
 - NO new room, space, balcony, terrace, extension or annex may be ADDED that is not in the original apartment. The renovation only REDISTRIBUTES the existing internal area.
 - The set of enclosed spaces must be the SAME apartment — internal partitions and internal doors may move, and rooms may be merged or split, but no space outside the original footprint may appear.
-Anything else = HARD CONSTRAINT VIOLATION.
+Anything outside the ENVELOPE rules = HARD CONSTRAINT VIOLATION. Internal changes are judged against the scenario rule below.
+${tierRule}
 Apply these STRICT BOUNDARY PROTOCOL tests (§7):
 - Boundary overlay: proposed external boundary overlays the original exactly (P_proposed ⊆ P_original, ΔB≈0).
 - Area: proposed net internal area ≤ original net internal area (A_proposed/A_original ≤ 1.00, small partition-thickness tolerance only). Set areaRatioOK=false if the proposal looks larger.
 - Traceability: EVERY room/space in the proposal must be obtainable from existing internal area (subdivision/merge/reallocation). Set allSpacesTraceable=false if any space cannot come from the original interior (i.e. it was added).
 Return ONLY valid JSON (no markdown):
-{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"areaRatioOK":true/false,"noSpacesAdded":true/false,"allSpacesTraceable":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"onlyInternalChanged":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every difference beyond internal partitions/doors, incl. any added room/space or anything outside the original perimeter"],"summary":"one line"}
-HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, areaRatioOK, noSpacesAdded, allSpacesTraceable, entranceMatch, windowsMatch, balconyDoorsMatch, onlyInternalChanged is false → approved:false and overallScore ≤ 40.`}
+{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"areaRatioOK":true/false,"noSpacesAdded":true/false,"allSpacesTraceable":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"internalLayoutRespectsScenario":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every envelope difference, any added room/space, anything outside the perimeter, and any internal change not allowed by the scenario"],"summary":"one line"}
+HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, areaRatioOK, noSpacesAdded, allSpacesTraceable, entranceMatch, windowsMatch, balconyDoorsMatch, internalLayoutRespectsScenario is false → approved:false and overallScore ≤ 40.`}
        ]}],generationConfig:visionCfg(1400)})
       }
     );
@@ -1979,17 +1995,18 @@ async function comparePlanToRender(planSrc, renderSrc, roomType, apiKey){
          a,
          {text:"IMAGE 2 (the 3D render) follows:"},
          b,
-         {text:`Verify the 3D render is CONSISTENT with the approved floor plan for the ${roomType}, per the STRICT BOUNDARY PROTOCOL render tests (§8). The plan is the source of truth; the render must be derivable from it. Check:
-- Openings: number and position of windows and balcony/French doors (porte-finestra) in the render match the plan for this room; none added, none moved, none omitted without being genuinely obscured; no window drawn on an internal wall.
-- Proportions: room width/length ratio matches the plan.
-- Walls & doors: no wall/door in the render that the plan does not show, and vice-versa; door/opening positions match.
-- Room sequence & adjacency: the spaces visible (and their order/adjacency) match the plan — the render must not reorder or invent spaces.
-- No extra room and no invented architectural element (arch, passage, opening, room) appears.
-- Nothing is shown that could not be seen from a valid camera position for this room (do not show a room through a solid wall).
-Ignore furniture, finishes, colours and lighting — compare only spatial structure, openings and adjacency.
+         {text:`Do a strict 1-to-1 check that the 3D render is DERIVED FROM the approved floor plan for the ${roomType}. The plan (IMAGE 1) is the single source of truth. First infer, from the plan, a plausible camera position/direction inside the ${roomType} that could produce IMAGE 2, then verify EVERYTHING visible against the plan from that viewpoint. Check:
+- Viewpoint & angle: the render must correspond to a real camera position that fits inside this room on the plan; the walls visible must be the walls that would actually be seen from that angle (viewpointValid).
+- Windows / balcony doors (porte-finestra): exact count and position as the plan shows for this room; none added/moved/omitted (unless genuinely out of frame); never a window on an internal wall (windowsConsistent, balconyDoorsConsistent).
+- Walls & internal doors: every wall and door in view matches the plan's positions; no wall or door exists in the render that the plan does not show, and vice-versa (openingsConsistent).
+- Proportions: room width/length ratio and shape match the plan (proportionsConsistent).
+- ADJACENT SPACES: if any neighbouring space is visible from this viewpoint (e.g. an open kitchen seen from the living room, a corridor, a balcony through a porta-finestra), it must be on the CORRECT SIDE relative to this room as the plan shows, with the correct characteristics (right room type, right opening between them, right relative position). Set adjacentSpacesConsistent=false if a visible adjacent space is on the wrong side, is the wrong room, or should not be visible from here.
+- Room sequence: the order/adjacency of spaces matches the plan; no reordering, no invented space (roomSequenceConsistent, noExtraRoom, noInventedElements).
+- FURNITURE placement: furniture is placed sensibly for this room's function and does not contradict the plan (e.g. the kitchen units/appliances sit on the wall the plan assigns to the kitchen; the bed is in the bedroom area; nothing blocks a door or window). Set furniturePlacementConsistent=false if furniture implies a different layout than the plan.
+Compare spatial structure, openings, adjacency and furniture PLACEMENT; ignore only finishes, colours and lighting.
 Return ONLY valid JSON (no markdown):
-{"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"roomSequenceConsistent":true/false,"noExtraRoom":true/false,"noInventedElements":true/false,"viewpointValid":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list inconsistencies between render and plan"],"summary":"one line"}
-HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent, roomSequenceConsistent, noExtraRoom, noInventedElements, viewpointValid is false → approved:false and overallScore ≤ 45.`}
+{"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"roomSequenceConsistent":true/false,"adjacentSpacesConsistent":true/false,"furniturePlacementConsistent":true/false,"noExtraRoom":true/false,"noInventedElements":true/false,"viewpointValid":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every render-vs-plan inconsistency incl. wrong-side adjacent spaces and misplaced furniture"],"summary":"one line"}
+HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent, roomSequenceConsistent, adjacentSpacesConsistent, furniturePlacementConsistent, noExtraRoom, noInventedElements, viewpointValid is false → approved:false and overallScore ≤ 45.`}
        ]}],generationConfig:visionCfg(1400)})
       }
     );
@@ -2008,7 +2025,7 @@ HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, prop
 
 const _envBad = v => v && [v.outerWallsUnchanged,v.overallShapeUnchanged,v.entranceDoorUnchanged,v.balconyDoorsUnchanged,v.noWallMoves,v.totalAreaPreserved].some(x=>x===false);
 
-async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onProgress, originalPhotoFile){
+async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onProgress, originalPhotoFile, tier){
   const isPlan = roomType==="Floor Plan";
 
   /* ── Image-to-image path (original photo/plan provided) ── */
@@ -2025,7 +2042,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
         const v=await validateRender(result.dataUrl, roomType, spatialData, apiKey);
         /* CROSS-CHECK 1: generated plan vs the ORIGINAL uploaded plan image */
         onProgress({stage:"comparing", round:r+1, total:rounds});
-        const cmp=await comparePlanToOriginal(originalPhotoFile, result.dataUrl, spatialData, apiKey);
+        const cmp=await comparePlanToOriginal(originalPhotoFile, result.dataUrl, spatialData, apiKey, tier);
         const hardViolation = _envBad(v) || (cmp && cmp.approved===false);
         const score = hardViolation ? Math.min(v?.overallScore??cmp?.overallScore??0,40)
                                     : Math.min(v?.overallScore??95, cmp?.overallScore??95);
@@ -2081,7 +2098,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       const result = await runRefinementPipeline(
         prompt, apiKey, spatialData, room,
         (p) => setProgress(p),
-        originalPhotoFile
+        originalPhotoFile, solName
       );
       setImgUrl(result.url);
       setFinalScore(result.score);
@@ -2091,7 +2108,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       /* Share the generated plan image so room renders can be cross-checked against it */
       if(isPlan && onPlanReady) onPlanReady(result.url);
     }catch(e){ setError(e.message||"Failed"); setPhase("error"); }
-  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady]);
+  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady, solName]);
 
   /* Auto-start when batch trigger fires (only if idle) */
   useEffect(()=>{ if(batchTrigger>0 && phase==="idle"){ setXcheckRetries(0); start(); } },[batchTrigger]);
@@ -2268,7 +2285,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
           ["Ingresso",planCompare.entranceMatch],
           ["Finestre",planCompare.windowsMatch],
           ["Porte-finestra",planCompare.balconyDoorsMatch],
-          ["Solo modifiche interne",planCompare.onlyInternalChanged],
+          ["Layout conforme allo scenario",planCompare.internalLayoutRespectsScenario],
         ];
         const fail=planCompare.approved===false||rows.some(([,v])=>v===false)||planCompare.sameSpace===false;
         const ms=(planCompare.mismatches||[]).filter(Boolean).slice(0,4);
@@ -2289,10 +2306,13 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         if(planConsistency==="running") return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#EEF4FA",fontSize:9.5,color:"#2E5A82",display:"flex",alignItems:"center",gap:7}}><div className="spinner" style={{width:14,height:14,borderWidth:2}}/> Verifica coerenza render ↔ piano…</div>);
         if(planConsistency===null) return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#F6F4EF",fontSize:9,color:"#78716C"}}>Render ↔ piano: confronto non disponibile (piano non ancora generato).</div>);
         const rows=[
+          ["Punto di vista",planConsistency.viewpointValid],
           ["Finestre",planConsistency.windowsConsistent],
           ["Porte-finestra",planConsistency.balconyDoorsConsistent],
           ["Proporzioni",planConsistency.proportionsConsistent],
           ["Aperture/muri",planConsistency.openingsConsistent],
+          ["Spazi adiacenti",planConsistency.adjacentSpacesConsistent],
+          ["Arredi",planConsistency.furniturePlacementConsistent],
           ["Sequenza locali",planConsistency.roomSequenceConsistent],
           ["Nessun locale extra",planConsistency.noExtraRoom],
           ["Nessun elemento inventato",planConsistency.noInventedElements],
@@ -2919,9 +2939,16 @@ function S4({d,u}){
 }
 
 /* ══════ SOLUTION RENDER CARD ══════ */
-function SolRenderCard({x, solIdx, d, apiKey, masterPlan, ensurePlan}){
+const TIER_FLEX = {
+  Essential: {label:"layout locked — no walls added/removed, no doors changed", color:"#6B705C"},
+  Balanced:  {label:"some internal walls/doors may move, be added or removed", color:"#1B3A2D"},
+  Premium:   {label:"free internal reorganisation — kitchen/living/bedroom may be relocated", color:"#C87941"}
+};
+function SolRenderCard({x, solIdx, d, apiKey}){
   const m=SM[solIdx];
   const [batchTrigger,setBatchTrigger]=useState(0);
+  const [planImg,setPlanImg]=useState(""); // THIS scenario's own post-intervention plan, shared to its room tiles
+  const flex=TIER_FLEX[x.nm]||TIER_FLEX.Balanced;
   const tiles=[];
   [{roomKey:"living",label:"Living Area"},{roomKey:"kitchen",label:"Kitchen"},{roomKey:"bedroom",label:"Bedroom"},{roomKey:"bathroom",label:"Bathroom"}].forEach(({roomKey,label})=>{
     const photos=(d.roomDetails?.[roomKey]?.photos||[]).filter(f=>f instanceof File);
@@ -2934,9 +2961,11 @@ function SolRenderCard({x, solIdx, d, apiKey, masterPlan, ensurePlan}){
       tiles.push({roomKey,label,photoFile:null,spatialData});
     }
   });
-  /* NOTE: no per-option plan tile — the layout is the shared masterPlan, so all
-     three options are constrained to the SAME geometry. Room renders below are
-     cross-checked against that single shared plan. */
+  /* Each scenario has its OWN plan (with its own internal-flexibility level).
+     Plan tile is generated first; its image is shared to this card's room
+     tiles so every render is 1-to-1 checked against THIS scenario's plan. */
+  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
+  tiles.push({roomKey:"plan",label:"Floor Plan",photoFile:planPhoto,spatialData:d.extractedPlan||null});
   const imgToImg=tiles.filter(t=>t.photoFile).length;
   return(
     <div className="card" style={{borderColor:solIdx===1?m.color+"60":"#E2DCD2",borderWidth:solIdx===1?2:1,marginBottom:12}}>
@@ -2944,15 +2973,15 @@ function SolRenderCard({x, solIdx, d, apiKey, masterPlan, ensurePlan}){
         <span style={{fontSize:17}}>{m.em}</span>
         <div style={{flex:1}}>
           <div style={{fontFamily:"'Cormorant Garamond'",fontSize:17,fontWeight:700,color:m.color}}>{x.nm} — {fmt(x.co.total)}</div>
-          <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · same layout as all options · {imgToImg>0?imgToImg+" image-to-image":"text-to-image"}</div>
+          <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · {imgToImg>0?imgToImg+" image-to-image":"text-to-image"}</div>
         </div>
-        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{if(ensurePlan)ensurePlan();setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
+        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setPlanImg("");setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
       </div>
-      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Same geometry as the other options — only finishes/furniture differ. Each render is cross-checked (<strong>render 3D ↔ piano condiviso</strong>) and any non-compliant result is regenerated or rejected.</div>
-      {!masterPlan&&apiKey&&<div className="note note-warn" style={{marginBottom:8,fontSize:10.5}}>⚠️ Generate the shared plan above first — renders are validated against it.</div>}
+      <div style={{fontSize:10,color:m.color,marginBottom:4,fontWeight:600}}>🏗 Internal flexibility: {flex.label}. Envelope (external walls, entrance, windows, footprint) always frozen.</div>
+      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Each render is checked 1-to-1 against THIS scenario's plan (<strong>viewpoint, walls/doors/windows, furniture, adjacent spaces</strong>); non-compliant results are regenerated or rejected.</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
         {tiles.map((t,ti)=>(
-          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={masterPlan} onPlanReady={null}/>
+          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={planImg} onPlanReady={setPlanImg}/>
         ))}
       </div>
       <div style={{marginTop:8,padding:7,background:"#F6F4EF",borderRadius:6,fontSize:10.5,color:"#78716C"}}><strong>Materials:</strong> {x.mg}</div>
@@ -3017,12 +3046,6 @@ function Results({d, apiKey}){
   const sols=useMemo(()=>genSols(d),[d]);
   const s=sols[si];
   const area=parseFloat(d.area)||85;
-  /* ONE shared post-intervention plan for all three options — the layout is
-     identical across tiers; only finishes/furniture differ. Every option's
-     room renders are cross-checked against this single verified plan. */
-  const [masterPlan,setMasterPlan]=useState("");
-  const [planBatch,setPlanBatch]=useState(0);
-  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
   const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"energydetail",l:"Energy Detail",i:"🔋"},{id:"schedule",l:"Schedule",i:"📅"},{id:"valuation",l:"Value",i:"🏠"},{id:"market",l:"Market Analysis",i:"📈"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
 
   const SP=()=><div style={{display:"flex",gap:6,marginBottom:14}}>{sols.map((x,i)=>{const m=SM[i],on=si===i;return<button key={x.nm} onClick={()=>setSi(i)} style={{flex:1,padding:"11px 12px",borderRadius:9,border:on?"3px solid "+m.color:"1px solid #E2DCD2",background:on?m.gr:"#fff",cursor:"pointer",textAlign:"left",fontFamily:"inherit"}}><div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><span style={{fontSize:15}}>{m.em}</span><span style={{fontFamily:"'Cormorant Garamond'",fontSize:14,fontWeight:700,color:on?"#fff":"#1C1917"}}>{x.nm}</span>{i===1&&<span style={{padding:"1px 5px",borderRadius:7,background:on?"rgba(255,255,255,.3)":"#D1E7DD",fontSize:8.5,fontWeight:700,color:on?"#fff":"#1B3A2D"}}>REC</span>}</div><div style={{fontSize:12,fontWeight:700,color:on?"rgba(255,255,255,.95)":"#1C1917"}}>{fmt(x.co.total)}</div><div style={{fontSize:10,color:on?"rgba(255,255,255,.7)":"#78716C"}}>{x.ch.length} items · {x.sc.tw}wk · {x.en.bC}→{x.en.aC}</div></button>})}</div>;
@@ -3038,22 +3061,8 @@ function Results({d, apiKey}){
     {tab==="renders"&&<div>
       <SP/>
       {!apiKey&&<div className="note note-warn" style={{marginBottom:12}}>⚠️ <strong>Nano Banana API key not set.</strong> Enter your key in the header bar to generate photorealistic renders with spatial refinement.</div>}
-      {/* SHARED post-intervention plan — one verified layout for all 3 options */}
-      <div className="card" style={{marginBottom:12,borderColor:"#B5CDB8"}}>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-          <span style={{fontSize:16}}>📐</span>
-          <div style={{flex:1}}>
-            <div style={{fontFamily:"'Cormorant Garamond'",fontSize:16,fontWeight:700,color:"#1B3A2D"}}>Piano post-intervento — condiviso · Shared post-intervention plan</div>
-            <div style={{fontSize:10.5,color:"#78716C"}}>One single layout, identical for Essenziale · Bilanciato · Premium. The three options differ ONLY in finishes and furniture — never in geometry. Every option's renders are checked against this plan.</div>
-          </div>
-          {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setMasterPlan("");setPlanBatch(b=>b+1);}}>⚡ Genera piano · Generate plan</button>}
-        </div>
-        <div style={{maxWidth:440}}>
-          <AIRenderTile key="master-plan" prompt={renderPrompt(d,sols[1],"plan")} style={d.style} solName="Piano condiviso" room="Floor Plan" apiKey={apiKey} spatialData={d.extractedPlan||null} originalPhotoFile={planPhoto} batchTrigger={planBatch} planImg={masterPlan} onPlanReady={setMasterPlan}/>
-        </div>
-      </div>
-      {sols.map((x,solIdx)=><SolRenderCard key={x.nm} x={x} solIdx={solIdx} d={d} apiKey={apiKey} masterPlan={masterPlan} ensurePlan={()=>setPlanBatch(b=>b+1)}/>)}
-      <div className="note note-info">ℹ️ The layout is the SAME across all three options (Essential/Balanced/Premium) — only finishes and furniture change. Generate the shared plan first; each option's room renders are then validated against it.</div>
+      <div className="note note-info" style={{marginBottom:12}}>ℹ️ Each scenario has its OWN plan with its own internal-flexibility level: <strong>Essenziale</strong> keeps the layout locked (no walls/doors changed), <strong>Bilanciato</strong> allows some internal walls/doors to move, <strong>Premium</strong> allows relocating kitchen/living/bedroom. The apartment envelope (external walls, entrance, windows, footprint) stays frozen in all three. Generate each scenario's plan first; its renders are then validated 1-to-1 against that plan.</div>
+      {sols.map((x,solIdx)=><SolRenderCard key={x.nm} x={x} solIdx={solIdx} d={d} apiKey={apiKey}/>)}
     </div>}
 
     {/* DETAIL */}
