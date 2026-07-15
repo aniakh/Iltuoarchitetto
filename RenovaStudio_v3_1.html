@@ -179,6 +179,17 @@ const AI_MODELS = { vision: "gemini-2.5-flash", image: "gemini-3-pro-image-previ
 /* Preference order — first available wins (newest / most capable first) */
 const VISION_PREFS = ["gemini-3.5-flash","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-3-flash-preview","gemini-flash-latest","gemini-2.5-flash","gemini-2.0-flash"];
 const IMAGE_PREFS  = ["gemini-3-pro-image","gemini-3-pro-image-preview","gemini-3.1-flash-image","gemini-3.1-flash-image-preview","gemini-2.5-flash-image"];
+/* Gemini 3.x / 2.5 are "thinking" models: reasoning consumes the output-token
+   budget, so a small maxOutputTokens truncates the JSON (fr=MAX_TOKENS) and
+   extraction/validation silently return nothing. Disable thinking for these
+   structured-output tasks and give an ample token budget. */
+function _thinkingModel(m){ return /gemini-(2\.5|3(\.\d+)?)/.test(m||""); }
+function visionCfg(maxTokens, extra){
+  const c = Object.assign({temperature:0.1, maxOutputTokens:maxTokens||2048}, extra||{});
+  if(_thinkingModel(AI_MODELS.vision)) c.thinkingConfig = {thinkingBudget:0};
+  return c;
+}
+
 async function detectBestModels(apiKey){
   if(!apiKey) return AI_MODELS;
   try{
@@ -1151,7 +1162,10 @@ move / add / remove / resize lightweight internal partitions (tramezzi
 rooms WITHIN the fixed envelope · relocate wet rooms ONLY toward existing
 drainage/soil stacks · open kitchen to living by removing a NON-load-bearing
 partition. No exterior opening (window or balcony door) and no perimeter/
-load-bearing wall is ever moved — the envelope stays pixel-identical.
+load-bearing wall is ever moved — the envelope stays pixel-identical. NO new
+room, space, balcony, terrace or extension may be added, and nothing may be
+drawn outside the original apartment perimeter — the renovation only
+redistributes the existing internal area.
 
 D.M. 5/7/1975 + RLI Titolo III ROOM MINIMUMS (pass/fail, every habitable room):
 • Habitable ceiling ≥ 2.70 m · accessory (bath/corridor/storage) ≥ 2.40 m
@@ -1273,6 +1287,8 @@ AREA PRESERVATION — MATHEMATICAL REQUIREMENT:
 • Any internal space redistribution must be zero-sum (if bedroom grows 2m², another room shrinks 2m²)`;
 
   const permittedChanges=`
+⛔ ABSOLUTE BOUNDARY RULE: Stay ENTIRELY within the existing apartment perimeter (${totalAreaM2}m²). Do NOT add ANY new room, space, balcony, terrace, extension, annex or corridor that is not already in the original plan. The renovation ONLY redistributes the existing internal area — the SET of spaces and the outer boundary do not grow. Never draw anything outside the original footprint.
+
 PERMITTED OPTIMISATIONS — THE ONLY CHANGES ALLOWED ARE INTERNAL DOORS AND INTERNAL WALLS:
 ✓ INTERNAL PARTITIONS (tramezzi, non-load-bearing, ≤60 kg/m²): may be added, removed, relocated or resized anywhere inside the frozen envelope — e.g. merge/split rooms, open the kitchen to the living area, reconfigure a corridor.
 ✓ INTERNAL DOORS: may be added, removed, relocated, widened or re-hinged (keep clear width ≥ 75 cm internal / ≥ 80 cm main).
@@ -1334,6 +1350,8 @@ HARD REJECTION CRITERIA — if the render violates ANY of these, it is WRONG:
 ✗ Overall apartment shape or footprint changed → REJECT
 ✗ Total floor area differs from ${totalAreaM2}m² → REJECT
 ✗ New room added outside the original footprint → REJECT
+✗ ANY room, space, balcony, terrace or extension added that is not in the original plan → REJECT
+✗ Anything drawn beyond the original apartment perimeter → REJECT
 ✗ Ceiling height different from ${ex?.estimatedDimensions?.ceilingHeightM||d.ceiling||"2.7"}m → REJECT
 ✗ Any structural/load-bearing wall changed → REJECT
 ✗ Plumbing riser relocated → REJECT
@@ -1629,7 +1647,7 @@ async function geminiVision(file, textPrompt, apiKey){
        body:JSON.stringify({contents:[{parts:[
          {inlineData:{mimeType:mime,data:base}},
          {text:textPrompt}
-       ]}],generationConfig:{temperature:0.1,maxOutputTokens:1024}})
+       ]}],generationConfig:visionCfg(2048)})
       }
     );
     if(!res.ok) throw new Error("Gemini "+res.status);
@@ -1813,7 +1831,7 @@ Return ONLY valid JSON (no markdown):
 {"overallScore":0-100,"windowCountMatch":true/false,"windowPositionsMatch":true/false,"balconyDoorsUnchanged":true/false,"roomProportionsCorrect":true/false,"ceilingHeightCorrect":true/false,"noNewOpenings":true/false,"noRemovedOpenings":true/false,"noWallMoves":true/false,"outerWallsUnchanged":true/false,"overallShapeUnchanged":true/false,"bathroomUnchanged":true/false,"entranceDoorUnchanged":true/false,"totalAreaPreserved":true/false,"complianceCeilingHeight":true/false,"complianceRoomAreas":true/false,"complianceLightVent":true/false,"complianceAccessibility":true/false,"complianceStructural":true/false,"approved":true/false,"violations":["list violations"],"complianceNotes":["list compliance issues"],"passMessage":"one line summary"}
 
 HARD GATE (Unified Agent v7): if ANY of outerWallsUnchanged, overallShapeUnchanged, entranceDoorUnchanged, balconyDoorsUnchanged, noWallMoves, totalAreaPreserved is false, you MUST set approved:false and overallScore ≤ 40 — this is a HARD CONSTRAINT VIOLATION (D.P.R. 380/2001 sagoma invariance: outer walls, entrance, windows, balcony doors and overall shape are immutable; only internal partitions/doors may change). Likewise approved:false if any compliance* field is false.`}
-        ]}],generationConfig:{temperature:0.1,maxOutputTokens:500}})
+        ]}],generationConfig:visionCfg(1400)})
       }
     );
     if(!res.ok) return {overallScore:50,approved:true,issues:[]};
@@ -1864,11 +1882,16 @@ async function comparePlanToOriginal(originalSrc, generatedSrc, spatialData, api
          {text:"IMAGE 2 follows:"},
          b,
          {text:`You are a strict Italian/Lombardy building-code reviewer verifying ENVELOPE INVARIANCE (D.P.R. 380/2001 sagoma) between the two plans. ${ctx}
-The post-intervention plan is ACCEPTABLE only if it depicts the SAME SPACE as the original: identical external/perimeter walls, identical overall shape & footprint, identical total floor area, identical main entrance (wall/position/width), identical windows (count/position/size) and identical balcony/French doors (porte-finestra). The ONLY differences allowed are INTERNAL non-load-bearing partitions and INTERNAL doors (rooms may be merged/split, kitchen opened to living). Anything else = HARD CONSTRAINT VIOLATION.
+The post-intervention plan is ACCEPTABLE only if it depicts the SAME SPACE as the original: identical external/perimeter walls, identical overall shape & footprint, identical total floor area, identical main entrance (wall/position/width), identical windows (count/position/size) and identical balcony/French doors (porte-finestra).
+CRITICAL BOUNDARY RULES:
+- The post-intervention plan must stay ENTIRELY WITHIN the original apartment perimeter — nothing may extend beyond it.
+- NO new room, space, balcony, terrace, extension or annex may be ADDED that is not in the original apartment. The renovation only REDISTRIBUTES the existing internal area.
+- The set of enclosed spaces must be the SAME apartment — internal partitions and internal doors may move, and rooms may be merged or split, but no space outside the original footprint may appear.
+Anything else = HARD CONSTRAINT VIOLATION.
 Return ONLY valid JSON (no markdown):
-{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"onlyInternalChanged":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every difference beyond internal partitions/doors"],"summary":"one line"}
-HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, entranceMatch, windowsMatch, balconyDoorsMatch, onlyInternalChanged is false → approved:false and overallScore ≤ 40.`}
-       ]}],generationConfig:{temperature:0.1,maxOutputTokens:500}})
+{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"noSpacesAdded":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"onlyInternalChanged":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every difference beyond internal partitions/doors, incl. any added room/space or anything outside the original perimeter"],"summary":"one line"}
+HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, noSpacesAdded, entranceMatch, windowsMatch, balconyDoorsMatch, onlyInternalChanged is false → approved:false and overallScore ≤ 40.`}
+       ]}],generationConfig:visionCfg(1400)})
       }
     );
     if(!res.ok) return null;
@@ -1899,7 +1922,7 @@ async function comparePlanToRender(planSrc, renderSrc, roomType, apiKey){
 Return ONLY valid JSON (no markdown):
 {"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list inconsistencies between render and plan"],"summary":"one line"}
 HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent is false → approved:false and overallScore ≤ 45.`}
-       ]}],generationConfig:{temperature:0.1,maxOutputTokens:450}})
+       ]}],generationConfig:visionCfg(1400)})
       }
     );
     if(!res.ok) return null;
@@ -2147,6 +2170,8 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
           ["Muri esterni",planCompare.outerWallsMatch],
           ["Sagoma/impronta",planCompare.overallShapeMatch],
           ["Superficie",planCompare.totalAreaMatch],
+          ["Entro il perimetro",planCompare.withinOriginalBoundary],
+          ["Nessun locale aggiunto",planCompare.noSpacesAdded],
           ["Ingresso",planCompare.entranceMatch],
           ["Finestre",planCompare.windowsMatch],
           ["Porte-finestra",planCompare.balconyDoorsMatch],
@@ -2336,9 +2361,9 @@ function S1({d,u,apiKey}){
     const attemptPlain = async () => {
       const body = {
         contents:[{parts:[{text:'Analyze this Italian real-estate URL and infer property data from the URL slug + your geographic knowledge of the area. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nReturn JSON only matching this schema (use null for unknown). DO NOT copy text — paraphrase or estimate numerically:\n'+SCHEMA}]}],
-        generationConfig:{temperature:0.1,maxOutputTokens:1500,responseMimeType:'application/json'}
+        generationConfig:visionCfg(4096,{responseMimeType:'application/json'})
       };
-      return tryGemini(AI_MODELS.vision, body, 'A:plain', 11000);
+      return tryGemini(AI_MODELS.vision, body, 'A:plain', 20000);
     };
 
     /* === Attempt B: google_search with paraphrase instruction === */
@@ -2346,16 +2371,16 @@ function S1({d,u,apiKey}){
       const body = {
         contents:[{parts:[{text:'Search for this Italian property listing on the web and extract structured numerical/categorical fields. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nOutput JSON only:\n'+SCHEMA}]}],
         tools:[{google_search:{}}],
-        generationConfig:{temperature:0.1,maxOutputTokens:1500}
+        generationConfig:visionCfg(4096)
       };
-      const r = await tryGemini(AI_MODELS.vision, body, 'B:search', 18000);
+      const r = await tryGemini(AI_MODELS.vision, body, 'B:search', 32000);
       if(r === 'RETRY_PARAPHRASE'){
         const body2 = {
           contents:[{parts:[{text:'Find this listing online. Output STRICTLY numerical and categorical data only — never quote any text. '+ANTI_RECITATION+' Use the city name and zone but paraphrase everything else.\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
           tools:[{google_search:{}}],
-          generationConfig:{temperature:0.3,maxOutputTokens:1500}
+          generationConfig:visionCfg(4096,{temperature:0.3})
         };
-        return tryGemini(AI_MODELS.vision, body2, 'B2:search-paraphrase', 18000);
+        return tryGemini(AI_MODELS.vision, body2, 'B2:search-paraphrase', 32000);
       }
       return r;
     };
@@ -2365,16 +2390,16 @@ function S1({d,u,apiKey}){
       const body = {
         contents:[{parts:[{text:'Open this URL and extract numerical/categorical fields only. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
         tools:[{url_context:{}}],
-        generationConfig:{temperature:0.1,maxOutputTokens:1500}
+        generationConfig:visionCfg(4096)
       };
-      const r = await tryGemini(AI_MODELS.vision, body, 'C:urlctx', 18000);
+      const r = await tryGemini(AI_MODELS.vision, body, 'C:urlctx', 32000);
       if(r === 'RETRY_PARAPHRASE'){
         const body2 = {
           contents:[{parts:[{text:'Open this page and output ONLY: area (number), rooms (number), bathrooms (number), floor (number), energy class (single letter), price (number), city name (one word). No quotations from page allowed. Paraphrase any descriptive text. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON:\n'+SCHEMA}]}],
           tools:[{url_context:{}}],
-          generationConfig:{temperature:0.4,maxOutputTokens:1500}
+          generationConfig:visionCfg(4096,{temperature:0.4})
         };
-        return tryGemini(AI_MODELS.vision, body2, 'C2:urlctx-paraphrase', 18000);
+        return tryGemini(AI_MODELS.vision, body2, 'C2:urlctx-paraphrase', 32000);
       }
       return r;
     };
@@ -2386,7 +2411,7 @@ function S1({d,u,apiKey}){
         tools:[{googleSearch:{}}],
         generationConfig:{temperature:0.1,maxOutputTokens:1500}
       };
-      return tryGemini('gemini-2.0-flash', body, 'D:2.0search', 14000);
+      return tryGemini('gemini-2.0-flash', body, 'D:2.0search', 22000);
     };
 
     /* === Attempt E: proxy scrape + text-mine === */
@@ -2853,8 +2878,8 @@ function MarketFetchBtn({d, s, area, apiKey}){
         {method:"POST",headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
            contents:[{parts:[{text:`Search immobiliare.it Lombardia market data and OMI Agenzia Entrate for ${city}, Italy. Return ONLY valid JSON:\n{"omiMin":<€/m²>,"omiMax":<€/m²>,"omiZone":"<zone>","marketAvgSqm":<€/m²>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m²>,"comparableRenovated":<€/m²>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations>"}`}]}],
-           tools:[{googleSearch:{}}],
-           generationConfig:{temperature:0,maxOutputTokens:1000}
+           tools:[{google_search:{}}],
+           generationConfig:visionCfg(4096,{temperature:0})
          })
         }
       );
