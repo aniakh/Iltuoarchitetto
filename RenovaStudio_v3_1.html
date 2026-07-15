@@ -1072,6 +1072,54 @@ const COMPLIANCE_RULES = (typeof document!=="undefined" && document.getElementBy
   ? JSON.parse(document.getElementById("compliance-rules-json").textContent)
   : {};
 
+/* ══════════════════════════════════════════════════════════════
+   STRICT BOUNDARY PROTOCOL — user-mandated 100% hard constraints.
+   Prepended to EVERY generation prompt (top position survives slicing) and
+   mirrored by the automated plan↔original and render↔plan gates below.
+   ══════════════════════════════════════════════════════════════ */
+const STRICT_BOUNDARY_PROTOCOL = `
+████ STRICT BOUNDARY PROTOCOL — 100% HARD CONSTRAINTS (NON-NEGOTIABLE) ████
+The ORIGINAL uploaded plan is the SOLE source of truth for geometry. Every point
+of the proposal MUST lie inside the original apartment polygon (P_proposed ⊆
+P_original ; ΔBoundary = 0). Proposed net area ≤ original net area
+(A_proposed ≤ A_original). NEVER invent, extend, redraw or generate anything
+outside the original footprint. Blank areas of the drawing are NOT usable space.
+
+IMMUTABLE — reproduce IDENTICALLY from the original (locked elements):
+• external / perimeter walls (position, length, thickness)
+• apartment entrance door — same wall, position, orientation, access side
+• every window and every external / French door / façade opening — same count,
+  position, wall association, sequence along each façade, orientation
+• overall footprint, shape, orientation and proportions.
+
+NEVER (auto-reject if detected):
+• add ANY room, space, balcony, terrace, corridor, storage or technical space
+  outside the original footprint • add floor area • enlarge, shrink, rotate or
+  distort the apartment • move / demolish / shorten / lengthen / reshape an
+  external wall • move the entrance or add a second entrance • add, remove or
+  move a window • convert a window into a door or a door into a window • draw a
+  window on an internal wall • omit an existing external opening • occupy common
+  areas, stairs, shafts or neighbouring units • create hidden or inaccessible
+  rooms • use artistic licence to change geometry.
+
+ALLOWED — ONLY inside the locked boundary:
+• add / remove / move non-load-bearing internal partitions and internal doors
+• split one room into smaller ones • merge rooms • enlarge one room by shrinking
+an adjacent one • reorganise circulation, kitchens, baths, storage • change
+finishes, materials, furniture. A new function (e.g. a study) may be created
+ONLY by carving it out of existing internal area — NEVER as added area.
+
+UNCERTAINTY: if a wall's structural role is unclear, treat it as protected and
+do NOT modify it. If the boundary or an immutable element cannot be read
+confidently, DO NOT invent — preserve the original exactly.
+
+RENDERS: build the 3D view strictly from the approved post-intervention plan —
+same rooms, sequence, adjacencies, wall/door/window positions and entrance.
+Show only what is genuinely visible from the camera; never invent a door, arch,
+opening, window or room, never reorder spaces to look nicer. Geometric accuracy
+always outranks aesthetics. When in doubt, preserve the plan.
+`;
+
 const COMPLIANCE_BRIEF = `
 ████ V7 UNIFIED AGENT — ENVELOPE-INVARIANCE HARD GATE ████
 A proposed plan is ACCEPTED only if 100% of the applicable Italian/Lombardy
@@ -1316,7 +1364,7 @@ EVERYTHING ELSE IS COMPLETELY FROZEN — DO NOT TOUCH:
   const roomReq = roomKey ? (roomData[roomKey]?.requirements||"") : "";
   const reqBlock = roomReq ? `\nCLIENT'S SPECIFIC INSTRUCTIONS FOR THIS ROOM (follow exactly):\n"${roomReq}"\nThese instructions override style defaults but must NOT conflict with the spatial constraints above.` : "";
 
-  const constraints=`
+  const constraints=`${STRICT_BOUNDARY_PROTOCOL}
 ████████████████████████████████████████████████████████████████████████
    THIS IS A SPATIAL RENOVATION — NOT A NEW DESIGN
    The apartment envelope is IMMUTABLE. Read every rule below carefully.
@@ -1728,7 +1776,9 @@ async function generateWithImagen(prompt, apiKey, originalPhotoFile){
       const b64 = await fileToBase64(originalPhotoFile);
       const base = b64.split(",")[1];
       const mime = originalPhotoFile.type||"image/jpeg";
-      const editPrompt = `You are looking at an original room photo. Generate a photorealistic renovation of THIS EXACT ROOM.
+      const editPrompt = `${STRICT_BOUNDARY_PROTOCOL}
+
+You are looking at an original room photo / plan. Generate a photorealistic renovation of THIS EXACT SPACE — the original image is the sole source of truth for geometry.
 
 WHAT YOU MUST KEEP IDENTICAL (copy exactly from the photo):
 - Every EXTERNAL / perimeter wall, its position, thickness, and angle
@@ -1752,7 +1802,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
          body:JSON.stringify({
            contents:[{parts:[
              {inlineData:{mimeType:mime, data:base}},
-             {text:editPrompt.slice(0,3800)}
+             {text:editPrompt.slice(0,9000)}
            ]}],
            generationConfig:{responseModalities:["IMAGE"]}
          })
@@ -1774,7 +1824,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
     `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.image}:generateContent?key=${apiKey}`,
     {method:"POST", headers:{"Content-Type":"application/json"},
      body:JSON.stringify({
-       contents:[{parts:[{text: prompt.slice(0,4000)}]}],
+       contents:[{parts:[{text: prompt.slice(0,9000)}]}],
        generationConfig:{responseModalities:["IMAGE"]}
      })
     }
@@ -1888,9 +1938,13 @@ CRITICAL BOUNDARY RULES:
 - NO new room, space, balcony, terrace, extension or annex may be ADDED that is not in the original apartment. The renovation only REDISTRIBUTES the existing internal area.
 - The set of enclosed spaces must be the SAME apartment — internal partitions and internal doors may move, and rooms may be merged or split, but no space outside the original footprint may appear.
 Anything else = HARD CONSTRAINT VIOLATION.
+Apply these STRICT BOUNDARY PROTOCOL tests (§7):
+- Boundary overlay: proposed external boundary overlays the original exactly (P_proposed ⊆ P_original, ΔB≈0).
+- Area: proposed net internal area ≤ original net internal area (A_proposed/A_original ≤ 1.00, small partition-thickness tolerance only). Set areaRatioOK=false if the proposal looks larger.
+- Traceability: EVERY room/space in the proposal must be obtainable from existing internal area (subdivision/merge/reallocation). Set allSpacesTraceable=false if any space cannot come from the original interior (i.e. it was added).
 Return ONLY valid JSON (no markdown):
-{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"noSpacesAdded":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"onlyInternalChanged":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every difference beyond internal partitions/doors, incl. any added room/space or anything outside the original perimeter"],"summary":"one line"}
-HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, noSpacesAdded, entranceMatch, windowsMatch, balconyDoorsMatch, onlyInternalChanged is false → approved:false and overallScore ≤ 40.`}
+{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"areaRatioOK":true/false,"noSpacesAdded":true/false,"allSpacesTraceable":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"onlyInternalChanged":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every difference beyond internal partitions/doors, incl. any added room/space or anything outside the original perimeter"],"summary":"one line"}
+HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, areaRatioOK, noSpacesAdded, allSpacesTraceable, entranceMatch, windowsMatch, balconyDoorsMatch, onlyInternalChanged is false → approved:false and overallScore ≤ 40.`}
        ]}],generationConfig:visionCfg(1400)})
       }
     );
@@ -1918,10 +1972,17 @@ async function comparePlanToRender(planSrc, renderSrc, roomType, apiKey){
          a,
          {text:"IMAGE 2 (the 3D render) follows:"},
          b,
-         {text:`Verify the 3D render is CONSISTENT with the floor plan for the ${roomType}. Check that: the number and position of windows and balcony/French doors (porte-finestra) shown in the render match what the plan shows for that room; the room proportions (width/length ratio) match; door/opening positions match; no wall exists in the render that the plan does not show and vice-versa. Ignore furniture, finishes, colours and lighting — compare only spatial structure and openings.
+         {text:`Verify the 3D render is CONSISTENT with the approved floor plan for the ${roomType}, per the STRICT BOUNDARY PROTOCOL render tests (§8). The plan is the source of truth; the render must be derivable from it. Check:
+- Openings: number and position of windows and balcony/French doors (porte-finestra) in the render match the plan for this room; none added, none moved, none omitted without being genuinely obscured; no window drawn on an internal wall.
+- Proportions: room width/length ratio matches the plan.
+- Walls & doors: no wall/door in the render that the plan does not show, and vice-versa; door/opening positions match.
+- Room sequence & adjacency: the spaces visible (and their order/adjacency) match the plan — the render must not reorder or invent spaces.
+- No extra room and no invented architectural element (arch, passage, opening, room) appears.
+- Nothing is shown that could not be seen from a valid camera position for this room (do not show a room through a solid wall).
+Ignore furniture, finishes, colours and lighting — compare only spatial structure, openings and adjacency.
 Return ONLY valid JSON (no markdown):
-{"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list inconsistencies between render and plan"],"summary":"one line"}
-HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent is false → approved:false and overallScore ≤ 45.`}
+{"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"roomSequenceConsistent":true/false,"noExtraRoom":true/false,"noInventedElements":true/false,"viewpointValid":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list inconsistencies between render and plan"],"summary":"one line"}
+HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent, roomSequenceConsistent, noExtraRoom, noInventedElements, viewpointValid is false → approved:false and overallScore ≤ 45.`}
        ]}],generationConfig:visionCfg(1400)})
       }
     );
@@ -1945,13 +2006,13 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
 
   /* ── Image-to-image path (original photo/plan provided) ── */
   if(originalPhotoFile){
-    /* Plans get one corrective retry if the same-space cross-check fails */
-    const rounds = isPlan ? 2 : 1;
+    /* Plans get corrective retries if the boundary/same-space cross-check fails */
+    const rounds = isPlan ? 3 : 1;
     let best=null;
     for(let r=0;r<rounds;r++){
       onProgress({stage:r===0?"generating":"refining", round:r+1, total:rounds});
       const corrective = r>0 ? RETRY_ADDENDUM[1] : "";
-      const result = await generateWithImagen((prompt+corrective).slice(0,4000), apiKey, originalPhotoFile);
+      const result = await generateWithImagen((prompt+corrective).slice(0,9000), apiKey, originalPhotoFile);
       if(spatialData && isPlan){
         onProgress({stage:"validating", round:r+1, total:rounds});
         const v=await validateRender(result.dataUrl, roomType, spatialData, apiKey);
@@ -1976,7 +2037,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
   let bestDataUrl=null, bestScore=-1, bestValidation=null;
   for(let round=0; round<MAX_ROUNDS; round++){
     onProgress({stage:round===0?"generating":"refining", round:round+1, total:MAX_ROUNDS});
-    const fullPrompt=(prompt+RETRY_ADDENDUM[round]).slice(0,4000);
+    const fullPrompt=(prompt+RETRY_ADDENDUM[round]).slice(0,9000);
     const {dataUrl,base64,mime}=await generateWithImagen(fullPrompt, apiKey, null);
     if(spatialData){
       onProgress({stage:"validating", round:round+1, total:MAX_ROUNDS});
@@ -2002,7 +2063,9 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   const [validation, setValidation] = useState(null);
   const [planCompare, setPlanCompare] = useState(null); // plan-tile: generated plan vs original plan
   const [planConsistency, setPlanConsistency] = useState(undefined); // room-tile: render vs plan (undefined=not run)
+  const [xcheckRetries, setXcheckRetries] = useState(0); // bounded render regenerations on failed plan↔render check
   const [error, setError] = useState("");
+  const XCHECK_MAX_RETRY = 2;
 
   const start = useCallback(async () => {
     if(!apiKey){ setError("Set Nano Banana API key above"); setPhase("error"); return; }
@@ -2024,7 +2087,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady]);
 
   /* Auto-start when batch trigger fires (only if idle) */
-  useEffect(()=>{ if(batchTrigger>0 && phase==="idle") start(); },[batchTrigger]);
+  useEffect(()=>{ if(batchTrigger>0 && phase==="idle"){ setXcheckRetries(0); start(); } },[batchTrigger]);
 
   /* CROSS-CHECK 2 — room render vs the post-intervention plan.
      Runs once this tile's render is done AND the plan image is available.
@@ -2039,9 +2102,20 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
     xcheckRef.current=sig;
     let cancelled=false;
     setPlanConsistency("running");
-    comparePlanToRender(planImg, imgUrl, room, apiKey).then(r=>{ if(!cancelled) setPlanConsistency(r||null); });
+    comparePlanToRender(planImg, imgUrl, room, apiKey).then(r=>{
+      if(cancelled) return;
+      const failing = r && (r.approved===false || r.consistent===false);
+      /* §8.5 mandatory gate: a render that conflicts with the plan must be
+         REGENERATED, not presented — bounded so we never loop forever. */
+      if(failing && xcheckRetries < XCHECK_MAX_RETRY){
+        setXcheckRetries(n=>n+1);
+        start();
+      } else {
+        setPlanConsistency(r||null);
+      }
+    });
     return ()=>{cancelled=true;};
-  },[isPlan, phase, imgUrl, planImg, apiKey, room]);
+  },[isPlan, phase, imgUrl, planImg, apiKey, room, xcheckRetries]);
 
   const stageLabel = {
     generating: originalPhotoFile ? "Editing your original photo…" : "Generating render…",
@@ -2118,10 +2192,20 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       {phase==="done"&&imgUrl&&(
         <div style={{position:"relative"}}>
           <img src={imgUrl} alt={style+" "+room+" — "+solName} className="render-img"
+            style={xcheckFailed?{filter:"grayscale(.85) brightness(.8)"}:undefined}
             onError={()=>{setPhase("error");setError("Image failed to load");}}/>
           {sc!=null&&(
             <div style={{position:"absolute",top:8,right:8,background:scoreClr+"ee",padding:"4px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:"#fff",backdropFilter:"blur(4px)"}}>
               {scoreLabel} {sc}/100
+            </div>
+          )}
+          {/* §11 mandatory gate: a result that fails a hard boundary/geometry
+              check after the allowed regenerations is marked NOT VALID. */}
+          {xcheckFailed&&(
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(185,28,28,.28)"}}>
+              <div style={{background:"#B91C1C",color:"#fff",padding:"8px 14px",borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",lineHeight:1.35,maxWidth:"90%"}}>
+                ⛔ NON CONFORME<br/><span style={{fontSize:9.5,fontWeight:600}}>Vincolo di confine violato — non presentato come soluzione valida. Rigenera.</span>
+              </div>
             </div>
           )}
         </div>
@@ -2171,7 +2255,9 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
           ["Sagoma/impronta",planCompare.overallShapeMatch],
           ["Superficie",planCompare.totalAreaMatch],
           ["Entro il perimetro",planCompare.withinOriginalBoundary],
+          ["Area ≤ originale",planCompare.areaRatioOK],
           ["Nessun locale aggiunto",planCompare.noSpacesAdded],
+          ["Spazi tracciabili",planCompare.allSpacesTraceable],
           ["Ingresso",planCompare.entranceMatch],
           ["Finestre",planCompare.windowsMatch],
           ["Porte-finestra",planCompare.balconyDoorsMatch],
@@ -2187,6 +2273,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
             ))}
           </div>
           {ms.length>0&&<ul style={{margin:"5px 0 0",paddingLeft:16,fontSize:9.5,color:"#B91C1C",lineHeight:1.5}}>{ms.map((m,i)=><li key={i}>{m}</li>)}</ul>}
+          {!fail&&<div style={{marginTop:6,padding:"6px 8px",background:"#D1E7DD",borderRadius:6,fontSize:9,color:"#1B3A2D",lineHeight:1.45}}>✓ <strong>Dichiarazione di conformità geometrica:</strong> l'intervento resta interamente entro il perimetro originale dell'appartamento. Muri esterni, ingresso, finestre e aperture esterne non sono modificati. Tutti i locali proposti derivano dalla sola riorganizzazione della superficie interna esistente.</div>}
         </div>);
       })()}
 
@@ -2199,6 +2286,9 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
           ["Porte-finestra",planConsistency.balconyDoorsConsistent],
           ["Proporzioni",planConsistency.proportionsConsistent],
           ["Aperture/muri",planConsistency.openingsConsistent],
+          ["Sequenza locali",planConsistency.roomSequenceConsistent],
+          ["Nessun locale extra",planConsistency.noExtraRoom],
+          ["Nessun elemento inventato",planConsistency.noInventedElements],
         ];
         const fail=planConsistency.approved===false||planConsistency.consistent===false||rows.some(([,v])=>v===false);
         const ms=(planConsistency.mismatches||[]).filter(Boolean).slice(0,4);
