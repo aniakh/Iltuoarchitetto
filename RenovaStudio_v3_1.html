@@ -169,6 +169,34 @@ PERMITS: CILA (non-structural internal), SCIA (ristrutturazione leggera, opening
 const {useState, useRef, useMemo, useCallback, useEffect} = React;
 
 /* ══════════════════════════════════════════════════════════════
+   AI MODEL AUTO-SELECTION
+   Automatically activate the most recent / advanced models the API key can
+   reach: the newest Gemini for info extraction + validation, and Nano Banana
+   (Nano Banana Pro / Gemini image) for rendering. Defaults are safe; once a
+   key is present detectBestModels() queries the live model list and upgrades.
+   ══════════════════════════════════════════════════════════════ */
+const AI_MODELS = { vision: "gemini-2.5-flash", image: "gemini-3-pro-image-preview", detected: false, label: "" };
+/* Preference order — first available wins (newest / most capable first) */
+const VISION_PREFS = ["gemini-3.5-flash","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-3-flash-preview","gemini-flash-latest","gemini-2.5-flash","gemini-2.0-flash"];
+const IMAGE_PREFS  = ["gemini-3-pro-image","gemini-3-pro-image-preview","gemini-3.1-flash-image","gemini-3.1-flash-image-preview","gemini-2.5-flash-image"];
+async function detectBestModels(apiKey){
+  if(!apiKey) return AI_MODELS;
+  try{
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key="+apiKey);
+    if(!r.ok) return AI_MODELS;
+    const j = await r.json();
+    const gen = new Set((j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes("generateContent")).map(m=>m.name.replace("models/","")));
+    const pick = (prefs,cur)=>prefs.find(m=>gen.has(m))||cur;
+    AI_MODELS.vision = pick(VISION_PREFS, AI_MODELS.vision);
+    AI_MODELS.image  = pick(IMAGE_PREFS,  AI_MODELS.image);
+    AI_MODELS.detected = true;
+    AI_MODELS.label = "🍌 "+AI_MODELS.image+" · ✨ "+AI_MODELS.vision;
+    console.log("[AI models] render:",AI_MODELS.image," | extract/validate:",AI_MODELS.vision);
+  }catch(e){ console.warn("model detection failed", e); }
+  return AI_MODELS;
+}
+
+/* ══════════════════════════════════════════════════════════════
    ENGINE DATA — Updated March 2026 immobiliare.it prices
    ══════════════════════════════════════════════════════════════ */
 const STYLES={Japandi:{mat:"light oak, warm white plaster, linen, soft stone, matte finishes",desc:"quiet, calm, natural, warmly minimal",pal:["#D4C5A9","#E8DCC8","#F5F0E8","#8B7D6B","#5C5346"]},Scandinavian:{mat:"pale woods, off-whites, warm textiles",desc:"bright, practical, cozy",pal:["#E8E4DF","#F5F2ED","#FFFFFF","#B8AFA5","#6B6560"]},Minimalist:{mat:"flush doors, microtexture plaster, pale stone",desc:"calm, disciplined, clean-lined",pal:["#F0F0F0","#E0E0E0","#FFFFFF","#999999","#333333"]},Mediterranean:{mat:"limewash, warm stone, terracotta, oak",desc:"sunlit, tactile, warm",pal:["#E8C9A0","#D4A373","#F5E6D3","#8B6F4E","#C87941"]},Contemporary:{mat:"neutral palette, stone, wood, mixed textures",desc:"balanced, elegant, modern",pal:["#C5CCD3","#DDE1E6","#F0F2F5","#7A8490","#4A5568"]},"Industrial Soft":{mat:"oak, dark metal, concrete-look",desc:"urban but warm, graphic",pal:["#8B8D8F","#A0A2A4","#D4D6D8","#4A4C4E","#2D2F31"]},"Classic Modern":{mat:"travertine, oak, brushed metal, refined joinery",desc:"timeless, elegant",pal:["#C9B99A","#DDD0B8","#F0EAE0","#8B7D6B","#5C5346"]},Biophilic:{mat:"wood, plants, natural stone, woven textures",desc:"nature-connected, restorative",pal:["#A8C5A0","#C5DDB8","#E8F0E4","#6B8F60","#3D5C35"]}};
@@ -1596,7 +1624,7 @@ async function geminiVision(file, textPrompt, apiKey){
     const base=b64.split(",")[1];
     const mime=file.type||"image/jpeg";
     const res=await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
       {method:"POST",headers:{"Content-Type":"application/json"},
        body:JSON.stringify({contents:[{parts:[
          {inlineData:{mimeType:mime,data:base}},
@@ -1701,7 +1729,7 @@ ${prompt}
 The result must look like a photograph of the SAME ROOM after renovation — not a different room. A viewer who knows the original should immediately recognise the same spatial layout.`;
 
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${NANO_BANANA_MODEL}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.image}:generateContent?key=${apiKey}`,
         {method:"POST", headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
            contents:[{parts:[
@@ -1725,7 +1753,7 @@ The result must look like a photograph of the SAME ROOM after renovation — not
 
   /* ── Fallback: text-to-image with full constraints ── */
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${NANO_BANANA_MODEL}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.image}:generateContent?key=${apiKey}`,
     {method:"POST", headers:{"Content-Type":"application/json"},
      body:JSON.stringify({
        contents:[{parts:[{text: prompt.slice(0,4000)}]}],
@@ -1762,7 +1790,7 @@ ${spatialData.totalArea?`FLOOR-PLAN ENVELOPE (FROZEN): total area ${spatialData.
       : {fileData:{mimeType:"image/jpeg", fileUri: base64OrUrl}};
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
       { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({contents:[{parts:[
           imgPart,
@@ -1828,7 +1856,7 @@ async function comparePlanToOriginal(originalSrc, generatedSrc, spatialData, api
     if(!a||!b) return null;
     const ctx=spatialData?`Reference data for the ORIGINAL: total area ${spatialData.totalArea||"?"}m², shape "${spatialData.overallShape||"?"}", entrance ${spatialData.entranceDoor?spatialData.entranceDoor.wall+" wall":"as drawn"}.`:"";
     const res=await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
       {method:"POST",headers:{"Content-Type":"application/json"},
        body:JSON.stringify({contents:[{parts:[
          {text:"IMAGE 1 = ORIGINAL floor plan (existing apartment). IMAGE 2 = AI-generated POST-INTERVENTION floor plan of the SAME apartment."},
@@ -1860,7 +1888,7 @@ async function comparePlanToRender(planSrc, renderSrc, roomType, apiKey){
     const a=await imgPartFromAny(planSrc), b=await imgPartFromAny(renderSrc);
     if(!a||!b) return null;
     const res=await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
       {method:"POST",headers:{"Content-Type":"application/json"},
        body:JSON.stringify({contents:[{parts:[
          {text:`IMAGE 1 = the post-intervention FLOOR PLAN (2D). IMAGE 2 = a 3D photorealistic RENDER of the ${roomType} in that same apartment.`},
@@ -2310,7 +2338,7 @@ function S1({d,u,apiKey}){
         contents:[{parts:[{text:'Analyze this Italian real-estate URL and infer property data from the URL slug + your geographic knowledge of the area. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nReturn JSON only matching this schema (use null for unknown). DO NOT copy text — paraphrase or estimate numerically:\n'+SCHEMA}]}],
         generationConfig:{temperature:0.1,maxOutputTokens:1500,responseMimeType:'application/json'}
       };
-      return tryGemini('gemini-2.5-flash', body, 'A:plain', 11000);
+      return tryGemini(AI_MODELS.vision, body, 'A:plain', 11000);
     };
 
     /* === Attempt B: google_search with paraphrase instruction === */
@@ -2320,14 +2348,14 @@ function S1({d,u,apiKey}){
         tools:[{google_search:{}}],
         generationConfig:{temperature:0.1,maxOutputTokens:1500}
       };
-      const r = await tryGemini('gemini-2.5-flash', body, 'B:search', 18000);
+      const r = await tryGemini(AI_MODELS.vision, body, 'B:search', 18000);
       if(r === 'RETRY_PARAPHRASE'){
         const body2 = {
           contents:[{parts:[{text:'Find this listing online. Output STRICTLY numerical and categorical data only — never quote any text. '+ANTI_RECITATION+' Use the city name and zone but paraphrase everything else.\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
           tools:[{google_search:{}}],
           generationConfig:{temperature:0.3,maxOutputTokens:1500}
         };
-        return tryGemini('gemini-2.5-flash', body2, 'B2:search-paraphrase', 18000);
+        return tryGemini(AI_MODELS.vision, body2, 'B2:search-paraphrase', 18000);
       }
       return r;
     };
@@ -2339,14 +2367,14 @@ function S1({d,u,apiKey}){
         tools:[{url_context:{}}],
         generationConfig:{temperature:0.1,maxOutputTokens:1500}
       };
-      const r = await tryGemini('gemini-2.5-flash', body, 'C:urlctx', 18000);
+      const r = await tryGemini(AI_MODELS.vision, body, 'C:urlctx', 18000);
       if(r === 'RETRY_PARAPHRASE'){
         const body2 = {
           contents:[{parts:[{text:'Open this page and output ONLY: area (number), rooms (number), bathrooms (number), floor (number), energy class (single letter), price (number), city name (one word). No quotations from page allowed. Paraphrase any descriptive text. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON:\n'+SCHEMA}]}],
           tools:[{url_context:{}}],
           generationConfig:{temperature:0.4,maxOutputTokens:1500}
         };
-        return tryGemini('gemini-2.5-flash', body2, 'C2:urlctx-paraphrase', 18000);
+        return tryGemini(AI_MODELS.vision, body2, 'C2:urlctx-paraphrase', 18000);
       }
       return r;
     };
@@ -2821,7 +2849,7 @@ function MarketFetchBtn({d, s, area, apiKey}){
     try{
       const city=d.city||"Milano";
       const res=await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
         {method:"POST",headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
            contents:[{parts:[{text:`Search immobiliare.it Lombardia market data and OMI Agenzia Entrate for ${city}, Italy. Return ONLY valid JSON:\n{"omiMin":<€/m²>,"omiMax":<€/m²>,"omiZone":"<zone>","marketAvgSqm":<€/m²>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m²>,"comparableRenovated":<€/m²>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations>"}`}]}],
@@ -3537,12 +3565,16 @@ function Results({d, apiKey}){
 function App(){
   const [step,setStep]=useState(0);
   const [ld,setLd]=useState(false);
-  /* Nano Banana 2 (Gemini 3 Pro Image) key — pasted at runtime, never stored.
-     Do NOT hardcode a key here: any key committed to the repo is auto-revoked
-     by Google's secret scanning ("API key reported as leaked"). Paste your key
-     into the header field each session, or use the Cloudflare Worker proxy. */
+  /* Google AI Studio key (Gemini + Nano Banana) — pasted at runtime.
+     The repo copy ships WITHOUT a hardcoded key: GitHub secret scanning blocks
+     any committed key and Google auto-revokes it. Paste your key into the
+     header field (the downloadable build can have it pre-filled). */
   const [apiKey,setApiKey]=useState("");
   const [showKey,setShowKey]=useState(false);
+  const [models,setModels]=useState(AI_MODELS);
+
+  /* Auto-activate the newest Gemini + Nano Banana models the key can access */
+  useEffect(()=>{ let on=true; if(apiKey) detectBestModels(apiKey).then(m=>{ if(on) setModels({...m}); }); return ()=>{on=false;}; },[apiKey]);
   const [d,setD]=useState({address:"",city:"Milano",cap:"",area:"85",rooms:"3",eCls:"E",band:"Major city",floor:"3",ceiling:"2.7",currentStatus:"Da ristrutturare",heatingType:"Centralizzato",annualEnergy:"",pType:"Apartment",listingUrl:"",plans:[],photos:[],roomDetails:{},changes:["Kitchen upgrade","Bathroom upgrade","Finishes refresh","Storage boost"],style:"Japandi",customStyle:"",fengshui:[],preferredPalette:null});
   const steps=[{n:"Proprietà · Property",i:"🏛️"},{n:"Planimetria · Floor Plan",i:"📐"},{n:"Interventi · Interventions",i:"🏗️"},{n:"Stile · Style",i:"🎨"},{n:"Analisi · Analysis",i:"📊"}];
   const ok=step===0?(d.city&&d.area):step===2?d.changes.length>0:true;
@@ -3554,7 +3586,7 @@ function App(){
     <div style={{background:"#fff",color:"#3D3D3D",padding:"0",borderBottom:"1px solid #E5E0D8"}}>
       <div style={{background:"#F5F2EE",borderBottom:"1px solid #E5E0D8",fontSize:11,color:"#7A7A7A",padding:"6px 0"}}><div style={{maxWidth:1020,margin:"0 auto",padding:"0 28px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span>📞 +39 339 144 6039 · ✉ info@iltuoarchitetto.it</span><span style={{color:"#4A7AAA",fontWeight:600}}>Studio di Architettura Colombo</span></div></div><div style={{maxWidth:1020,margin:"0 auto",padding:"18px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:54,height:54,border:"2.5px solid #4A7AAA",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontFamily:"'Source Sans 3',sans-serif",fontWeight:800,color:"#4A7AAA",letterSpacing:.5}}>2·5D</div><div><h1 style={{fontSize:22,fontWeight:400,letterSpacing:3,color:"#4A7AAA",fontFamily:"'Source Sans 3',sans-serif",textTransform:"uppercase"}}>2D to 5D</h1><p style={{fontSize:11,color:"#7A7A7A",letterSpacing:.3,marginTop:2}}>Integrated Design Solutions · Soluzioni di Progettazione Integrata</p></div></div>
-        <div style={{display:"flex",alignItems:"center",gap:6}}><input type={showKey?"text":"password"} value={apiKey} onChange={e=>setApiKey(e.target.value.trim())} placeholder="Nano Banana 2 key (AIza…)" title="Nano Banana 2 · Gemini 3 Pro Image" style={{width:240,padding:"6px 10px",borderRadius:6,border:"1px solid rgba(255,255,255,.2)",background:"rgba(255,255,255,.1)",color:"#fff",fontSize:11}}/><button onClick={()=>setShowKey(!showKey)} style={{background:"none",border:"none",color:"#fff",cursor:"pointer",fontSize:13}}>{showKey?"🙈":"👁️"}</button>{apiKey&&<span title="Nano Banana 2 connected" style={{fontSize:9.5,color:"#8CC63F"}}>✓ Nano Banana 2</span>}</div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}><input type={showKey?"text":"password"} value={apiKey} onChange={e=>setApiKey(e.target.value.trim())} placeholder="Google AI Studio key (AIza… / AQ.…)" title="Gemini + Nano Banana key" style={{width:240,padding:"6px 10px",borderRadius:6,border:"1px solid rgba(255,255,255,.2)",background:"rgba(255,255,255,.1)",color:"#fff",fontSize:11}}/><button onClick={()=>setShowKey(!showKey)} style={{background:"none",border:"none",color:"#fff",cursor:"pointer",fontSize:13}}>{showKey?"🙈":"👁️"}</button>{apiKey&&<span title={models.detected?("Render: "+models.image+"\nExtract/validate: "+models.vision):"Connecting — detecting best models…"} style={{fontSize:9.5,color:models.detected?"#8CC63F":"#C9B24A",whiteSpace:"nowrap"}}>{models.detected?("✓ "+models.image.replace("gemini-","").replace("-preview","")+" · "+models.vision.replace("gemini-","")):"⏳ detecting models…"}</span>}</div>
       </div>
     </div>
     {step<4&&<div style={{maxWidth:1020,margin:"0 auto",padding:"12px 22px 0"}}><div style={{display:"flex",alignItems:"center",gap:3}}>{steps.map((x,i)=><div key={x.n} style={{display:"flex",alignItems:"center",flex:1}}><div style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:i<step?"#1B3A2D":i===step?"#C87941":"#ECE8E1",color:i<=step?"#fff":"#78716C",fontWeight:600,fontSize:11,flexShrink:0}}>{x.i}</div><span style={{fontSize:9.5,marginLeft:5,color:i===step?"#1C1917":"#78716C",fontWeight:i===step?600:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{x.n}</span>{i<steps.length-1&&<div style={{flex:1,height:2,background:i<step?"#1B3A2D":"#ECE8E1",margin:"0 7px",minWidth:8}}/>}</div>)}</div></div>}
