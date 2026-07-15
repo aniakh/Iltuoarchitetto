@@ -1256,8 +1256,12 @@ internal partitions differ.`;
 
 function renderPrompt(d,sol,room){
   const th=STYLES[d.style]||STYLES.Japandi;
-  const tier=sol.nm==="Premium"?"high-end luxury finishes, designer furniture, premium materials":sol.nm==="Balanced"?"quality mid-range finishes, tasteful furniture":"clean budget-conscious finishes, practical furniture";
+  const tier=sol.nm==="Premium"?"high-end finish materials and premium furniture (FINISHES & FURNITURE ONLY — layout unchanged)":sol.nm==="Balanced"?"quality mid-range finishes and tasteful furniture (FINISHES & FURNITURE ONLY — layout unchanged)":"clean budget-conscious finishes and practical furniture (FINISHES & FURNITURE ONLY — layout unchanged)";
   const base=d.style+" interior design, "+th.desc+", "+th.mat+", "+tier;
+  /* Tier invariance — the SAME geometry/constraints apply to all 3 options */
+  const tierClause=`
+████ TIER INVARIANCE — IDENTICAL FOR ALL THREE OPTIONS (Essenziale · Bilanciato · Premium) ████
+This is the "${sol.nm}" option. The tier changes ONLY finish quality, materials and furniture. It grants ZERO additional spatial freedom. The apartment boundary, external/perimeter walls, entrance, windows, balcony/French doors, footprint, room set and internal layout are IDENTICAL across Essential, Balanced and Premium and identical to the original plan. The words "premium", "luxury" and "designer" refer to finishes and furnishings ONLY — never to redesigning, enlarging, extending, opening up beyond permitted internal partitions, or restructuring the space. Every hard constraint in this prompt applies EQUALLY and IN FULL to this option — a more expensive option is NOT allowed to change the geometry more.`;
   const roomData=d.roomDetails||{};
   const ep=d.extractedPlan;
   const roomKey=["living","kitchen","bedroom","bathroom","corridor"].includes(room)?room:null;
@@ -1365,9 +1369,12 @@ EVERYTHING ELSE IS COMPLETELY FROZEN — DO NOT TOUCH:
   const reqBlock = roomReq ? `\nCLIENT'S SPECIFIC INSTRUCTIONS FOR THIS ROOM (follow exactly):\n"${roomReq}"\nThese instructions override style defaults but must NOT conflict with the spatial constraints above.` : "";
 
   const constraints=`${STRICT_BOUNDARY_PROTOCOL}
+${tierClause}
 ████████████████████████████████████████████████████████████████████████
    THIS IS A SPATIAL RENOVATION — NOT A NEW DESIGN
    The apartment envelope is IMMUTABLE. Read every rule below carefully.
+   The layout is IDENTICAL for the Essential, Balanced and Premium options —
+   only finishes and furniture differ between them.
 ████████████████████████████████████████████████████████████████████████
 ${photoNote}
 
@@ -2912,10 +2919,9 @@ function S4({d,u}){
 }
 
 /* ══════ SOLUTION RENDER CARD ══════ */
-function SolRenderCard({x, solIdx, d, apiKey}){
+function SolRenderCard({x, solIdx, d, apiKey, masterPlan, ensurePlan}){
   const m=SM[solIdx];
   const [batchTrigger,setBatchTrigger]=useState(0);
-  const [planImg,setPlanImg]=useState(""); // generated post-intervention plan image, shared to room tiles for cross-check
   const tiles=[];
   [{roomKey:"living",label:"Living Area"},{roomKey:"kitchen",label:"Kitchen"},{roomKey:"bedroom",label:"Bedroom"},{roomKey:"bathroom",label:"Bathroom"}].forEach(({roomKey,label})=>{
     const photos=(d.roomDetails?.[roomKey]?.photos||[]).filter(f=>f instanceof File);
@@ -2928,8 +2934,9 @@ function SolRenderCard({x, solIdx, d, apiKey}){
       tiles.push({roomKey,label,photoFile:null,spatialData});
     }
   });
-  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
-  tiles.push({roomKey:"plan",label:"Floor Plan",photoFile:planPhoto,spatialData:d.extractedPlan||null});
+  /* NOTE: no per-option plan tile — the layout is the shared masterPlan, so all
+     three options are constrained to the SAME geometry. Room renders below are
+     cross-checked against that single shared plan. */
   const imgToImg=tiles.filter(t=>t.photoFile).length;
   return(
     <div className="card" style={{borderColor:solIdx===1?m.color+"60":"#E2DCD2",borderWidth:solIdx===1?2:1,marginBottom:12}}>
@@ -2937,14 +2944,15 @@ function SolRenderCard({x, solIdx, d, apiKey}){
         <span style={{fontSize:17}}>{m.em}</span>
         <div style={{flex:1}}>
           <div style={{fontFamily:"'Cormorant Garamond'",fontSize:17,fontWeight:700,color:m.color}}>{x.nm} — {fmt(x.co.total)}</div>
-          <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · {imgToImg>0?imgToImg+" image-to-image":"text-to-image only"}</div>
+          <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · same layout as all options · {imgToImg>0?imgToImg+" image-to-image":"text-to-image"}</div>
         </div>
-        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setPlanImg("");setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
+        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{if(ensurePlan)ensurePlan();setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
       </div>
-      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Doppio controllo di conformità prima di presentare: <strong>piano nuovo ↔ piano iniziale</strong> (stesso spazio) e <strong>render 3D ↔ piano</strong> (coerenza).</div>
+      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Same geometry as the other options — only finishes/furniture differ. Each render is cross-checked (<strong>render 3D ↔ piano condiviso</strong>) and any non-compliant result is regenerated or rejected.</div>
+      {!masterPlan&&apiKey&&<div className="note note-warn" style={{marginBottom:8,fontSize:10.5}}>⚠️ Generate the shared plan above first — renders are validated against it.</div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
         {tiles.map((t,ti)=>(
-          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={planImg} onPlanReady={setPlanImg}/>
+          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={masterPlan} onPlanReady={null}/>
         ))}
       </div>
       <div style={{marginTop:8,padding:7,background:"#F6F4EF",borderRadius:6,fontSize:10.5,color:"#78716C"}}><strong>Materials:</strong> {x.mg}</div>
@@ -3009,6 +3017,12 @@ function Results({d, apiKey}){
   const sols=useMemo(()=>genSols(d),[d]);
   const s=sols[si];
   const area=parseFloat(d.area)||85;
+  /* ONE shared post-intervention plan for all three options — the layout is
+     identical across tiers; only finishes/furniture differ. Every option's
+     room renders are cross-checked against this single verified plan. */
+  const [masterPlan,setMasterPlan]=useState("");
+  const [planBatch,setPlanBatch]=useState(0);
+  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
   const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"energydetail",l:"Energy Detail",i:"🔋"},{id:"schedule",l:"Schedule",i:"📅"},{id:"valuation",l:"Value",i:"🏠"},{id:"market",l:"Market Analysis",i:"📈"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
 
   const SP=()=><div style={{display:"flex",gap:6,marginBottom:14}}>{sols.map((x,i)=>{const m=SM[i],on=si===i;return<button key={x.nm} onClick={()=>setSi(i)} style={{flex:1,padding:"11px 12px",borderRadius:9,border:on?"3px solid "+m.color:"1px solid #E2DCD2",background:on?m.gr:"#fff",cursor:"pointer",textAlign:"left",fontFamily:"inherit"}}><div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><span style={{fontSize:15}}>{m.em}</span><span style={{fontFamily:"'Cormorant Garamond'",fontSize:14,fontWeight:700,color:on?"#fff":"#1C1917"}}>{x.nm}</span>{i===1&&<span style={{padding:"1px 5px",borderRadius:7,background:on?"rgba(255,255,255,.3)":"#D1E7DD",fontSize:8.5,fontWeight:700,color:on?"#fff":"#1B3A2D"}}>REC</span>}</div><div style={{fontSize:12,fontWeight:700,color:on?"rgba(255,255,255,.95)":"#1C1917"}}>{fmt(x.co.total)}</div><div style={{fontSize:10,color:on?"rgba(255,255,255,.7)":"#78716C"}}>{x.ch.length} items · {x.sc.tw}wk · {x.en.bC}→{x.en.aC}</div></button>})}</div>;
@@ -3024,8 +3038,22 @@ function Results({d, apiKey}){
     {tab==="renders"&&<div>
       <SP/>
       {!apiKey&&<div className="note note-warn" style={{marginBottom:12}}>⚠️ <strong>Nano Banana API key not set.</strong> Enter your key in the header bar to generate photorealistic renders with spatial refinement.</div>}
-      {sols.map((x,solIdx)=><SolRenderCard key={x.nm} x={x} solIdx={solIdx} d={d} apiKey={apiKey}/>)}
-      <div className="note note-info">ℹ️ Upload multiple photos per room in Step 2 — one render per photo. Image-to-image edits preserve original walls, windows and doors automatically.</div>
+      {/* SHARED post-intervention plan — one verified layout for all 3 options */}
+      <div className="card" style={{marginBottom:12,borderColor:"#B5CDB8"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <span style={{fontSize:16}}>📐</span>
+          <div style={{flex:1}}>
+            <div style={{fontFamily:"'Cormorant Garamond'",fontSize:16,fontWeight:700,color:"#1B3A2D"}}>Piano post-intervento — condiviso · Shared post-intervention plan</div>
+            <div style={{fontSize:10.5,color:"#78716C"}}>One single layout, identical for Essenziale · Bilanciato · Premium. The three options differ ONLY in finishes and furniture — never in geometry. Every option's renders are checked against this plan.</div>
+          </div>
+          {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setMasterPlan("");setPlanBatch(b=>b+1);}}>⚡ Genera piano · Generate plan</button>}
+        </div>
+        <div style={{maxWidth:440}}>
+          <AIRenderTile key="master-plan" prompt={renderPrompt(d,sols[1],"plan")} style={d.style} solName="Piano condiviso" room="Floor Plan" apiKey={apiKey} spatialData={d.extractedPlan||null} originalPhotoFile={planPhoto} batchTrigger={planBatch} planImg={masterPlan} onPlanReady={setMasterPlan}/>
+        </div>
+      </div>
+      {sols.map((x,solIdx)=><SolRenderCard key={x.nm} x={x} solIdx={solIdx} d={d} apiKey={apiKey} masterPlan={masterPlan} ensurePlan={()=>setPlanBatch(b=>b+1)}/>)}
+      <div className="note note-info">ℹ️ The layout is the SAME across all three options (Essential/Balanced/Premium) — only finishes and furniture change. Generate the shared plan first; each option's room renders are then validated against it.</div>
     </div>}
 
     {/* DETAIL */}
