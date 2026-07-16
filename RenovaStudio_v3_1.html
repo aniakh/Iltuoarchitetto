@@ -1270,8 +1270,9 @@ For THIS scenario the internal layout is IDENTICAL to the original plan. Do NOT 
 ████ SCENARIO: BILANCIATO — MODERATE INTERNAL CHANGES ████
 For THIS scenario SOME non-load-bearing internal partitions may be moved, added or removed, and SOME internal doors may be relocated, added or removed, to improve the layout — moderate, sensible changes only. You may e.g. widen an opening, shift a partition, open a doorway, or lightly merge/split a space. Do NOT relocate whole rooms (kitchen/living/bedroom keep their identity and approximate positions). Load-bearing walls, risers and the whole envelope stay frozen.`
  : `
-████ SCENARIO: PREMIUM — FULL INTERNAL REORGANISATION ████
-For THIS scenario you may freely add/remove non-load-bearing internal partitions and internal doors, and RELOCATE the kitchen, living and/or bedroom WITHIN the fixed envelope (subject to structural and drainage feasibility) — e.g. create an open-plan kitchen-living, or move the bedroom. Wet rooms may move ONLY toward an existing drainage stack. Load-bearing walls and risers stay in place, and the envelope (external walls, entrance, windows, balcony/French doors, footprint, total area) is still NEVER changed.`;
+████ SCENARIO: PREMIUM — FULL INTERNAL REORGANISATION (INSIDE THE BOUNDARY ONLY) ████
+For THIS scenario you may freely add/remove non-load-bearing internal partitions and internal doors, and RELOCATE the kitchen, living and/or bedroom — but ONLY by rearranging space INSIDE the existing apartment perimeter. e.g. create an open-plan kitchen-living, or move the bedroom.
+⛔ CRITICAL: "full flexibility" applies ONLY to the internal arrangement. It does NOT permit adding ANY space, room, corridor, balcony, terrace, extension or annex outside the original apartment boundary, and it does NOT permit enlarging the footprint or the total area. Every relocated or new internal space must fit ENTIRELY within the original perimeter (P_proposed ⊆ P_original) and the total internal area must not increase (A_proposed ≤ A_original). If a desired layout would need more space than the apartment has, you must fit it inside anyway or drop it — you may NEVER expand outward. Wet rooms move ONLY toward an existing drainage stack. Load-bearing walls and risers stay in place; the envelope (external walls, entrance, windows, balcony/French doors, footprint, total area) is NEVER changed.`;
   const roomData=d.roomDetails||{};
   const ep=d.extractedPlan;
   const roomKey=["living","kitchen","bedroom","bathroom","corridor"].includes(room)?room:null;
@@ -2065,8 +2066,9 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
 
   /* ── Image-to-image path (original photo/plan provided) ── */
   if(originalPhotoFile){
-    /* Plans get corrective retries if the boundary/same-space cross-check fails */
-    const rounds = isPlan ? 3 : 1;
+    /* One generation per call; the tile-level conformance loop regenerates
+       until the plan/render conforms (or blocks after MAX attempts). */
+    const rounds = 1;
     let best=null;
     for(let r=0;r<rounds;r++){
       onProgress({stage:r===0?"generating":"refining", round:r+1, total:rounds});
@@ -2092,10 +2094,11 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
     return best;
   }
 
-  /* ── Text-to-image path with up to MAX_ROUNDS (no original image to compare against) ── */
+  /* ── Text-to-image path — one generation per call; the tile-level
+     conformance loop handles regeneration until it conforms or blocks ── */
   let bestDataUrl=null, bestScore=-1, bestValidation=null;
-  for(let round=0; round<MAX_ROUNDS; round++){
-    onProgress({stage:round===0?"generating":"refining", round:round+1, total:MAX_ROUNDS});
+  for(let round=0; round<1; round++){
+    onProgress({stage:"generating", round:round+1, total:1});
     const fullPrompt=(prompt+RETRY_ADDENDUM[round]).slice(0,9000);
     const {dataUrl,base64,mime}=await generateWithImagen(fullPrompt, apiKey, null, ()=>onProgress({stage:"busy", round:round+1, total:MAX_ROUNDS}));
     if(spatialData){
@@ -2122,16 +2125,21 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   const [validation, setValidation] = useState(null);
   const [planCompare, setPlanCompare] = useState(null); // plan-tile: generated plan vs original plan
   const [planConsistency, setPlanConsistency] = useState(undefined); // room-tile: render vs plan (undefined=not run)
-  const [xcheckRetries, setXcheckRetries] = useState(0); // bounded render regenerations on failed plan↔render check
+  const [attempts, setAttempts] = useState(0);  // full generation attempts made for conformance
+  const [blocked, setBlocked] = useState(false); // could not produce a conforming result after MAX attempts
   const [error, setError] = useState("");
-  const XCHECK_MAX_RETRY = 2;
+  const MAX_CONFORM_ATTEMPTS = 5; // keep regenerating until it conforms, up to this many tries
 
-  const start = useCallback(async () => {
+  /* Extra pressure appended on each regeneration attempt */
+  const CONFORM_NUDGE = "\n\n⛔ PREVIOUS ATTEMPT WAS REJECTED FOR BREAKING THE APARTMENT BOUNDARY OR ADDING SPACE. REGENERATE STRICTLY: keep the proposal ENTIRELY inside the original apartment perimeter (P_proposed ⊆ P_original), add NO room/space/balcony/terrace/corridor outside it, do NOT enlarge the footprint or total area, and change ONLY what this scenario permits internally. Fit every space inside the existing boundary.";
+
+  const start = useCallback(async (attemptNo) => {
     if(!apiKey){ setError("Set Nano Banana API key above"); setPhase("error"); return; }
     setPhase("pipeline"); setError(""); setImgUrl(""); setFinalScore(null); setPlanCompare(null); setPlanConsistency(undefined);
     try{
+      const usePrompt = (attemptNo>0) ? (prompt + CONFORM_NUDGE) : prompt;
       const result = await runRefinementPipeline(
-        prompt, apiKey, spatialData, room,
+        usePrompt, apiKey, spatialData, room,
         (p) => setProgress(p),
         originalPhotoFile, solName
       );
@@ -2140,19 +2148,21 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       setValidation(result.validation||null);
       setPlanCompare(result.planCompare||null);
       setPhase("done");
-      /* Share the generated plan image so room renders can be cross-checked against it */
-      if(isPlan && onPlanReady) onPlanReady(result.url);
+      /* NOTE: the plan is shared to room tiles ONLY once it conforms — see the
+         conformance-gate effect below (never share a non-conforming plan). */
     }catch(e){ setError(e.message||"Failed"); setPhase("error"); }
   }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady, solName]);
 
+  /* Fresh user-initiated generation — resets the conformance counter */
+  const restart = useCallback(()=>{ setAttempts(0); setBlocked(false); start(0); },[start]);
+
   /* Auto-start when batch trigger fires (only if idle) */
-  useEffect(()=>{ if(batchTrigger>0 && phase==="idle"){ setXcheckRetries(0); start(); } },[batchTrigger]);
+  useEffect(()=>{ if(batchTrigger>0 && phase==="idle"){ restart(); } },[batchTrigger]);
 
   /* CROSS-CHECK 2 — room render vs the post-intervention plan.
      Runs once this tile's render is done AND the plan image is available.
-     A ref keyed on (render,plan) ensures we kick exactly once per pair —
-     planConsistency is deliberately NOT a dependency so setting "running"
-     does not retrigger this effect and cancel its own in-flight request. */
+     Only performs the comparison here; regeneration is handled by the unified
+     conformance-retry effect below. */
   const xcheckRef = useRef("");
   useEffect(()=>{
     if(isPlan || phase!=="done" || !imgUrl || !planImg || !apiKey) return;
@@ -2161,20 +2171,37 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
     xcheckRef.current=sig;
     let cancelled=false;
     setPlanConsistency("running");
-    comparePlanToRender(planImg, imgUrl, room, apiKey).then(r=>{
-      if(cancelled) return;
-      const failing = r && (r.approved===false || r.consistent===false);
-      /* §8.5 mandatory gate: a render that conflicts with the plan must be
-         REGENERATED, not presented — bounded so we never loop forever. */
-      if(failing && xcheckRetries < XCHECK_MAX_RETRY){
-        setXcheckRetries(n=>n+1);
-        start();
-      } else {
-        setPlanConsistency(r||null);
-      }
-    });
+    comparePlanToRender(planImg, imgUrl, room, apiKey).then(r=>{ if(!cancelled) setPlanConsistency(r||null); });
     return ()=>{cancelled=true;};
-  },[isPlan, phase, imgUrl, planImg, apiKey, room, xcheckRetries]);
+  },[isPlan, phase, imgUrl, planImg, apiKey, room]);
+
+  /* UNIFIED CONFORMANCE GATE — regenerate until the result conforms, then STOP.
+     A non-conforming result is NEVER presented: we regenerate up to
+     MAX_CONFORM_ATTEMPTS, and only if still non-conforming do we show a
+     "could not produce a conforming design — retry" card (no image). */
+  useEffect(()=>{
+    if(phase!=="done" || blocked) return;
+    let failing;
+    if(isPlan){
+      if(planCompare==null){                     // no plan-vs-original check available → cannot verify, accept + share
+        if(onPlanReady) onPlanReady(imgUrl);
+        return;
+      }
+      failing = planCompare.approved===false || planCompare.sameSpace===false
+              || planCompare.withinOriginalBoundary===false || planCompare.noSpacesAdded===false
+              || planCompare.areaRatioOK===false;
+    } else {
+      if(planConsistency===undefined || planConsistency==="running") return; // wait for the render↔plan check
+      if(planConsistency==null) return;        // no plan to compare against → accept
+      failing = planConsistency.approved===false || planConsistency.consistent===false;
+    }
+    if(!failing){                                // CONFORMS → present it (and share the plan only now)
+      if(isPlan && onPlanReady) onPlanReady(imgUrl);
+      return;
+    }
+    if(attempts < MAX_CONFORM_ATTEMPTS-1){ setAttempts(a=>a+1); start(attempts+1); }
+    else { setBlocked(true); if(isPlan && onPlanReady) onPlanReady(""); } // exhausted → block; never share a bad plan
+  },[phase, blocked, isPlan, planCompare, planConsistency, attempts, start, onPlanReady, imgUrl]);
 
   const stageLabel = {
     generating: originalPhotoFile ? "Editing your original photo…" : "Generating render…",
@@ -2200,7 +2227,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
     <div className="card" style={{padding:0,overflow:"hidden",border:"1px solid #E2DCD2"}}>
       {/* IDLE */}
       {phase==="idle"&&(
-        <div className="render-idle" onClick={start}
+        <div className="render-idle" onClick={restart}
           style={{background:"linear-gradient(135deg,"+(STYLES[style]?.pal||["#F5F0E8"])[2]+"88,"+(STYLES[style]?.pal||["#E8DCC8"])[1]+"55)"}}>
           <span style={{fontSize:36,marginBottom:6}}>🎨</span>
           <span style={{fontSize:13,fontWeight:700,color:"#1B3A2D"}}>Generate Render</span>
@@ -2248,31 +2275,32 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>
       )}
 
-      {/* FINAL RENDER */}
-      {phase==="done"&&imgUrl&&(
+      {/* BLOCKED — could not produce a conforming result after MAX attempts.
+          The non-conforming image is NOT shown; the user regenerates instead. */}
+      {blocked&&(
+        <div className="render-idle" onClick={restart} style={{background:"#FEF2F2"}}>
+          <span style={{fontSize:30}}>⛔</span>
+          <span style={{fontSize:12,color:"#B91C1C",fontWeight:800,marginTop:6,textAlign:"center",padding:"0 14px"}}>Nessuna soluzione conforme dopo {MAX_CONFORM_ATTEMPTS} tentativi</span>
+          <span style={{fontSize:10,color:"#B91C1C",marginTop:3,textAlign:"center",padding:"0 16px",lineHeight:1.4}}>Il modello ha superato il confine dell'appartamento o aggiunto spazi. La proposta non conforme non viene mostrata.</span>
+          <span style={{fontSize:11,color:"#B91C1C",marginTop:6,fontWeight:700}}>↻ Riprova · Click to regenerate</span>
+        </div>
+      )}
+
+      {/* FINAL RENDER — only shown once it CONFORMS (blocked results never render) */}
+      {phase==="done"&&imgUrl&&!blocked&&(
         <div style={{position:"relative"}}>
           <img src={imgUrl} alt={style+" "+room+" — "+solName} className="render-img"
-            style={xcheckFailed?{filter:"grayscale(.85) brightness(.8)"}:undefined}
             onError={()=>{setPhase("error");setError("Image failed to load");}}/>
           {sc!=null&&(
             <div style={{position:"absolute",top:8,right:8,background:scoreClr+"ee",padding:"4px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:"#fff",backdropFilter:"blur(4px)"}}>
               {scoreLabel} {sc}/100
             </div>
           )}
-          {/* §11 mandatory gate: a result that fails a hard boundary/geometry
-              check after the allowed regenerations is marked NOT VALID. */}
-          {xcheckFailed&&(
-            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(185,28,28,.28)"}}>
-              <div style={{background:"#B91C1C",color:"#fff",padding:"8px 14px",borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",lineHeight:1.35,maxWidth:"90%"}}>
-                ⛔ NON CONFORME<br/><span style={{fontSize:9.5,fontWeight:600}}>Vincolo di confine violato — non presentato come soluzione valida. Rigenera.</span>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
-      {/* V7 COMPLIANCE STATUS — all renders */}
-      {phase==="done"&&(()=>{
+      {/* V7 COMPLIANCE STATUS — shown for conforming (presented) results only */}
+      {phase==="done"&&!blocked&&(()=>{
         const isPlan=room==="Floor Plan";
         const checks=isPlan?[
           ["Muri esterni",validation?.outerWallsUnchanged,"BLG-ENV-01"],
@@ -2309,7 +2337,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       })()}
 
       {/* CROSS-CHECK 1 — post-intervention PLAN vs INITIAL plan (plan tile only) */}
-      {phase==="done"&&isPlan&&planCompare&&(()=>{
+      {phase==="done"&&!blocked&&isPlan&&planCompare&&(()=>{
         const rows=[
           ["Muri esterni",planCompare.outerWallsMatch],
           ["Sagoma/impronta",planCompare.overallShapeMatch],
@@ -2338,7 +2366,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       })()}
 
       {/* CROSS-CHECK 2 — 3D render vs the post-intervention PLAN (room tiles) */}
-      {phase==="done"&&!isPlan&&planConsistency!==undefined&&(()=>{
+      {phase==="done"&&!blocked&&!isPlan&&planConsistency!==undefined&&(()=>{
         if(planConsistency==="running") return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#EEF4FA",fontSize:9.5,color:"#2E5A82",display:"flex",alignItems:"center",gap:7}}><div className="spinner" style={{width:14,height:14,borderWidth:2}}/> Verifica coerenza render ↔ piano…</div>);
         if(planConsistency===null) return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#F6F4EF",fontSize:9,color:"#78716C"}}>Render ↔ piano: confronto non disponibile (piano non ancora generato).</div>);
         const rows=[
@@ -2368,7 +2396,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
 
       {/* ERROR */}
       {phase==="error"&&(
-        <div className="render-idle" onClick={start} style={{background:"#FEF2F2"}}>
+        <div className="render-idle" onClick={restart} style={{background:"#FEF2F2"}}>
           <span style={{fontSize:28}}>⚠️</span>
           <span style={{fontSize:12,color:"#B91C1C",fontWeight:600,marginTop:4}}>{error}</span>
           <span style={{fontSize:10,color:"#B91C1C",marginTop:2}}>Click to retry</span>
@@ -2378,12 +2406,12 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       {/* Footer */}
       <div style={{padding:"8px 12px",borderTop:"1px solid #ECE8E1",background:"#fff",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div>
-          <div style={{fontSize:12,fontWeight:600}}>{room} — {solName}</div>
-          <div style={{fontSize:10,color:xcheckFailed?"#B91C1C":"#78716C"}}>{style}{phase==="done"?(xcheckFailed?" · ⚠ cross-check failed — review before use":xcheckDone?" · cross-checked vs "+(isPlan?"original plan":"plan"):" · spatially verified render"):""}</div>
+          <div style={{fontSize:12,fontWeight:600}}>{room} — {solName}{attempts>0&&!blocked?" · attempt "+(attempts+1):""}</div>
+          <div style={{fontSize:10,color:blocked?"#B91C1C":"#78716C"}}>{style}{blocked?" · ⛔ no conforming design — retry":(phase==="done"?(xcheckDone?" · ✓ conforms — cross-checked vs "+(isPlan?"original plan":"plan"):" · spatially verified render"):"")}</div>
         </div>
         <div style={{display:"flex",gap:4}}>
-          {phase==="done"&&<button className="btn btn-g" style={{padding:"3px 8px",fontSize:10}} onClick={()=>{setPhase("idle");setImgUrl("");setFinalScore(null);}}>🔄</button>}
-          {phase==="done"&&imgUrl&&<a href={imgUrl} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{padding:"3px 8px",fontSize:10,textDecoration:"none"}}>🔗</a>}
+          {(phase==="done"||blocked)&&<button className="btn btn-g" style={{padding:"3px 8px",fontSize:10}} onClick={restart}>🔄</button>}
+          {phase==="done"&&imgUrl&&!blocked&&<a href={imgUrl} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{padding:"3px 8px",fontSize:10,textDecoration:"none"}}>🔗</a>}
         </div>
       </div>
     </div>
