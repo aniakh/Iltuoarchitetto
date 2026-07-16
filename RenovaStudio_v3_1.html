@@ -1783,9 +1783,66 @@ const RETRY_ADDENDUM = [
    furniture & finishes, keeping all spatial structure intact
    ══════════════════════════════════════════════════════════════ */
 
+const _sleep = ms => new Promise(r=>setTimeout(r,ms));
+const _OVERLOAD_RE = /overload|unavailable|high demand|try again later|temporarily|rate limit|quota|resource.?exhausted|internal error|backend/i;
+
+/* One image-generation call to a specific model. Marks overload errors so the
+   caller can retry / fall back. */
+async function callImageModelOnce(model, parts, apiKey){
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {method:"POST", headers:{"Content-Type":"application/json"},
+     body:JSON.stringify({contents:[{parts}], generationConfig:{responseModalities:["IMAGE"]}})}
+  );
+  if(!res.ok){
+    const e = await res.json().catch(()=>({}));
+    const msg = e.error?.message || ("HTTP "+res.status);
+    const err = new Error(msg);
+    err.overloaded = res.status===503||res.status===429||res.status===500||_OVERLOAD_RE.test(msg);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  const part = data.candidates?.[0]?.content?.parts?.find(p=>p.inlineData);
+  if(!part?.inlineData){ const err=new Error("No image returned"); err.overloaded=false; throw err; }
+  const m = part.inlineData.mimeType||"image/png";
+  return {dataUrl:`data:${m};base64,${part.inlineData.data}`, base64:part.inlineData.data, mime:m};
+}
+
+/* Generate an image with automatic retry-on-overload + fallback across the
+   available Nano Banana image models (Pro → flash variants). */
+async function generateImage(parts, apiKey, onNote){
+  const primary = AI_MODELS.image;
+  const candidates = [primary, ...IMAGE_PREFS.filter(m=>m!==primary)];
+  let lastErr = null;
+  for(let ci=0; ci<candidates.length; ci++){
+    const model = candidates[ci];
+    const maxTry = ci===0 ? 3 : 2; // retry the preferred model a bit, then fall back to a lighter model
+    for(let t=0; t<maxTry; t++){
+      try{ return await callImageModelOnce(model, parts, apiKey); }
+      catch(e){
+        lastErr = e;
+        if(!e.overloaded){
+          // Non-transient (e.g. bad key, model returned no image): try next model once, else give up
+          break;
+        }
+        if(onNote) onNote(ci>0 ? "fallback" : "busy");
+        if(t < maxTry-1) await _sleep(1000*Math.pow(2,t) + Math.floor(Math.random()*500)); // 1s,2s,4s (+jitter)
+      }
+    }
+  }
+  const err = new Error(
+    (lastErr && _OVERLOAD_RE.test(lastErr.message||""))
+      ? "All Nano Banana image models are busy right now (high demand). Retried automatically — click to try again in a moment."
+      : (lastErr?.message || "Image generation failed.")
+  );
+  err.overloaded = !!(lastErr && lastErr.overloaded);
+  throw err;
+}
+
 /* Generate via image-to-image edit if original photo available,
    otherwise fall back to text-to-image with constraints */
-async function generateWithImagen(prompt, apiKey, originalPhotoFile){
+async function generateWithImagen(prompt, apiKey, originalPhotoFile, onNote){
   /* ── Image-to-image: pass original photo as reference ── */
   if(originalPhotoFile){
     try{
@@ -1812,45 +1869,23 @@ ${prompt}
 
 The result must look like a photograph of the SAME ROOM after renovation — not a different room. A viewer who knows the original should immediately recognise the same spatial layout.`;
 
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.image}:generateContent?key=${apiKey}`,
-        {method:"POST", headers:{"Content-Type":"application/json"},
-         body:JSON.stringify({
-           contents:[{parts:[
-             {inlineData:{mimeType:mime, data:base}},
-             {text:editPrompt.slice(0,9000)}
-           ]}],
-           generationConfig:{responseModalities:["IMAGE"]}
-         })
-        }
-      );
-      if(res.ok){
-        const data=await res.json();
-        const part=data.candidates?.[0]?.content?.parts?.find(p=>p.inlineData);
-        if(part?.inlineData){
-          const m=part.inlineData.mimeType||"image/png";
-          return {dataUrl:`data:${m};base64,${part.inlineData.data}`, base64:part.inlineData.data, mime:m, mode:"image-edit"};
-        }
-      }
-    }catch(e){console.warn("Image-to-image failed, falling back:",e);}
+      const r = await generateImage([
+        {inlineData:{mimeType:mime, data:base}},
+        {text:editPrompt.slice(0,9000)}
+      ], apiKey, onNote);
+      return {...r, mode:"image-edit"};
+    }catch(e){
+      /* If the models are overloaded, surface that (let the user retry) rather
+         than silently degrading to text-to-image, which would also fail and
+         would drop the original-image geometry constraint. */
+      if(e.overloaded) throw e;
+      console.warn("Image-to-image produced no image, trying text-to-image:",e);
+    }
   }
 
-  /* ── Fallback: text-to-image with full constraints ── */
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.image}:generateContent?key=${apiKey}`,
-    {method:"POST", headers:{"Content-Type":"application/json"},
-     body:JSON.stringify({
-       contents:[{parts:[{text: prompt.slice(0,9000)}]}],
-       generationConfig:{responseModalities:["IMAGE"]}
-     })
-    }
-  );
-  if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error?.message||"Nano Banana error "+res.status); }
-  const data = await res.json();
-  const part = data.candidates?.[0]?.content?.parts?.find(p=>p.inlineData);
-  if(!part?.inlineData) throw new Error("No image returned from Nano Banana 2");
-  const mime = part.inlineData.mimeType||"image/png";
-  return {dataUrl:`data:${mime};base64,${part.inlineData.data}`, base64:part.inlineData.data, mime, mode:"text-to-image"};
+  /* ── Text-to-image with full constraints ── */
+  const r = await generateImage([{text: prompt.slice(0,9000)}], apiKey, onNote);
+  return {...r, mode:"text-to-image"};
 }
 
 /* Validate render via Gemini 2.0 Flash vision — returns validation object */
@@ -2036,7 +2071,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
     for(let r=0;r<rounds;r++){
       onProgress({stage:r===0?"generating":"refining", round:r+1, total:rounds});
       const corrective = r>0 ? RETRY_ADDENDUM[1] : "";
-      const result = await generateWithImagen((prompt+corrective).slice(0,9000), apiKey, originalPhotoFile);
+      const result = await generateWithImagen((prompt+corrective).slice(0,9000), apiKey, originalPhotoFile, ()=>onProgress({stage:"busy", round:r+1, total:rounds}));
       if(spatialData && isPlan){
         onProgress({stage:"validating", round:r+1, total:rounds});
         const v=await validateRender(result.dataUrl, roomType, spatialData, apiKey);
@@ -2062,7 +2097,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
   for(let round=0; round<MAX_ROUNDS; round++){
     onProgress({stage:round===0?"generating":"refining", round:round+1, total:MAX_ROUNDS});
     const fullPrompt=(prompt+RETRY_ADDENDUM[round]).slice(0,9000);
-    const {dataUrl,base64,mime}=await generateWithImagen(fullPrompt, apiKey, null);
+    const {dataUrl,base64,mime}=await generateWithImagen(fullPrompt, apiKey, null, ()=>onProgress({stage:"busy", round:round+1, total:MAX_ROUNDS}));
     if(spatialData){
       onProgress({stage:"validating", round:round+1, total:MAX_ROUNDS});
       const v=await validateRender(`data:${mime};base64,${base64}`, roomType, spatialData, apiKey);
@@ -2143,11 +2178,12 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
 
   const stageLabel = {
     generating: originalPhotoFile ? "Editing your original photo…" : "Generating render…",
+    busy:       "Model busy (high demand) — retrying / switching model…",
     validating: "Verifying spatial accuracy…",
     comparing:  isPlan ? "Cross-checking against the original plan…" : "Cross-checking against the plan…",
     refining:   "Refining spatial fidelity…"
   };
-  const stageIcon = {generating:"🎨", validating:"🔍", comparing:"🧭", refining:"🔧"};
+  const stageIcon = {generating:"🎨", busy:"⏳", validating:"🔍", comparing:"🧭", refining:"🔧"};
 
   /* Score badge colour */
   const sc = finalScore;
