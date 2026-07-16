@@ -1841,9 +1841,11 @@ async function generateImage(parts, apiKey, onNote){
   throw err;
 }
 
-/* Generate via image-to-image edit if original photo available,
-   otherwise fall back to text-to-image with constraints */
-async function generateWithImagen(prompt, apiKey, originalPhotoFile, onNote){
+/* Generate via image-to-image edit if original photo available; else, if an
+   approved plan image is available, render the room FROM the plan (plan-to-3D);
+   else text-to-image with constraints. `planRefImg` = the approved plan image
+   (data URL) used to condition a room render on the actual layout. */
+async function generateWithImagen(prompt, apiKey, originalPhotoFile, onNote, planRefImg){
   /* ── Image-to-image: pass original photo as reference ── */
   if(originalPhotoFile){
     try{
@@ -1880,8 +1882,28 @@ The result must look like a photograph of the SAME ROOM after renovation — not
          than silently degrading to text-to-image, which would also fail and
          would drop the original-image geometry constraint. */
       if(e.overloaded) throw e;
-      console.warn("Image-to-image produced no image, trying text-to-image:",e);
+      console.warn("Image-to-image produced no image, trying next mode:",e);
     }
+  }
+
+  /* ── Plan-to-3D: render the room DIRECTLY from the approved floor plan so the
+     geometry, sequence, openings and adjacencies come from the plan itself ── */
+  if(planRefImg){
+    try{
+      const planPart = await imgPartFromAny(planRefImg);
+      if(planPart){
+        const planPrompt = `IMAGE 1 is the APPROVED 2D FLOOR PLAN of the whole apartment (the single source of truth for geometry). Produce a photorealistic 3D interior render of the target room, seen from a camera standing INSIDE that room on the plan, looking in a direction that reveals the room.
+The render MUST match the plan EXACTLY — do a 1-to-1 correspondence:
+- Same internal walls, internal doors, corridors and openings in the same positions.
+- Same windows and balcony/French doors (porte-finestra): same count, same wall, same side; never add, move or omit one, never put a window on an internal wall.
+- Same SEQUENCE and SIDE of adjacent spaces: if a neighbouring space is visible from this viewpoint (e.g. an open kitchen seen from the living room, a corridor, a balcony through a porta-finestra) it MUST appear on the same side and with the same character as the plan shows.
+- Furniture placed consistently with the plan's room function and layout (e.g. kitchen units on the wall the plan assigns to the kitchen; bed in the bedroom zone); nothing blocking a door or window.
+- Do NOT invent, move, add or remove any room, wall, door, window or opening. Geometry from the plan always beats aesthetics.
+${prompt}`;
+        const r = await generateImage([planPart, {text: planPrompt.slice(0,9000)}], apiKey, onNote);
+        return {...r, mode:"plan-to-image"};
+      }
+    }catch(e){ if(e.overloaded) throw e; console.warn("Plan-to-3D produced no image, trying text-to-image:",e); }
   }
 
   /* ── Text-to-image with full constraints ── */
@@ -2061,7 +2083,7 @@ HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, prop
 
 const _envBad = v => v && [v.outerWallsUnchanged,v.overallShapeUnchanged,v.entranceDoorUnchanged,v.balconyDoorsUnchanged,v.noWallMoves,v.totalAreaPreserved].some(x=>x===false);
 
-async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onProgress, originalPhotoFile, tier){
+async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onProgress, originalPhotoFile, tier, planRefImg){
   const isPlan = roomType==="Floor Plan";
 
   /* ── Image-to-image path (original photo/plan provided) ── */
@@ -2073,7 +2095,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
     for(let r=0;r<rounds;r++){
       onProgress({stage:r===0?"generating":"refining", round:r+1, total:rounds});
       const corrective = r>0 ? RETRY_ADDENDUM[1] : "";
-      const result = await generateWithImagen((prompt+corrective).slice(0,9000), apiKey, originalPhotoFile, ()=>onProgress({stage:"busy", round:r+1, total:rounds}));
+      const result = await generateWithImagen((prompt+corrective).slice(0,9000), apiKey, originalPhotoFile, ()=>onProgress({stage:"busy", round:r+1, total:rounds}), planRefImg);
       if(spatialData && isPlan){
         onProgress({stage:"validating", round:r+1, total:rounds});
         const v=await validateRender(result.dataUrl, roomType, spatialData, apiKey);
@@ -2100,7 +2122,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
   for(let round=0; round<1; round++){
     onProgress({stage:"generating", round:round+1, total:1});
     const fullPrompt=(prompt+RETRY_ADDENDUM[round]).slice(0,9000);
-    const {dataUrl,base64,mime}=await generateWithImagen(fullPrompt, apiKey, null, ()=>onProgress({stage:"busy", round:round+1, total:MAX_ROUNDS}));
+    const {dataUrl,base64,mime}=await generateWithImagen(fullPrompt, apiKey, null, ()=>onProgress({stage:"busy", round:round+1, total:MAX_ROUNDS}), planRefImg);
     if(spatialData){
       onProgress({stage:"validating", round:round+1, total:MAX_ROUNDS});
       const v=await validateRender(`data:${mime};base64,${base64}`, roomType, spatialData, apiKey);
@@ -2141,7 +2163,8 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       const result = await runRefinementPipeline(
         usePrompt, apiKey, spatialData, room,
         (p) => setProgress(p),
-        originalPhotoFile, solName
+        originalPhotoFile, solName,
+        isPlan ? undefined : planImg   // room renders are generated FROM the approved plan
       );
       setImgUrl(result.url);
       setFinalScore(result.score);
@@ -2151,13 +2174,23 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       /* NOTE: the plan is shared to room tiles ONLY once it conforms — see the
          conformance-gate effect below (never share a non-conforming plan). */
     }catch(e){ setError(e.message||"Failed"); setPhase("error"); }
-  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady, solName]);
+  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady, solName, planImg]);
 
-  /* Fresh user-initiated generation — resets the conformance counter */
-  const restart = useCallback(()=>{ setAttempts(0); setBlocked(false); start(0); },[start]);
+  /* Fresh user-initiated generation. Room renders are generated FROM the
+     approved plan, so when a plan is expected (batch run) we WAIT for it to
+     conform before rendering the room, instead of guessing. */
+  const beginGeneration = useCallback((deferForPlan)=>{
+    setAttempts(0); setBlocked(false);
+    if(!isPlan && deferForPlan && !planImg){ setPhase("waiting"); return; }
+    start(0);
+  },[isPlan, planImg, start]);
+  const restart = useCallback(()=>beginGeneration(false),[beginGeneration]); // manual click: render now (best effort)
 
-  /* Auto-start when batch trigger fires (only if idle) */
-  useEffect(()=>{ if(batchTrigger>0 && phase==="idle"){ restart(); } },[batchTrigger]);
+  /* Auto-start when batch trigger fires (only if idle/waiting) */
+  useEffect(()=>{ if(batchTrigger>0 && (phase==="idle"||phase==="waiting")){ beginGeneration(true); } },[batchTrigger]);
+
+  /* A deferred room render begins as soon as the conforming plan is available */
+  useEffect(()=>{ if(phase==="waiting" && planImg && !isPlan){ start(0); } },[phase, planImg, isPlan, start]);
 
   /* CROSS-CHECK 2 — room render vs the post-intervention plan.
      Runs once this tile's render is done AND the plan image is available.
@@ -2204,7 +2237,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   },[phase, blocked, isPlan, planCompare, planConsistency, attempts, start, onPlanReady, imgUrl]);
 
   const stageLabel = {
-    generating: originalPhotoFile ? "Editing your original photo…" : "Generating render…",
+    generating: originalPhotoFile ? "Editing your original photo…" : ((!isPlan && planImg) ? "Rendering from the approved plan…" : "Generating render…"),
     busy:       "Model busy (high demand) — retrying / switching model…",
     validating: "Verifying spatial accuracy…",
     comparing:  isPlan ? "Cross-checking against the original plan…" : "Cross-checking against the plan…",
@@ -2238,6 +2271,15 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
           {originalPhotoFile&&<span style={{fontSize:9,color:"#1B3A2D",marginTop:3,padding:"2px 8px",background:"#B5CDB8",borderRadius:8}}>
             ✓ Original photo attached — editing in place
           </span>}
+        </div>
+      )}
+
+      {/* WAITING — room render deferred until its scenario's plan conforms */}
+      {phase==="waiting"&&(
+        <div className="render-idle" onClick={()=>start(0)} style={{background:"linear-gradient(135deg,#EEF4FA,#F5F0E8)",cursor:"default"}}>
+          <div className="spinner" style={{width:26,height:26,borderWidth:3,marginBottom:8}}/>
+          <span style={{fontSize:12,fontWeight:700,color:"#2E5A82",textAlign:"center",padding:"0 14px"}}>In attesa del piano conforme…</span>
+          <span style={{fontSize:10,color:"#78716C",marginTop:3,textAlign:"center",padding:"0 16px",lineHeight:1.4}}>This render is generated FROM the approved plan. It starts automatically once this scenario's plan passes its checks.</span>
         </div>
       )}
 
