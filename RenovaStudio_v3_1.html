@@ -210,77 +210,48 @@ async function detectBestModels(apiKey){
 /* ══════════════════════════════════════════════════════════════
    ENGINE DATA — Updated March 2026 immobiliare.it prices
    ══════════════════════════════════════════════════════════════ */
-const STYLES={Japandi:{mat:"light oak, warm white plaster, linen, soft stone, matte finishes",desc:"quiet, calm, natural, warmly minimal",pal:["#D4C5A9","#E8DCC8","#F5F0E8","#8B7D6B","#5C5346"]},Scandinavian:{mat:"pale woods, off-whites, warm textiles",desc:"bright, practical, cozy",pal:["#E8E4DF","#F5F2ED","#FFFFFF","#B8AFA5","#6B6560"]},Minimalist:{mat:"flush doors, microtexture plaster, pale stone",desc:"calm, disciplined, clean-lined",pal:["#F0F0F0","#E0E0E0","#FFFFFF","#999999","#333333"]},Mediterranean:{mat:"limewash, warm stone, terracotta, oak",desc:"sunlit, tactile, warm",pal:["#E8C9A0","#D4A373","#F5E6D3","#8B6F4E","#C87941"]},Contemporary:{mat:"neutral palette, stone, wood, mixed textures",desc:"balanced, elegant, modern",pal:["#C5CCD3","#DDE1E6","#F0F2F5","#7A8490","#4A5568"]},"Industrial Soft":{mat:"oak, dark metal, concrete-look",desc:"urban but warm, graphic",pal:["#8B8D8F","#A0A2A4","#D4D6D8","#4A4C4E","#2D2F31"]},"Classic Modern":{mat:"travertine, oak, brushed metal, refined joinery",desc:"timeless, elegant",pal:["#C9B99A","#DDD0B8","#F0EAE0","#8B7D6B","#5C5346"]},Biophilic:{mat:"wood, plants, natural stone, woven textures",desc:"nature-connected, restorative",pal:["#A8C5A0","#C5DDB8","#E8F0E4","#6B8F60","#3D5C35"]}};
+/* Five core styles most used in Italian residential renovation */
+const STYLES={Contemporary:{mat:"neutral palette, stone, wood, mixed textures",desc:"balanced, elegant, modern",pal:["#C5CCD3","#DDE1E6","#F0F2F5","#7A8490","#4A5568"]},"Classic Modern":{mat:"travertine, oak, brushed metal, refined joinery",desc:"timeless, elegant",pal:["#C9B99A","#DDD0B8","#F0EAE0","#8B7D6B","#5C5346"]},Mediterranean:{mat:"limewash, warm stone, terracotta, oak",desc:"sunlit, tactile, warm",pal:["#E8C9A0","#D4A373","#F5E6D3","#8B6F4E","#C87941"]},Minimalist:{mat:"flush doors, microtexture plaster, pale stone",desc:"calm, disciplined, clean-lined",pal:["#F0F0F0","#E0E0E0","#FFFFFF","#999999","#333333"]},Japandi:{mat:"light oak, warm white plaster, linen, soft stone, matte finishes",desc:"quiet, calm, natural, warmly minimal",pal:["#D4C5A9","#E8DCC8","#F5F0E8","#8B7D6B","#5C5346"]}};
 
 /* Expanded interventions with tax benefit & conformity info */
+/* Focused set of the interventions most common in Italian home renovation */
 const INTERVENTIONS = {
-  /* Structure (5) */
-  "Internal layout optimization":{l:"Optimize layout (non-structural walls)",ic:"🏗️",cat:"Structure",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Home office / flex room":{l:"Create home office or flex room",ic:"💻",cat:"Structure",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Partition walls addition":{l:"Add new internal partition walls",ic:"🧱",cat:"Structure",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Doorway relocation":{l:"Relocate internal doorways",ic:"🚪",cat:"Structure",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Structural reinforcement":{l:"Reinforce existing structure (anti-seismic)",ic:"🏛️",cat:"Structure",en:false,pm:"cila",tax50:true,nonConf:false},
-  /* Rooms (5) */
-  "Kitchen upgrade":{l:"Renovate kitchen with new appliances & layout",ic:"🍳",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:false},
+  /* Layout */
+  "Internal layout optimization":{l:"Reorganise layout (non-structural walls)",ic:"🏗️",cat:"Layout",en:false,pm:"cila",tax50:true,nonConf:true},
+  "Home office / flex room":{l:"Create a home office or flex room",ic:"💻",cat:"Layout",en:false,pm:"cila",tax50:true,nonConf:true},
+  /* Rooms */
+  "Kitchen upgrade":{l:"Renovate kitchen — new layout & appliances",ic:"🍳",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:false},
   "Bathroom upgrade":{l:"Renovate bathroom(s) with modern fixtures",ic:"🚿",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Bathroom addition":{l:"Add a second bathroom",ic:"🛁",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Laundry room":{l:"Create dedicated laundry space",ic:"🧺",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:true},
-  "Walk-in closet":{l:"Create walk-in closet / cabina armadio",ic:"👔",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:true},
-  /* Finishes (5) */
-  "Finishes refresh":{l:"Refresh flooring, doors, paint, lighting",ic:"🎨",cat:"Finishes",en:false,pm:"free",tax50:true,nonConf:false},
+  "Walk-in closet":{l:"Walk-in closet / cabina armadio",ic:"👔",cat:"Rooms",en:false,pm:"cila",tax50:true,nonConf:true},
+  /* Finishes */
+  "Finishes refresh":{l:"Flooring, doors, paint, lighting",ic:"🎨",cat:"Finishes",en:false,pm:"free",tax50:true,nonConf:false},
   "Storage boost":{l:"Custom storage / bespoke joinery",ic:"📦",cat:"Finishes",en:false,pm:"free",tax50:true,nonConf:false},
-  "Ceiling renovation":{l:"False ceiling, acoustic panels, LED integration",ic:"💡",cat:"Finishes",en:false,pm:"free",tax50:true,nonConf:false},
-  "Wall treatments":{l:"Boiserie, wallpaper, decorative plaster",ic:"🖼️",cat:"Finishes",en:false,pm:"free",tax50:true,nonConf:false},
-  "Balcony refresh":{l:"Balcony flooring, railing, waterproofing",ic:"🌿",cat:"Finishes",en:false,pm:"free",tax50:true,nonConf:false},
-  /* Systems (5) */
-  "Electrical upgrade":{l:"Upgrade electrical system (CEI 64-8)",ic:"⚡",cat:"Systems",en:false,pm:"cila",tax50:true,nonConf:false},
+  /* Systems */
+  "Electrical upgrade":{l:"Electrical system to CEI 64-8 (DiCo)",ic:"⚡",cat:"Systems",en:false,pm:"cila",tax50:true,nonConf:false},
   "Plumbing upgrade":{l:"Replace water supply & drainage pipes",ic:"🔧",cat:"Systems",en:false,pm:"cila",tax50:true,nonConf:false},
-  "Smart controls":{l:"Smart thermostat, zoning, home automation",ic:"📱",cat:"Systems",en:true,pm:"free",tax50:true,nonConf:false},
-  "Ventilation system":{l:"Mechanical ventilation with heat recovery (VMC)",ic:"💨",cat:"Systems",en:true,pm:"cila",tax50:true,nonConf:false},
-  "Fire safety":{l:"Fire detection, extinguishers, fire doors",ic:"🔥",cat:"Systems",en:false,pm:"free",tax50:true,nonConf:false},
-  /* Energy Upgrade (7) — renamed from Envelope */
-  "Opaque envelope":{l:"External/internal wall insulation (cappotto)",ic:"🧱",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
-  "Transparent envelope":{l:"High-performance windows & doors",ic:"🪟",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
-  "Heating system":{l:"Replace heating (heat pump, condensing boiler)",ic:"🌡️",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
-  "Cooling system":{l:"Install/upgrade cooling (split, VRF, fan coil)",ic:"❄️",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
-  "Renewable sources":{l:"Solar thermal, photovoltaic panels",ic:"☀️",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
-  "Other energy interventions":{l:"LED lighting, energy monitoring, smart meters",ic:"📊",cat:"Energy Upgrade",en:true,pm:"free",tax50:true,nonConf:false},
-  "Complete energy upgrade":{l:"All energy interventions combined (max benefit)",ic:"🔋",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Ventilation system":{l:"Heat-recovery ventilation (VMC)",ic:"💨",cat:"Systems",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Smart controls":{l:"Smart thermostat, zoning, automation",ic:"📱",cat:"Systems",en:true,pm:"free",tax50:true,nonConf:false},
+  /* Energy Upgrade */
+  "Opaque envelope":{l:"Wall insulation (cappotto)",ic:"🧱",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Transparent envelope":{l:"High-performance windows (same openings)",ic:"🪟",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Heating system":{l:"Heat pump / condensing boiler",ic:"🌡️",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Cooling system":{l:"Split / VRF / fan-coil cooling",ic:"❄️",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Renewable sources":{l:"Photovoltaic / solar thermal",ic:"☀️",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
+  "Complete energy upgrade":{l:"All energy measures combined (max benefit)",ic:"🔋",cat:"Energy Upgrade",en:true,pm:"cila",tax50:true,nonConf:false},
 };
 
 /* ═══ V7 §A — DETAILED INTERVENTION CATALOGUE (selectable, per-item attributes) ═══ */
 const IV_PRI=["Essential","Preferred","Optional"],IV_EXT=["Full","Partial","Localised"],IV_BUD=["Economical","Balanced","Premium"],IV_TIM=["Immediate","Future phase"],IV_FLX=["Strict requirement","Open to alternatives"];
 const IV_CAT={
-"01 · Layout & space reorganisation":{ic:"🧩",it:"Remove non-load-bearing partitions|Add new internal partitions|Relocate existing partitions|Enlarge a room|Reduce a room to create another function|Combine two or more rooms|Separate an existing open space|Open-plan living-dining-kitchen|Semi-open kitchen|Separate enclosed kitchen|Improve circulation / reduce corridor|Separate day and night areas|Separate private and guest areas|Reconfigure the entrance area (internal)|Create a distributive hallway|Flexible / multifunctional room|Room convertible over time|Change function of an existing room|Recover unused internal space|Reconfigure basement / attic (legal verification)|Create or modify a mezzanine (structural verification)"},
-"02 · Structural interventions":{ic:"🏗️",v:"STRUCTURAL + SEISMIC VERIFICATION REQUIRED (NTC 2018 · L.R. 33/2015) — never executed on plan appearance alone",it:"Opening in a load-bearing wall|Enlarge existing structural opening|Close existing structural opening|Remove or modify a structural wall|Modify column or pier|Modify a beam|Strengthen a slab|Opening in a floor slab|Structural staircase|Reinforce roof structure|Construct a mezzanine|Add concentrated loads (stone island, heavy equipment)|Reinforce structure for new plant|Repair structural cracking|Improve seismic performance"},
-"03 · Entrance & circulation":{ic:"🚪",it:"More defined entrance area|Entrance wardrobe|Shoe storage|Entrance seating|Mirror or console|Visual privacy from entrance|Better entrance→living access|Reduce long/narrow corridors|Increase corridor width|Circulation for children / elderly / reduced mobility|Sliding or pocket doors|Reverse door-opening directions|Widen internal doors|Remove unnecessary doors|Improve access to balconies / service spaces"},
-"04 · Kitchen":{ic:"🍳",it:"Renovate in current position|Relocate kitchen (plumbing route must be feasible)|Enlarge kitchen|Reduce kitchen|Open toward living room|Glazed partial separation|Fully enclose|Linear layout|L-shaped layout|U-shaped layout|Parallel / galley layout|Island|Peninsula|Breakfast counter|Concealed kitchen|Pantry|Tall storage units|Appliance wall|Waste-separation storage|Larger fridge / freezer space|Dishwasher|Wine refrigerator|Second sink|More countertop|Gas → induction|Upgrade extraction|Under-cabinet lighting|Integrated laundry|Utility area adjacent|Preserve existing units, modify selected|Replace worktop / fronts / handles only"},
-"05 · Bathrooms":{ic:"🚿",it:"Renovate existing bathroom|Enlarge bathroom|Reduce bathroom|Relocate bathroom (drainage route must be feasible)|Additional bathroom|En-suite bathroom|Guest WC|Accessible bathroom (DM 236/1989)|Bathtub → shower|Shower → bathtub|Walk-in shower|Standard shower enclosure|Add bidet|Remove bidet (where legally acceptable)|Double basin|Bathroom storage|Recessed wall niche|Heated towel rail|Mechanical ventilation|Improve natural ventilation|Improve waterproofing|Replace fixtures only|Replace finishes only|Separate WC and washing areas|Anti-bathroom where required|Acoustic separation from bedrooms"},
-"06 · Laundry & utility":{ic:"🧺",it:"Separate laundry room|Laundry closet|Laundry in bathroom|Laundry in kitchen|Stacked washer + dryer|Side-by-side appliances|Utility sink|Drying space|Cleaning-equipment storage|Linen storage|Ironing space|Laundry ventilation|Drainage & waterproofing|Conceal appliances behind doors|Maintenance access to valves"},
-"07 · Bedrooms":{ic:"🛏️",it:"Additional bedroom|Enlarge principal bedroom|Smaller secondary bedroom|Children's bedroom|Guest bedroom|Flexible guest room + office|En-suite bathroom|Walk-in wardrobe|Built-in wardrobes|Dressing area|Study desk|Reading area|Acoustic privacy|Blackout & daylight control|Better access around bed|Reposition bed|Preserve existing furniture|Custom bedroom furniture|Elderly / reduced-mobility bedroom"},
-"08 · Living & dining":{ic:"🛋️",it:"Enlarge living area|Open-plan living + dining|Separate living and dining|Formal dining area|Compact everyday dining|Television wall|Media room|Bookcase / library wall|Decorative electric fireplace|Conversation area|Children's play area|Guest sleeping area|Sofa bed|Better kitchen connection|Better balcony / terrace connection|More living-room storage|Custom wall units|Preserve existing furniture, redesign around it|Improve natural-light distribution|Improve acoustic comfort"},
-"09 · Home office":{ic:"💻",it:"Dedicated enclosed office|Partially enclosed office|Open workstation|Desk in living room|Desk in bedroom|Two workstations|Sound insulation for calls|Video-call background|Document & equipment storage|Task lighting|Electrical & data upgrades|Concealed cable management|Flexible office + guest room|Fold-away workstation|Daylight & glare control"},
-"10 · Storage & organisation":{ic:"🗄️",it:"Entrance wardrobe|Shoe storage|Full-height wardrobes|Walk-in wardrobe|Pantry|Linen storage|Luggage storage|Seasonal storage|Cleaning storage|Sports-equipment storage|Children's storage|Concealed living-room storage|Under-bed storage|Under-stair storage|Corridor storage|Window seat with storage|Overhead storage|Technical cabinet|Waste-separation storage|Bicycle / stroller storage|Integrated joinery replaces freestanding"},
-"11 · Doors & glazed partitions":{ic:"🔳",it:"Replace internal doors|Restore existing doors|Reuse doors in new positions|Sliding doors|Pocket doors|Folding doors|Full-height doors|Glazed doors|Internal glazed partition|Acoustic door|Fire-rated door where required|Widen door openings|Change opening direction|Remove selected doors|Concealed / flush doors|Accessible doors|Frosted / patterned glass privacy"},
-"12 · Windows & façade-related":{ic:"🪟",v:"MUNICIPAL + STRUCTURAL + ENERGY + HERITAGE + CONDOMINIUM VERIFICATION REQUIRED — external openings & façade are outside manutenzione straordinaria; envelope hard constraint BLG-ENV-01/03/04 applies",it:"Replace windows (same size/position)|Restore existing windows|Thermal performance upgrade|Acoustic performance upgrade|Replace shutters / external shading|Internal shading|Enlarge external opening ⚠|Reduce external opening ⚠|New façade opening ⚠|Close façade opening ⚠|Window → glazed door ⚠|Improve balcony access|Replace entrance security door (same position/width)|Insect screens|Solar-control glazing|Modify sills / internal reveals|Preserve façade appearance"},
-"13 · Balcony / terrace / loggia":{ic:"🌿",v:"Enclosures/verandas are NEVER furniture: assess façade, surface, volume, sagoma, structure, energy & condominium rights",it:"Renovate finishes|Replace external flooring|Waterproofing|Drainage|Parapet repair / replacement|External lighting|Planters|Outdoor furniture|Shading|Pergola ⚠|Canopy / pensilina ⚠|Enclosure / veranda ⚠|Remove existing enclosure|Integrate outdoor with interior|Outdoor storage|Outdoor kitchen ⚠|Electrical outlets|Accessibility to external area|Privacy screening|Photovoltaic / solar where permitted ⚠"},
-"14 · Flooring":{ic:"🪵",it:"Preserve & restore existing flooring|Replace all flooring|Replace in selected rooms only|One continuous material|Different flooring in wet areas|Timber / engineered wood|Porcelain stoneware|Ceramic tiles|Natural stone|Terrazzo|Microcement|Resin|Vinyl / resilient|Carpet in selected areas|Acoustic underlay|Thermal insulation below floor|Underfloor heating|Level uneven floors|Repair screed|Preserve historic flooring|Reuse salvaged flooring|Replace skirting|Flush / concealed skirting"},
-"15 · Walls & ceilings":{ic:"🎨",it:"Repaint|Repair plaster|Remove wallpaper|New wallpaper|Washable finishes|Wall panelling|Decorative plaster|Timber cladding|Acoustic panels|Internal thermal insulation|Moisture-resistant systems|Suspended ceiling|Remove suspended ceiling|Ceiling coves|Conceal services in ceiling|Access panels|Restore mouldings|New cornices|Expose historic elements|Conceal intrusive services|Feature wall"},
-"16 · Furniture & custom joinery":{ic:"🪑",it:"Retain all existing furniture|Retain selected furniture|Replace all furniture|Standard modular furniture|Custom-built furniture|Full-height built-ins|Integrated wall units|Custom kitchen|Custom wardrobe|Custom media wall|Custom home-office unit|Integrated seating|Window bench|Fold-away bed|Fold-away table|Multifunctional furniture|Child-safe furniture|Pet-friendly furniture|Accessible furniture|Refurbish existing furniture|Movable furniture for flexibility"},
-"17 · Lighting":{ic:"💡",it:"Replace general lighting|Recessed ceiling lights|Surface-mounted lights|Pendants|Wall lights|Floor / table lamps|Indirect lighting|Ceiling-cove lighting|Under-cabinet kitchen lighting|Wardrobe lighting|Bathroom mirror lighting|Reading lights|Night lighting|Dimming|Motion sensors|Daylight sensors|Smart controls|Better colour rendering|Lighting scenes|Natural-light distribution|Glare reduction|Balcony / terrace lighting"},
-"18 · Electrical / data / smart home":{ic:"🔌",it:"Upgrade electrical system (DM 37/2008)|Add outlets|Relocate outlets|USB / USB-C charging|Dedicated appliance circuits|Induction-cooking capacity|TV & media connections|Ethernet points|Wi-Fi coverage|Structured data cabinet|Smart thermostats|Smart lighting|Smart blinds / shutters|Video intercom|Intrusion alarm|Security cameras (where legal)|Leak detection|Smoke / CO detection|Energy monitoring|Automated scenarios|Conduits for future upgrades|Conceal cables"},
-"19 · Heating / cooling / ventilation":{ic:"🌡️",it:"Retain existing heating|Replace heating system|Replace radiators|Relocate radiators|Underfloor heating|Heat-pump heating|Add air conditioning|Replace AC units|Relocate indoor/outdoor units ⚠|Mechanical ventilation|Heat-recovery ventilation|Bathroom extraction|Kitchen extraction|Ceiling fans|Zoning & thermostatic control|Humidity control|Air filtration|Maintenance access|Conceal units & ducts"},
-"20 · Plumbing / drainage / gas":{ic:"🚰",v:"Kitchens/bathrooms/laundry are relocated ONLY if a feasible water, drainage & ventilation route to EXISTING risers is demonstrated (MEP-ENV-06)",it:"Replace water pipes|Replace wastewater pipes|Relocate fixtures|New laundry connection|Water-saving fixtures|Improve pressure|Water filtration|Leak-detection valves|Replace boiler|Remove gas service|Modify gas service|Gas → electric appliances|Drainage ventilation|Inspection access|Acoustic pipe insulation|Wet-area waterproofing"},
-"21 · Energy efficiency":{ic:"⚡",it:"Wall insulation|Roof insulation|Floor insulation|Air tightness|Reduce thermal bridges|Solar control|External shading ⚠|Heat pump|Heat-recovery ventilation|Photovoltaic ⚠|Solar thermal ⚠|Battery storage|Efficient appliances|Heating controls|Energy monitoring|Lighting efficiency|Hot-water efficiency|Low-impact local materials|Retain serviceable materials"},
-"22 · Acoustic comfort":{ic:"🔇",it:"Bedroom↔living separation|Between-unit separation (DPCM 5/12/1997)|Partition insulation|Floor insulation|Ceiling insulation|Façade / window acoustics|Acoustic doors|Drainage-pipe noise|HVAC noise|Impact noise|Open-plan reverberation|Acoustic panels|Isolate washers & pumps|Relocate noisy equipment|Protected home office"},
-"23 · Accessibility & adaptability":{ic:"♿",it:"Widen doors (≥75/80cm DM 236/1989)|Corridor widths|Remove thresholds|Step-free circulation|Accessible bathroom layout|Grab-bar reinforcement|Walk-in shower|Wheelchair turning (≥135/150cm)|Lower controls & switches|Accessible kitchen work areas|Lever handles|Visual contrast|Elderly lighting|Non-slip flooring|Balcony access|Future mobility preparation|Stairlift / platform lift (feasibility)|Modify private staircase|Access from common spaces ⚠"},
-"24 · Indoor environment & health":{ic:"🌬️",it:"Natural ventilation|Mechanical ventilation|Humidity control|Treat mould / condensation|Waterproofing|Thermal comfort|Summer overheating control|Low-VOC paints|Formaldehyde-controlled joinery|Mould-resistant materials|Daylight|Glare control|Air filtration|Radon assessment|Radon mitigation|Hazardous-material management ⚠|Asbestos investigation ⚠"},
-"25 · Safety & security":{ic:"🛡️",it:"Security entrance door (same position/width)|Window security|Alarm system|Video intercom|Smoke detectors|CO detectors|Gas-leak detection|Water-leak detection|Child-safety devices|Parapet safety ⚠|Bathroom slip resistance|Emergency lighting|Fire separation where required|Safe access to equipment|Safe roof maintenance access ⚠"},
-"26 · Demolition / removal / remediation":{ic:"🧱",v:"Suspected hazardous materials (asbestos, lead) are NEVER cut or disturbed without survey + authorised procedure",it:"Remove internal partitions|Remove flooring|Remove suspended ceilings|Remove kitchen units|Remove bathroom fixtures|Remove built-in furniture|Remove obsolete systems|Remove unauthorised works (professional instruction) ⚠|Remove veranda / enclosure ⚠|Remove damaged plaster|Remove mould-damaged materials|Asbestos removal (authorised) ⚠|Repair water damage|Remediate hazardous materials ⚠|Protect elements that remain|Salvage materials for reuse"},
-"27 · Restoration & conservation":{ic:"🏛️",it:"Restore historic flooring|Restore decorative plasterwork|Restore timber doors|Restore windows|Restore shutters ⚠|Restore stone surfaces|Restore exposed brickwork|Restore metalwork|Preserve room proportions|Preserve façade elements|Preserve ceiling details|Discreet system integration|Reversible interventions|Reuse original materials|Match new to historic finishes"},
-"28 · External & appurtenant areas":{ic:"🌳",v:"Planning verification required for external works",it:"Reconfigure private garden|External paving|Permeable surfaces|Rainwater drainage|Planting|Irrigation|External lighting|Bicycle storage|Waste areas|Outdoor seating|Pergola / shade ⚠|Fence / privacy screen ⚠|Gate / access modification ⚠|Step-free external access|EV charging point|Rainwater collection|External technical equipment ⚠|Parking areas ⚠|Swimming pool ⚠"},
-"29 · Condominium & common parts":{ic:"🏢",v:"CONDOMINIUM APPROVAL REQUIRED (art. 1102/1120/1122 c.c. · regolamento) before any common-part work",it:"Modify common wall ⚠|Connect to common drainage stack ⚠|Modify common heating/cooling ⚠|Modify common ventilation shafts ⚠|External AC unit ⚠|Façade modification ⚠|Visibly different windows/shutters ⚠|Balcony / parapet modification ⚠|Roof / terrace modification ⚠|Entrance from common corridor ⚠|Alter common risers ⚠|Use common spaces during works|Request condominium approval|Coordinate noise / hours|Protect common areas"},
-"30 · Phasing & cost control":{ic:"📆",it:"One complete phase|Multiple phases|Safety & compliance first|Kitchen & bathrooms first|Systems before finishes|Preserve serviceable elements|Standard-sized components|Limit custom joinery|Prepare infrastructure for future|Concealed works now, finishes later|Economical / balanced / premium alternatives|Flag highest cost-risk items|Flag highest schedule-risk items|Flag works needing temporary relocation|Maintain partial occupancy"},
+"01 · Layout & space":{ic:"🧩",it:"Remove non-load-bearing partitions|Add / relocate internal partitions|Enlarge a room by reducing another|Combine two rooms|Open-plan living-dining-kitchen|Semi-open kitchen|Improve circulation / reduce corridor|Separate day and night areas|Flexible / multifunctional room|Recover unused internal space"},
+"02 · Kitchen":{ic:"🍳",it:"Renovate in current position|Relocate (feasible plumbing route)|Open toward living room|Island / peninsula|Linear or L-shaped layout|Breakfast counter|Pantry / tall units|Gas → induction|Upgrade extraction|Integrated laundry|Replace worktop / fronts only"},
+"03 · Bathrooms":{ic:"🚿",it:"Renovate existing bathroom|Add a second bathroom|En-suite bathroom|Accessible bathroom (DM 236/1989)|Bathtub → walk-in shower|Double basin|Heated towel rail|Mechanical ventilation|Improve waterproofing|Separate WC area"},
+"04 · Bedrooms":{ic:"🛏️",it:"Enlarge principal bedroom|Additional / children's bedroom|Guest room + office|Walk-in or built-in wardrobes|Study desk / reading area|Acoustic privacy|Blackout & daylight control|Custom bedroom furniture"},
+"05 · Living & dining":{ic:"🛋️",it:"Enlarge living area|Open-plan living + dining|Separate living and dining|TV / media wall|Bookcase / library wall|Better kitchen connection|Better balcony connection|Custom wall units|Improve natural light|Improve acoustic comfort"},
+"06 · Storage":{ic:"🗄️",it:"Entrance wardrobe / shoe storage|Full-height wardrobes|Walk-in wardrobe|Pantry|Linen / seasonal storage|Concealed living-room storage|Under-bed / under-stair storage|Integrated joinery replaces freestanding"},
+"07 · Heating / cooling / ventilation":{ic:"🌡️",it:"Replace heating system|Heat-pump heating|Underfloor heating|Add / replace air conditioning|Heat-recovery ventilation (VMC)|Bathroom & kitchen extraction|Zoning & thermostatic control|Conceal units & ducts"},
+"08 · Energy efficiency":{ic:"⚡",it:"Wall insulation (cappotto)|High-performance windows|Reduce thermal bridges|Heat pump|Heat-recovery ventilation|Photovoltaic|Solar thermal|Efficient LED lighting|Heating controls / monitoring"},
+"09 · Accessibility & comfort":{ic:"♿",it:"Widen doors (≥75/80cm DM 236/1989)|Step-free circulation|Accessible bathroom layout|Walk-in shower|Lever handles / lower switches|Non-slip flooring|Bedroom↔living acoustic separation|Low-VOC paints & healthy materials|Future mobility preparation"},
 };
 /* Serialize d.iv into a v7 §B prompt block for plan & render generation */
 function ivBrief(d){
@@ -296,16 +267,22 @@ function ivBrief(d){
   return out;
 }
 
-const FENG_SHUI_OPTIONS = [
-  "Command position (bed/desk facing door)",
-  "Five elements balance (wood, fire, earth, metal, water)",
-  "Bagua map alignment for wealth & health zones",
-  "Natural light maximization & mirror placement",
-  "Clutter-free flow & rounded furniture edges",
-  "Earth tones & grounding materials",
-  "Water features or imagery in north sector",
-  "Living plants in east/southeast sectors",
+/* Wellbeing preferences — tangible, actionable design choices */
+const WELLBEING_OPTIONS = [
+  "Maximise natural daylight",
+  "Cross-ventilation & fresh air",
+  "Calm, clutter-free layout",
+  "Indoor plants & greenery (biophilia)",
+  "Warm natural materials (wood, stone, linen)",
+  "Quiet bedroom (acoustic + blackout)",
+  "Reading / relaxation nook",
+  "Bed & desk in command position (facing the door)",
+  "Rounded furniture & clear circulation paths",
+  "Warm, dimmable lighting & lighting scenes",
+  "View to green / nature imagery",
+  "Dedicated calm workspace",
 ];
+const FENG_SHUI_OPTIONS = WELLBEING_OPTIONS; // back-compat alias
 
 const PALETTE_OPTIONS = [
   {name:"Warm Neutrals",colors:["#F5E6D3","#D4C5A9","#C87941","#8B6F4E","#5C5346"]},
@@ -1037,9 +1014,9 @@ const fmt=n=>n==null?"—":"€"+n.toLocaleString("it-IT");
 const fmtK=n=>n>=1e3?"€"+(n/1e3).toFixed(0)+"k":"€"+n;
 
 /* 3-SOLUTION GENERATOR */
-const T_E=["Finishes refresh","Storage boost","Ceiling renovation","Wall treatments","Other energy interventions"];
+const T_E=["Finishes refresh","Storage boost"];
 const T_C=["Kitchen upgrade","Bathroom upgrade","Electrical upgrade","Plumbing upgrade","Smart controls"];
-const T_P=["Internal layout optimization","Heating system","Transparent envelope","Opaque envelope","Cooling system","Renewable sources","Complete energy upgrade","Home office / flex room","Ventilation system","Bathroom addition"];
+const T_P=["Internal layout optimization","Heating system","Transparent envelope","Opaque envelope","Cooling system","Renewable sources","Complete energy upgrade","Home office / flex room","Ventilation system"];
 
 function genSols(d){
   const a=parseFloat(d.area)||85,rm=parseInt(d.rooms)||3,ec=d.eCls==="Unknown"?"E":d.eCls,all=d.changes;
@@ -1369,7 +1346,7 @@ EVERYTHING ELSE IS COMPLETELY FROZEN — DO NOT TOUCH:
 ✗ Plumbing risers: CANNOT move`;
 
   const customStyle=d.customStyle?` Style notes: ${d.customStyle}.`:"";
-  const fengshui=d.fengshui?.length?` Feng shui: ${d.fengshui.join(", ")}.`:"";
+  const fengshui=d.fengshui?.length?` Wellbeing priorities: ${d.fengshui.join(", ")}.`:"";
   const palette=d.preferredPalette?` Palette: ${d.preferredPalette.name} — ${d.preferredPalette.colors.join(", ")}.`:"";
   const suffix=customStyle+fengshui+palette;
   const hasPhotos=ex||Object.values(roomData).some(r=>(r.photos||[]).length>0);
@@ -1664,18 +1641,18 @@ function generateBOM(sol, d){
   return { selectedByRoom, providerTotals, byRoomTotals, grandTotal, tier, style };
 }
 
-/* Calculate Feng Shui score (0-100) based on selected principles and interventions */
+/* Calculate Wellbeing score (0-100) based on selected preferences and interventions */
 function calcFengShuiScore(fengshui, changes, roomDetails) {
-  if (!fengshui || fengshui.length === 0) return {score:50,label:"Neutral",detail:"No feng shui preferences selected"};
+  if (!fengshui || fengshui.length === 0) return {score:50,label:"Neutral",detail:"No wellbeing preferences selected"};
   let score = 30; /* Base score */
   const details = [];
-  /* Points per selected principle */
-  score += fengshui.length * 8;
-  if (fengshui.includes("Command position (bed/desk facing door)")) { details.push("Command position +10"); score += 10; }
-  if (fengshui.includes("Five elements balance (wood, fire, earth, metal, water)")) { details.push("Five elements +8"); score += 8; }
-  if (fengshui.includes("Natural light maximization & mirror placement")) { details.push("Light optimization +7"); score += 7; }
-  if (fengshui.includes("Clutter-free flow & rounded furniture edges")) { details.push("Flow optimization +8"); score += 8; }
-  if (fengshui.includes("Living plants in east/southeast sectors")) { details.push("Plant energy +5"); score += 5; }
+  /* Points per selected preference */
+  score += fengshui.length * 7;
+  if (fengshui.includes("Maximise natural daylight")) { details.push("Daylight +8"); score += 8; }
+  if (fengshui.includes("Cross-ventilation & fresh air")) { details.push("Fresh air +7"); score += 7; }
+  if (fengshui.includes("Calm, clutter-free layout")) { details.push("Calm layout +8"); score += 8; }
+  if (fengshui.includes("Quiet bedroom (acoustic + blackout)")) { details.push("Restful bedroom +7"); score += 7; }
+  if (fengshui.includes("Indoor plants & greenery (biophilia)")) { details.push("Biophilia +5"); score += 5; }
   /* Bonus for complementary interventions */
   if (changes.includes("Internal layout optimization")) { details.push("Layout optimization aligns with chi flow +5"); score += 5; }
   if (changes.includes("Smart controls")) { details.push("Smart controls support element balance +3"); score += 3; }
@@ -2998,7 +2975,7 @@ function IvCatalog({d,u}){
   </div>);
 }
 function S3({d,u}){
-  const cats=["Structure","Rooms","Finishes","Systems","Energy Upgrade"];
+  const cats=["Layout","Rooms","Finishes","Systems","Energy Upgrade"];
   return(<div>
     <h2 style={{fontFamily:"'Cormorant Garamond'",fontSize:24,color:"#1B3A2D",marginBottom:4}}>Interventi</h2>
     <p style={{fontSize:12,color:"#78716C",marginBottom:14}}>Select renovation interventions. Tags show tax benefits (Bonus 36-50%) and plan conformity impact.</p>
@@ -3019,11 +2996,11 @@ function S3({d,u}){
   </div>);
 }
 
-/* STEP 4: Stile — with custom description, feng shui, color palette */
+/* STEP 4: Stile — with custom description, wellbeing, color palette */
 function S4({d,u}){
   return(<div>
     <h2 style={{fontFamily:"'Cormorant Garamond'",fontSize:24,color:"#1B3A2D",marginBottom:4}}>Stile, Atmosfera & Preferenze</h2>
-    <p style={{fontSize:12,color:"#78716C",marginBottom:14}}>Choose a base style, then personalize with your own vision, feng shui principles, and preferred colors.</p>
+    <p style={{fontSize:12,color:"#78716C",marginBottom:14}}>Choose a base style, then personalise it with your own vision, wellbeing priorities and preferred colours.</p>
     <div className="card">
       <div className="section-title">Design Style</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(145px,1fr))",gap:7}}>{Object.entries(STYLES).map(([n,th])=>{const on=d.style===n;return<div key={n} onClick={()=>u({...d,style:n})} style={{padding:12,borderRadius:9,border:on?"2px solid #1B3A2D":"1px solid #E2DCD2",background:on?"#D1E7DD":"#fff",cursor:"pointer",textAlign:"center"}}><div style={{fontFamily:"'Cormorant Garamond'",fontSize:13.5,fontWeight:700,color:on?"#1B3A2D":"#1C1917"}}>{n}</div><div style={{fontSize:9.5,color:"#78716C",marginTop:3}}>{th.desc}</div><div style={{display:"flex",gap:3,justifyContent:"center",marginTop:6}}>{th.pal.map((c,i)=><div key={i} style={{width:14,height:14,borderRadius:3,background:c,border:"1px solid #E2DCD233"}}/>)}</div></div>})}</div>
@@ -3034,8 +3011,9 @@ function S4({d,u}){
       <div style={{fontSize:10,color:"#78716C",marginTop:4}}>This description will directly influence the AI render prompts for a personalized result.</div>
     </div>
     <div className="card">
-      <div className="section-title">🧘 Feng Shui Preferences</div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:5}}>{FENG_SHUI_OPTIONS.map(opt=>{const on=(d.fengshui||[]).includes(opt);return<button key={opt} onClick={()=>u({...d,fengshui:on?(d.fengshui||[]).filter(x=>x!==opt):[...(d.fengshui||[]),opt]})} style={{padding:"6px 12px",borderRadius:18,border:on?"2px solid #1B3A2D":"1px solid #E2DCD2",background:on?"#D1E7DD":"#fff",fontSize:11.5,fontFamily:"inherit",cursor:"pointer",fontWeight:on?600:400,color:on?"#1B3A2D":"#1C1917"}}>{opt}</button>})}</div>
+      <div className="section-title">🌿 Wellbeing · Benessere</div>
+      <p style={{fontSize:11,color:"#78716C",marginBottom:8}}>Choose the wellbeing qualities that matter to you — they guide the layout, light, materials and furniture in your renders.</p>
+      <div style={{display:"flex",flexWrap:"wrap",gap:5}}>{WELLBEING_OPTIONS.map(opt=>{const on=(d.fengshui||[]).includes(opt);return<button key={opt} onClick={()=>u({...d,fengshui:on?(d.fengshui||[]).filter(x=>x!==opt):[...(d.fengshui||[]),opt]})} style={{padding:"6px 12px",borderRadius:18,border:on?"2px solid #1B3A2D":"1px solid #E2DCD2",background:on?"#D1E7DD":"#fff",fontSize:11.5,fontFamily:"inherit",cursor:"pointer",fontWeight:on?600:400,color:on?"#1B3A2D":"#1C1917"}}>{opt}</button>})}</div>
     </div>
     <div className="card">
       <div className="section-title">🎨 Preferred Color Palette</div>
@@ -3126,20 +3104,19 @@ function MarketFetchBtn({d, s, area, apiKey}){
 
   return(
     <div>
-      <button className="btn" onClick={fetch2} disabled={state==="loading"}
-        style={{background:"rgba(255,255,255,.15)",color:"#fff",border:"1px solid rgba(255,255,255,.3)",fontSize:12,padding:"8px 16px"}}>
-        {state==="loading"?"🔍 Fetching…":"🌐 Fetch Live Market Data"}
+      <button className="btn btn-g" onClick={fetch2} disabled={state==="loading"} style={{fontSize:11,padding:"6px 12px"}}>
+        {state==="loading"?"🔍 Fetching…":"🌐 Live market data"}
       </button>
-      {state==="loading"&&<div style={{fontSize:10,color:"rgba(255,255,255,.7)",marginTop:4}}>Searching OMI + immobiliare.it…</div>}
-      {err&&<div style={{fontSize:10,color:"#FECACA",marginTop:4}}>{err}</div>}
-      {state==="done"&&md&&<div style={{marginTop:12,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
-        {[["OMI Range",md.omiMin&&md.omiMax?fmt(md.omiMin*area)+"–"+fmt(md.omiMax*area):"—"],["Market Avg/m²",md.marketAvgSqm?fmt(md.marketAvgSqm):"—"],["Trend",md.marketTrend+" "+(md.marketTrendPct?(md.marketTrendPct>0?"+":"")+md.marketTrendPct+"%":"")],["Renovated/m²",md.comparableRenovated?fmt(md.comparableRenovated):"—"],["Energy premium",md.energyPremium?fmt(md.energyPremium*area):"—"],["Demand",md.demandScore?md.demandScore+"/10":"—"]].map(([l,v])=>(
-          <div key={l} style={{padding:"6px 8px",background:"rgba(255,255,255,.12)",borderRadius:6}}>
-            <div style={{fontSize:9,opacity:.7}}>{l}</div>
-            <div style={{fontSize:11,fontWeight:700}}>{v}</div>
+      {state==="loading"&&<div style={{fontSize:10,color:"#78716C",marginTop:4}}>Searching OMI + immobiliare.it…</div>}
+      {err&&<div style={{fontSize:10,color:"#B91C1C",marginTop:4}}>{err}</div>}
+      {state==="done"&&md&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:6}}>
+        {[["OMI range",md.omiMin&&md.omiMax?fmt(md.omiMin*area)+"–"+fmt(md.omiMax*area):"—"],["Market avg/m²",md.marketAvgSqm?fmt(md.marketAvgSqm):"—"],["Trend",md.marketTrend+" "+(md.marketTrendPct?(md.marketTrendPct>0?"+":"")+md.marketTrendPct+"%":"")],["Renovated/m²",md.comparableRenovated?fmt(md.comparableRenovated):"—"],["Energy premium",md.energyPremium?fmt(md.energyPremium*area):"—"],["Demand",md.demandScore?md.demandScore+"/10":"—"]].map(([l,v])=>(
+          <div key={l} style={{padding:"6px 8px",background:"#F6F4EF",borderRadius:6}}>
+            <div style={{fontSize:9,color:"#78716C"}}>{l}</div>
+            <div style={{fontSize:11,fontWeight:700,color:"#1B3A2D"}}>{v}</div>
           </div>
         ))}
-        {md.notes&&<div style={{gridColumn:"1/4",fontSize:10,opacity:.8,marginTop:4}}>📝 {md.notes}</div>}
+        {md.notes&&<div style={{gridColumn:"1/-1",fontSize:10,color:"#78716C",marginTop:4}}>📝 {md.notes}</div>}
       </div>}
     </div>
   );
@@ -3152,7 +3129,7 @@ function Results({d, apiKey}){
   const sols=useMemo(()=>genSols(d),[d]);
   const s=sols[si];
   const area=parseFloat(d.area)||85;
-  const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"energydetail",l:"Energy Detail",i:"🔋"},{id:"schedule",l:"Schedule",i:"📅"},{id:"valuation",l:"Value",i:"🏠"},{id:"market",l:"Market Analysis",i:"📈"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
+  const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"schedule",l:"Schedule",i:"📅"},{id:"value",l:"Value & Market",i:"🏠"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
 
   const SP=()=><div style={{display:"flex",gap:6,marginBottom:14}}>{sols.map((x,i)=>{const m=SM[i],on=si===i;return<button key={x.nm} onClick={()=>setSi(i)} style={{flex:1,padding:"11px 12px",borderRadius:9,border:on?"3px solid "+m.color:"1px solid #E2DCD2",background:on?m.gr:"#fff",cursor:"pointer",textAlign:"left",fontFamily:"inherit"}}><div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><span style={{fontSize:15}}>{m.em}</span><span style={{fontFamily:"'Cormorant Garamond'",fontSize:14,fontWeight:700,color:on?"#fff":"#1C1917"}}>{x.nm}</span>{i===1&&<span style={{padding:"1px 5px",borderRadius:7,background:on?"rgba(255,255,255,.3)":"#D1E7DD",fontSize:8.5,fontWeight:700,color:on?"#fff":"#1B3A2D"}}>REC</span>}</div><div style={{fontSize:12,fontWeight:700,color:on?"rgba(255,255,255,.95)":"#1C1917"}}>{fmt(x.co.total)}</div><div style={{fontSize:10,color:on?"rgba(255,255,255,.7)":"#78716C"}}>{x.ch.length} items · {x.sc.tw}wk · {x.en.bC}→{x.en.aC}</div></button>})}</div>;
 
@@ -3161,7 +3138,7 @@ function Results({d, apiKey}){
     <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:12,paddingBottom:10,borderBottom:"1px solid #E2DCD2"}}>{tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"6px 12px",borderRadius:16,border:tab===t.id?"2px solid #1B3A2D":"1px solid #ECE8E1",background:tab===t.id?"#D1E7DD":"#fff",color:tab===t.id?"#1B3A2D":"#78716C",fontSize:11,fontWeight:tab===t.id?700:400,cursor:"pointer",fontFamily:"inherit"}}>{t.i} {t.l}</button>)}</div>
 
     {/* COMPARE */}
-    {tab==="compare"&&<div><SP/><div className="card"><h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:17,color:"#1B3A2D",marginBottom:10}}>Comparison</h3><div style={{overflowX:"auto"}}><table><thead><tr style={{borderBottom:"2px solid #E2DCD2"}}><th style={{color:"#78716C",fontSize:9.5,textTransform:"uppercase"}}>Metric</th>{sols.map((x,i)=><th key={x.nm} style={{textAlign:"center",color:SM[i].color,fontSize:9.5,textTransform:"uppercase"}}>{SM[i].em} {x.nm}</th>)}</tr></thead><tbody>{[["Cost",i=>fmt(sols[i].co.total)],["Items",i=>sols[i].ch.length],["Timeline",i=>sols[i].sc.tw+"wk"],["Energy",i=>sols[i].en.bC+"→"+sols[i].en.aC],["Save/mo",i=>fmt(sols[i].sv.mo)],["Uplift",i=>"+"+sols[i].vl.up+"%"],["Value After",i=>fmt(sols[i].vl.vA)],["Tax Benefit",i=>fmt(sols[i].vl.taxBenefit)],["Energy NPV 30y",i=>fmt(runFullEnergyCalc(d,sols[i]).economy.npv_30y)],["Feng Shui",i=>{const fs=calcFengShuiScore(d.fengshui,sols[i].ch,d.roomDetails);return fs.score+"/100 ("+fs.label+")"}],["ROI",i=>Math.round(((sols[i].vl.vA-sols[i].vl.vB-sols[i].co.total)/sols[i].co.total)*100)+"%"]].map(([m,fn],ri)=><tr key={m} style={{borderBottom:"1px solid #ECE8E1",background:ri%2?"#F6F4EF":"#fff"}}><td style={{fontWeight:600}}>{m}</td>{[0,1,2].map(i=><td key={i} style={{textAlign:"center",fontWeight:si===i?700:400,color:si===i?SM[i].color:"#1C1917"}}>{fn(i)}</td>)}</tr>)}</tbody></table></div></div></div>}
+    {tab==="compare"&&<div><SP/><div className="card"><h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:17,color:"#1B3A2D",marginBottom:10}}>Comparison</h3><div style={{overflowX:"auto"}}><table><thead><tr style={{borderBottom:"2px solid #E2DCD2"}}><th style={{color:"#78716C",fontSize:9.5,textTransform:"uppercase"}}>Metric</th>{sols.map((x,i)=><th key={x.nm} style={{textAlign:"center",color:SM[i].color,fontSize:9.5,textTransform:"uppercase"}}>{SM[i].em} {x.nm}</th>)}</tr></thead><tbody>{[["Cost",i=>fmt(sols[i].co.total)],["Items",i=>sols[i].ch.length],["Timeline",i=>sols[i].sc.tw+"wk"],["Energy",i=>sols[i].en.bC+"→"+sols[i].en.aC],["Save/mo",i=>fmt(sols[i].sv.mo)],["Uplift",i=>"+"+sols[i].vl.up+"%"],["Value After",i=>fmt(sols[i].vl.vA)],["Tax Benefit",i=>fmt(sols[i].vl.taxBenefit)],["Energy NPV 30y",i=>fmt(runFullEnergyCalc(d,sols[i]).economy.npv_30y)],["Wellbeing",i=>{const fs=calcFengShuiScore(d.fengshui,sols[i].ch,d.roomDetails);return fs.score+"/100 ("+fs.label+")"}],["ROI",i=>Math.round(((sols[i].vl.vA-sols[i].vl.vB-sols[i].co.total)/sols[i].co.total)*100)+"%"]].map(([m,fn],ri)=><tr key={m} style={{borderBottom:"1px solid #ECE8E1",background:ri%2?"#F6F4EF":"#fff"}}><td style={{fontWeight:600}}>{m}</td>{[0,1,2].map(i=><td key={i} style={{textAlign:"center",fontWeight:si===i?700:400,color:si===i?SM[i].color:"#1C1917"}}>{fn(i)}</td>)}</tr>)}</tbody></table></div></div></div>}
 
     {/* RENDERS */}
     {tab==="renders"&&<div>
@@ -3187,7 +3164,7 @@ function Results({d, apiKey}){
       const needleBase2=polarToXY(needleAngle-90,7);
       return(
         <div className="card" style={{background:"linear-gradient(135deg,#F5F0E8,#EDF3EE)"}}>
-          <h4 style={{fontFamily:"'Cormorant Garamond'",fontSize:17,color:"#1B3A2D",marginBottom:12}}>🧘 Feng Shui Score</h4>
+          <h4 style={{fontFamily:"'Cormorant Garamond'",fontSize:17,color:"#1B3A2D",marginBottom:12}}>🌿 Wellbeing Score</h4>
           <div style={{display:"flex",gap:20,alignItems:"flex-start",flexWrap:"wrap"}}>
             {/* Gauge */}
             <div style={{flexShrink:0}}>
@@ -3229,7 +3206,7 @@ function Results({d, apiKey}){
               </div>
               {d.fengshui?.length>0&&<div style={{fontSize:11,color:"#78716C",marginBottom:6}}><strong style={{color:"#1B3A2D"}}>Active principles:</strong> {d.fengshui.length}</div>}
               {fs.details.length>0&&<div style={{display:"flex",flexDirection:"column",gap:3}}>{fs.details.slice(0,4).map((dt,i)=><div key={i} style={{fontSize:10.5,padding:"3px 8px",background:"rgba(255,255,255,.7)",borderRadius:5,color:"#1B3A2D"}}>✓ {dt}</div>)}</div>}
-              {d.fengshui?.length===0&&<div className="note note-warn" style={{fontSize:10.5,padding:"8px 10px"}}>Select feng shui principles in Step 4 to activate this score.</div>}
+              {d.fengshui?.length===0&&<div className="note note-warn" style={{fontSize:10.5,padding:"8px 10px"}}>Select wellbeing priorities in Step 4 to activate this score.</div>}
             </div>
           </div>
         </div>
@@ -3426,9 +3403,23 @@ function Results({d, apiKey}){
     {tab==="schedule"&&<div><SP/><div className="card"><h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:17,color:"#1B3A2D",marginBottom:10}}>{s.nm} — Schedule ({s.sc.tw}wk)</h3>{s.sc.t.map((t,i)=>{const pct=(t.w/s.sc.tw)*100,left=(t.s/s.sc.tw)*100;return<div key={t.n} style={{display:"flex",alignItems:"center",marginBottom:7,gap:9}}><div style={{width:110,fontSize:11,fontWeight:500,textAlign:"right",flexShrink:0}}>{t.n}</div><div style={{flex:1,position:"relative",height:24,background:"#F6F4EF",borderRadius:5}}><div style={{position:"absolute",left:left+"%",width:Math.max(pct,4)+"%",height:"100%",background:CLS[i%CLS.length],borderRadius:5,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,color:"#fff",fontWeight:600}}>{t.w}w</div></div></div>})}</div></div>}
 
     {/* VALUATION — Traceable Lombardy engine with full breakdown */}
-    {tab==="valuation"&&(()=>{
+    {tab==="value"&&(()=>{
       const v = s.vl;
-      const t = v.trace || [];
+      const listingPrice=d.listingExtracted?.price||null;
+      const omiRef=CITY_PRICES[(d.city||"").toLowerCase().trim()]||LOMBARDY_AVG;
+      const listingDelta=listingPrice?Math.round(((listingPrice-v.vB)/v.vB)*100):null;
+      const maxBar=Math.max(listingPrice||0,v.vB,v.vA,omiRef*area)*1.2||1;
+      const Bar=({val,color,label,note})=>(
+        <div style={{marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,fontSize:11}}>
+            <span style={{fontWeight:600}}>{label}</span>
+            <span style={{fontWeight:700,color}}>{fmt(val)} <span style={{fontSize:10,color:"#78716C"}}>{fmt(Math.round(val/area))}/m²</span>{note&&<span style={{fontSize:9,marginLeft:4,color:"#78716C"}}>{note}</span>}</span>
+          </div>
+          <div style={{height:24,background:"#F0EDE8",borderRadius:6,overflow:"hidden"}}>
+            <div style={{height:"100%",width:Math.max(2,Math.round((val/maxBar)*100))+"%",background:color,borderRadius:6,transition:"width .5s ease"}}/>
+          </div>
+        </div>
+      );
       const StepCard = ({step})=>(
         <div style={{padding:"10px 12px",background:"#FAFAF8",borderLeft:"3px solid #1B3A2D",borderRadius:6,marginBottom:6}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:10}}>
@@ -3474,35 +3465,24 @@ function Results({d, apiKey}){
           ))}
         </div>
 
-        {/* Traceable methodology */}
+        {/* Market comparison */}
         <div className="card">
-          <div className="section-title">📋 Calculation Trace — every step + coefficient</div>
-          <p style={{fontSize:11,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Each step references the same official sources (OMI quotations, Milan zone benchmarks, OMI condition states). All coefficients are visible and adjustable in the source.</p>
-          {t.map((step,i)=><StepCard key={i} step={step}/>)}
-        </div>
-
-        {/* Sources */}
-        <div className="card">
-          <h4 style={{fontFamily:"'Cormorant Garamond'",fontSize:14,color:"#1B3A2D",marginBottom:8}}>📚 Data sources used</h4>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10.5}}>
-            {[
-              ["OMI Quotazioni Immobiliari","Agenzia delle Entrate · semiannual official quotations","https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm"],
-              ["ADE Declared transaction values","Calibration layer for nearby sold properties","https://www.agenziaentrate.gov.it/portale/web/guest/schede/fabbricatiterreni/oicv/dichiarati"],
-              ["Immobiliare.it Market","Milan zone asking + rent benchmarks (Apr 2026)","https://www.immobiliare.it/mercato-immobiliare/lombardia/"],
-              ["Banca d'Italia","Energy label capitalization premium research","https://www.bancaditalia.it"],
-              ["Milan Open Data","OMI Zones GeoJSON for spatial geolocation",""],
-            ].map(([k,desc,url])=>(
-              <div key={k} style={{padding:"7px 9px",background:"#F6F4EF",borderRadius:6}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#1B3A2D"}}>{k}</div>
-                <div style={{fontSize:10,color:"#78716C",marginTop:1}}>{desc}</div>
-                {url&&<a href={url} target="_blank" rel="noopener noreferrer" style={{fontSize:9.5,color:"#1B3A2D"}}>{url}</a>}
-              </div>
-            ))}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:10}}>
+            <div className="section-title" style={{margin:0,border:"none"}}>📈 Market comparison — {d.city||"Lombardy"}</div>
+            <MarketFetchBtn d={d} s={s} area={area} apiKey={apiKey}/>
+          </div>
+          {listingPrice&&<Bar val={listingPrice} color="#C87941" label="Listing / asking price" note={listingDelta!=null?(listingDelta>0?"▲ "+listingDelta+"% vs value":"▼ "+Math.abs(listingDelta)+"% vs value"):null}/>}
+          <Bar val={omiRef*area} color="#B8AFA5" label={"OMI reference ("+(d.city||"Lombardy")+")"}/>
+          <Bar val={v.vB} color="#6B705C" label="Current value (pre-renovation)"/>
+          <Bar val={v.vA} color="#1B3A2D" label="Post-renovation value"/>
+          <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
+            <a href="https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm" target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"6px 12px"}}>🏛 OMI Agenzia Entrate →</a>
+            <a href={"https://www.immobiliare.it/mercato-immobiliare/lombardia/"+(d.city||"milano").toLowerCase().replace(/\s+/g,"-")+"/"} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"6px 12px"}}>🏠 Immobiliare.it →</a>
           </div>
         </div>
 
         <div className="note note-warn" style={{fontSize:10.5,lineHeight:1.5}}>
-          ⚠️ Asking-price benchmarks discounted 5% to reflect probable transaction price. Energy class premium does not double-count renovation quality. Post-renovation value capped at local market ceiling (1.05× zone asking benchmark). Validate against nearby ADE declared transactions for highest confidence.
+          ⚠️ Indicative only. Based on OMI Agenzia Entrate quotations + Immobiliare.it Lombardy benchmarks (Apr 2026). Asking prices discounted ~5% for probable transaction price; post-renovation value capped at the local market ceiling. Validate with a local valuation before any decision.
         </div>
       </div>);
     })()}
@@ -3722,6 +3702,30 @@ function Results({d, apiKey}){
           <div style={{fontSize:13,fontWeight:700,letterSpacing:".03em",marginTop:2}}>{v7.status}</div>
         </div>
       </div>
+      {/* HIGH-LEVEL KPIs */}
+      {(()=>{
+        const total=oks+warns+errs||1;
+        const score=Math.round((oks/total)*100);
+        const permit = s.ch.some(c=>INTERVENTIONS[c]?.nonConf) ? "SCIA / CILA" : (s.ch.some(c=>INTERVENTIONS[c]?.pm==="cila") ? "CILA" : "Edilizia libera");
+        const scoreCol=errs>0?"#B91C1C":score>=80?"#1B3A2D":"#A16207";
+        const kpis=[
+          {l:"Compliance score",v:score+"%",c:scoreCol,sub:oks+" pass · "+warns+" da verificare · "+errs+" fail"},
+          {l:"Involucro (envelope)",v:errs>0?"A rischio":"Congelato ✓",c:errs>0?"#B91C1C":"#1B3A2D",sub:"Muri esterni · ingresso · finestre · sagoma"},
+          {l:"Titolo edilizio",v:permit,c:"#2E5A82",sub:"Stima — da confermare con tecnico"},
+          {l:"Bonus fiscale",v:"50% / 36%",c:"#1B5E20",sub:"Prima casa / seconda casa · 10 anni"},
+          {l:"Classe energetica",v:s.en.bC+" → "+s.en.aC,c:"#C87941",sub:"APE stimata post-intervento"},
+          {l:"Verifica tecnica",v:"Richiesta",c:"#A16207",sub:"Geometra/architetto abilitato in Lombardia"},
+        ];
+        return(<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:12}}>
+          {kpis.map(k=>(
+            <div key={k.l} className="card" style={{margin:0,padding:"11px 13px"}}>
+              <div style={{fontSize:9.5,color:"#78716C",textTransform:"uppercase",letterSpacing:".04em"}}>{k.l}</div>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontSize:20,fontWeight:700,color:k.c,marginTop:2,lineHeight:1.1}}>{k.v}</div>
+              <div style={{fontSize:9,color:"#78716C",marginTop:3,lineHeight:1.35}}>{k.sub}</div>
+            </div>
+          ))}
+        </div>);
+      })()}
       <div className="card">
         <div className="section-title">Vincoli Inviolabili — Involucro Congelato / Envelope Invariance (v7 §1.1)</div>
         <p style={{fontSize:11,color:"#78716C",marginBottom:10,lineHeight:1.5}}>Ogni piano proposto è generato e ri-validato con questi elementi <strong>immutabili</strong>: muri perimetrali esterni, porta d'ingresso, finestre, porte-finestra verso balconi/logge/terrazzi, sagoma e superficie dell'appartamento non cambiano mai. Le <strong>uniche</strong> modifiche ammesse sono i tramezzi interni (non portanti) e le porte interne. Una violazione produce <strong>REJECTED — HARD CONSTRAINT VIOLATION</strong> e il piano viene rigenerato.</p>
@@ -3735,6 +3739,9 @@ function Results({d, apiKey}){
           </div>
         ))}
       </div>
+      <details style={{marginBottom:12}}>
+      <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:"#1B3A2D",padding:"8px 12px",background:"#F0F9F4",borderRadius:8,listStyle:"none"}}>▸ Dettaglio tecnico completo — matrice di conformità, riferimenti normativi & checklist due diligence</summary>
+      <div style={{marginTop:10}}>
       <div className="card">
         <div className="section-title">Matrice di Conformità — Scenario {s.nm} (Rule-ID v7 §0.2 · evidenza v7 §0.3)</div>
         {issues.map((it,i)=>(
@@ -3779,6 +3786,7 @@ function Results({d, apiKey}){
         </div>
       </div>
       <div className="card"><h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:15,color:"#1B3A2D",marginBottom:10}}>Due Diligence Checklist</h3>{[{t:"1. Urbanistica",i:["Conformità urbanistica","Conformità catastale","No abusi edilizi","PGT zona residenziale","L.R. 12/2005","Vincoli D.Lgs. 42/2004"]},{t:"2. Strutturale (NTC 2018)",i:["Muri portanti vs tramezzi","Amianto pre-1970","Sismica D.G.R. 2129/2014","Perimetro invariato"]},{t:"3. Condominio",i:["Regolamento condominiale","Orari lavori","Delibera art. 1122 c.c.","Assicurazione"]},{t:"4. Impianti DM 37/08",i:["Elettrico CEI 64-8 + DiCo","Idraulico","HVAC rumore","Gas UNI 7129"]},{t:"5. Energia DM 26/6/2015",i:["APE post D.Lgs. 192/2005","Serramenti U≤1.40 W/m²K","Ecobonus 50%/36% 2026","CAM D.M. 11/10/2017"]},{t:"6. Sicurezza",i:["CSP/CSE D.Lgs. 81/2008","POS","ASL >200 uomini-giorno","DOCFA 30gg"]},{t:"7. Fiscale 2026",i:["Bonus Ristrutturazione 50%/36%","Ecobonus 50%/36%","Bonus Mobili 50% (max €5k)","Bonifico parlante","IVA 10%","Recovery 10 anni"]}].map((x,xi)=><div key={x.t} style={{marginBottom:12}}><div style={{fontFamily:"'Cormorant Garamond'",fontSize:13,fontWeight:700,color:"#1B3A2D",marginBottom:5}}>{x.t}</div>{x.i.map((it,ii)=><div key={it} style={{display:"flex",gap:7,padding:"4px 9px",background:xi%2?"#F6F4EF":"#fff",borderRadius:5,marginBottom:2}}><span style={{color:"#1B3A2D"}}>☐</span><span style={{fontSize:11}}>{it}</span></div>)}</div>)}<div className="note note-warn">⚠️ <strong>Disclaimer:</strong> Verifica indicativa basata su DM 5/7/1975, DM 236/1989, DPCM 5/12/1997, Reg.Ed. Milano. Convalida con geometra/architetto abilitato in Lombardia.</div></div>
+      </div></details>
       </div>);
     })()}
 
