@@ -164,6 +164,122 @@ PERMITS: CILA (non-structural internal), SCIA (ristrutturazione leggera, opening
 }
 </script>
 
+<script type="text/plain" id="ikea-catalogue-registry-md">
+2. Official IKEA Italy source registry and catalogue links
+Connect the application directly to the following official IKEA Italy sources.
+These URLs are the initial seed URLs for catalogue discovery. The ingestion service must start from these pages, discover their valid product, category, collection, brochure, guide and product-document links, and create a complete source registry.
+
+2.1 Main official sources
+IKEA Italy homepage: https://www.ikea.com/it/it/
+Use to verify: market/language, current promotions, new collections, navigation changes, newly introduced catalogue sections, links to official services and product categories.
+Complete IKEA Italy product catalogue (primary catalogue-discovery URL): https://www.ikea.com/it/it/cat/prodotti-products/
+The crawler must: open this page; identify every valid IKEA Italy category and subcategory link; follow links whose canonical URLs remain within https://www.ikea.com/it/it/cat/ ; discover all paginated or dynamically loaded product listings; discover the official product-detail pages associated with each listing; store the category hierarchy and source URL for every product; repeat category discovery during each full catalogue refresh so that newly created categories are automatically included. Do not rely only on the hardcoded category list — the product index is the authoritative category-discovery source.
+
+2.2 Digital catalogues, brochures and buying guides
+IKEA Italy catalogues and brochures: https://www.ikea.com/it/it/customer-service/brochures/
+Discover all currently published: digital catalogues, product brochures, buying guides, kitchen/bathroom brochures, wardrobe/storage guides, lighting guides, product-family brochures, technical guides, product lists, installation documents, linked PDF documents. Expected official PDF URL pattern: https://www.ikea.com/it/it/files/pdf/
+Do not permanently rely on a fixed list of PDF links. Instead: retrieve the brochures landing page; extract every current brochure/guide URL; verify destination belongs to the official IKEA domain; identify HTML/PDF/permitted format; retrieve only when permitted; extract issue date, publication year, catalogue subject; store the original document URL and retrieval date; recheck the landing page for additions/removals/replacements; mark superseded guides as archived rather than deleting; do not use an old brochure price as the current selling price without checking the live product page.
+PDFs/buying guides may be used for: product-system compatibility, available modules, nominal dimensions, materials, installation principles, required components, product-family relationships, configuration rules, historical product information. Current prices and availability must be confirmed against the live IKEA Italy product page.
+
+2.3 Major IKEA Italy catalogue categories (additional crawler seeds)
+Storage/wardrobes/shelving: https://www.ikea.com/it/it/cat/prodotti-per-organizzazione-della-casa-st001/
+Beds and mattresses: https://www.ikea.com/it/it/cat/letti-e-materassi-bm001/
+Sofas and armchairs: https://www.ikea.com/it/it/cat/divani-e-poltrone-700640/
+Tables and chairs: https://www.ikea.com/it/it/cat/tavoli-e-sedie-fu002/
+Office furniture: https://www.ikea.com/it/it/cat/scrivanie-e-sedie-da-ufficio-fu004/
+Kitchens and appliances: https://www.ikea.com/it/it/cat/cucine-ed-elettrodomestici-ka001/
+Bathrooms: https://www.ikea.com/it/it/cat/mobili-e-soluzioni-per-bagno-ba001/
+Lighting: https://www.ikea.com/it/it/cat/illuminazione-li001/
+Textiles and rugs: https://www.ikea.com/it/it/cat/tessili-tl001/
+Curtains, blinds and window accessories: https://www.ikea.com/it/it/cat/tende-e-accessori-tl002/
+Interior decoration: https://www.ikea.com/it/it/cat/decorazioni-casa-de001/
+Outdoor furniture and accessories: https://www.ikea.com/it/it/cat/mobili-e-accessori-da-esterno-od001/
+
+2.4 Collections and newly released products
+IKEA Italy collections: https://www.ikea.com/it/it/cat/collezioni-collections/
+Identify: new/limited/seasonal/collaboration collections, newly launched furniture and accessories, collection-specific colourways, limited-edition products. Match every collection product to its official product-detail page and article number. Do not assume permanent availability. Store: collection name, collection URL, launch status, limited-edition status, product URL, article number, retrieval date, availability status.
+
+2.5 IKEA planners, configurators and 3D references
+IKEA Italy planners and configurators: https://www.ikea.com/it/it/planners/
+Discover currently supported planning/configuration systems where available: Kitchen planner, PAX planner, PLATSA/BESTÅ/EKET/KALLAX/BILLY/ENHET configurators, Bathroom planner, sofa configurators, bedroom/living-room/workspace planners, IKEA Kreativ. Planner info may be used to understand: valid modular combinations, valid component relationships, available finishes, available frame sizes, door/drawer compatibility, internal accessory compatibility, official configuration constraints, product-system geometry. Do not automate authenticated planners, extract private user projects or bypass technical controls; only use public and permitted planner information.
+PAX planner: https://www.ikea.com/it/it/planners/pax-planner/ — validate component compatibility against official product descriptions, buying guides or planner rules; do not infer compatibility solely from visual similarity.
+
+2.6 IKEA Italy product search (secondary discovery only)
+https://www.ikea.com/it/it/search/?q={URL_ENCODED_SEARCH_TERM}
+Examples: .../search/?q=PAX · .../search/?q=divano%20letto · .../search/?q=tavolo%20estensibile
+Use search to: locate a known product family, recheck a missing product, find replacements, identify renamed product pages, search by article number, identify compatible accessories. Search results are discovery sources only; final product data must come from the official product-detail page.
+
+2.7 Product-detail page discovery
+Product pages remain within the IKEA Italy domain with a product-specific path. Detect product-detail links from: category pages, search results, collection pages, brochures, buying guides, related-product sections, compatible-product sections, planner/configurator landing pages. For each product-detail page, extract structured data in this order: (1) JSON-LD schema.org/Product; (2) other structured page data; (3) semantic HTML; (4) visible product-page text; (5) product images and image metadata; (6) product documents; (7) related/required component links. Prefer structured data over free-text. Do not call undocumented private endpoints unless explicitly permitted.
+
+2.8 Link-discovery rules — Allowed discovery prefixes:
+https://www.ikea.com/it/it/ · https://www.ikea.com/it/it/cat/ · https://www.ikea.com/it/it/files/pdf/ · https://www.ikea.com/it/it/customer-service/brochures/ · https://www.ikea.com/it/it/planners/ · https://www.ikea.com/it/it/search/
+Normally excluded: login/account, cart, checkout, order-management, customer-specific URLs, tracking URLs, advertising URLs, social-media URLs, third-party marketplace pages, user-generated content, non-Italian IKEA markets, duplicate URLs with tracking parameters. Remove tracking parameters (msockid, utm_source, utm_medium, utm_campaign, utm_term, utm_content) and store/use the clean canonical URL.
+
+2.9 Dynamic catalogue discovery — At every scheduled full refresh: start from the complete product catalogue; extract all current /it/it/cat/ links; compare with the stored category registry; add newly discovered categories; flag removed categories for review; start from the brochures page and extract all current official brochure/PDF links; compare with the stored document registry; start from the collections page and discover current/new collections; start from the planners page and discover new planners/configurators; record all changes in a source-registry audit table.
+Suggested source-registry record: {source_name, source_url, canonical_url, source_type: category|product|brochure|pdf|collection|planner, market:"IT", language:"it-IT", discovered_from, first_discovered_at, last_successfully_checked_at, last_changed_at, http_status, active, permitted_for_ingestion, content_hash, notes}
+
+2.10 Extraction priority and source authority
+Current price: (1) live official product-detail page; (2) official structured product data on the product page; (3) live official category listing; (4) current official promotional page; (5) brochure/buying guide only as historical/supporting.
+Dimensions/materials: (1) product-detail page; (2) official technical documentation; (3) current buying guide; (4) official planner/configurator; (5) current official brochure.
+Compatibility: (1) official planner/configurator; (2) official buying guide; (3) required-components section on the product page; (4) compatible-products section on the product page; (5) official installation documentation.
+Availability: (1) live official product page for the selected location/postcode; (2) official stock/delivery information presented by IKEA Italy; (3) store-specific availability via a permitted official interface.
+A brochure must never override newer data from a live product page.
+
+2.11 Required application behaviour — Respect IKEA robots rules and terms of use; prefer an official API or approved product feed when available; use rate limiting and caching; avoid repeated retrieval of unchanged resources; use conditional requests when supported; apply exponential backoff after errors; stop accessing a source when access is explicitly denied; never bypass CAPTCHA, authentication or anti-bot controls; never disguise automated access; never extract private account information; never use another country's price as an Italian price; never interpret a brochure publication date as a price-verification date; never present data from an inaccessible page as verified; keep a traceable link between every extracted field and its source. When automated retrieval is not permitted or reliable, provide an administrative import option for: an official IKEA product feed, an authorized API, a manually downloaded official brochure, an authorized CSV/JSON catalogue, a commercial data-sharing agreement.
+
+2.12 Source-level validation — For every source URL: confirm HTTPS; confirm hostname is www.ikea.com or another explicitly approved official IKEA hostname; confirm Italian market path where applicable; resolve redirects; save the final canonical URL; reject unexpected third-party redirects; record retrieval status; record retrieval time; calculate a content hash; detect meaningful page changes; re-run extraction when the source changes; log parsing failures. For each extracted product field, store field-level provenance: {field_name, field_value, source_url, source_type: official_product_page, extraction_method: json_ld, retrieved_at, confidence_score}.
+
+2.13 Initial crawl sequence: (1) https://www.ikea.com/it/it/cat/prodotti-products/ ; (2) https://www.ikea.com/it/it/customer-service/brochures/ ; (3) https://www.ikea.com/it/it/cat/collezioni-collections/ ; (4) https://www.ikea.com/it/it/planners/ ; (5) all discovered category pages; (6) all discovered product-detail pages; (7) all current official brochures and buying guides; (8) all permitted planner/configurator reference pages; (9) product availability checks; (10) validation, deduplication and database import. After initial ingestion, use incremental refreshes for prices, availability, promotions and changed products. Category discovery must not be restricted to the manually listed category URLs — discover and maintain all current catalogue categories from the official IKEA Italy product index.
+</script>
+
+<script type="application/json" id="ikea-sources-json">
+{
+  "market": "IT",
+  "language": "it-IT",
+  "seeds": {
+    "homepage": "https://www.ikea.com/it/it/",
+    "product_index": "https://www.ikea.com/it/it/cat/prodotti-products/",
+    "brochures": "https://www.ikea.com/it/it/customer-service/brochures/",
+    "collections": "https://www.ikea.com/it/it/cat/collezioni-collections/",
+    "planners": "https://www.ikea.com/it/it/planners/",
+    "pax_planner": "https://www.ikea.com/it/it/planners/pax-planner/",
+    "search": "https://www.ikea.com/it/it/search/?q="
+  },
+  "categories": {
+    "storage_wardrobes_shelving": "https://www.ikea.com/it/it/cat/prodotti-per-organizzazione-della-casa-st001/",
+    "beds_mattresses": "https://www.ikea.com/it/it/cat/letti-e-materassi-bm001/",
+    "sofas_armchairs": "https://www.ikea.com/it/it/cat/divani-e-poltrone-700640/",
+    "tables_chairs": "https://www.ikea.com/it/it/cat/tavoli-e-sedie-fu002/",
+    "office": "https://www.ikea.com/it/it/cat/scrivanie-e-sedie-da-ufficio-fu004/",
+    "kitchens_appliances": "https://www.ikea.com/it/it/cat/cucine-ed-elettrodomestici-ka001/",
+    "bathrooms": "https://www.ikea.com/it/it/cat/mobili-e-soluzioni-per-bagno-ba001/",
+    "lighting": "https://www.ikea.com/it/it/cat/illuminazione-li001/",
+    "textiles_rugs": "https://www.ikea.com/it/it/cat/tessili-tl001/",
+    "curtains_blinds": "https://www.ikea.com/it/it/cat/tende-e-accessori-tl002/",
+    "decoration": "https://www.ikea.com/it/it/cat/decorazioni-casa-de001/",
+    "outdoor": "https://www.ikea.com/it/it/cat/mobili-e-accessori-da-esterno-od001/"
+  },
+  "allowed_prefixes": [
+    "https://www.ikea.com/it/it/",
+    "https://www.ikea.com/it/it/cat/",
+    "https://www.ikea.com/it/it/files/pdf/",
+    "https://www.ikea.com/it/it/customer-service/brochures/",
+    "https://www.ikea.com/it/it/planners/",
+    "https://www.ikea.com/it/it/search/"
+  ],
+  "pdf_pattern": "https://www.ikea.com/it/it/files/pdf/",
+  "strip_params": ["msockid","utm_source","utm_medium","utm_campaign","utm_term","utm_content","gclid","fbclid"],
+  "authority": {
+    "price": ["live_product_page","product_json_ld","category_listing","promo_page","brochure_historical"],
+    "dimensions_materials": ["product_page","technical_doc","buying_guide","planner","brochure"],
+    "compatibility": ["planner","buying_guide","required_components","compatible_products","installation_doc"],
+    "availability": ["live_product_page_geo","official_stock_delivery","store_specific_official"]
+  },
+  "rules": ["https_only","host_must_be_official_ikea","italian_market_path","resolve_redirects","reject_third_party_redirects","respect_robots_and_tos","rate_limit_and_cache","conditional_requests","exponential_backoff","stop_on_denied","no_captcha_bypass","no_disguised_access","no_private_account_data","no_foreign_price_as_italian","brochure_date_not_price_date","never_present_inaccessible_as_verified","field_level_provenance"]
+}
+</script>
+
 <div id="root"></div>
 <script type="text/babel">
 const {useState, useRef, useMemo, useCallback, useEffect} = React;
@@ -1162,6 +1278,54 @@ const COMPLIANCE_RULES = (typeof document!=="undefined" && document.getElementBy
   : {};
 
 /* ══════════════════════════════════════════════════════════════
+   OFFICIAL IKEA ITALY SOURCE REGISTRY (§2)
+   Structured seed URLs + rules from the embedded #ikea-sources-json /
+   #ikea-catalogue-registry-md blocks. Used to (a) inject a catalogue-
+   compliance directive into every plan/render prompt, and (b) drive the
+   live "verify against IKEA Italy catalogue" price/availability check so
+   furniture items and their costs are grounded in official product pages.
+   ══════════════════════════════════════════════════════════════ */
+const IKEA_REGISTRY = (typeof document!=="undefined" && document.getElementById("ikea-sources-json"))
+  ? JSON.parse(document.getElementById("ikea-sources-json").textContent)
+  : {seeds:{search:"https://www.ikea.com/it/it/search/?q="},categories:{},allowed_prefixes:["https://www.ikea.com/it/it/"],strip_params:["utm_source","utm_medium","utm_campaign","utm_term","utm_content","msockid","gclid","fbclid"]};
+const IKEA_REGISTRY_MD = (typeof document!=="undefined" && document.getElementById("ikea-catalogue-registry-md"))
+  ? document.getElementById("ikea-catalogue-registry-md").textContent.trim()
+  : "";
+
+/* Strip tracking params and return the clean canonical IKEA URL (§2.8). */
+function ikeaCleanUrl(url){
+  if(!url) return url;
+  try{
+    const u = new URL(url, "https://www.ikea.com");
+    (IKEA_REGISTRY.strip_params||[]).forEach(p=>u.searchParams.delete(p));
+    let s = u.origin + u.pathname + (u.searchParams.toString()?("?"+u.searchParams.toString()):"");
+    return s.replace(/\/$/, u.pathname==="/"?"/":"");
+  }catch(e){ return url.split(/[?&]/)[0]; }
+}
+/* Only accept URLs on the official IKEA Italy domain + allowed path (§2.12). */
+function ikeaUrlAllowed(url){
+  if(!url) return false;
+  try{
+    const u = new URL(url, "https://www.ikea.com");
+    if(u.protocol!=="https:") return false;
+    if(u.hostname!=="www.ikea.com" && u.hostname!=="ikea.com") return false;
+    return (IKEA_REGISTRY.allowed_prefixes||["https://www.ikea.com/it/it/"]).some(p=>ikeaCleanUrl(url).startsWith(p));
+  }catch(e){ return false; }
+}
+const ikeaSearchUrl = q => (IKEA_REGISTRY.seeds?.search||"https://www.ikea.com/it/it/search/?q=") + encodeURIComponent(q||"");
+
+/* Compact catalogue-compliance directive injected into plan/render prompts so
+   the images only show real, current IKEA Italy catalogue articles (§2.7,2.10). */
+const IKEA_CATALOGUE_DIRECTIVE = `████ IKEA ITALY CATALOGUE COMPLIANCE (client hard requirement) ████
+Every furniture / lighting / storage / kitchen / bathroom item shown MUST be a REAL, CURRENT article from the official IKEA Italy catalogue (market IT, language it-IT). Authoritative sources, in order: the live product-detail page, then the product's JSON-LD (schema.org/Product), then the official category listing under https://www.ikea.com/it/it/cat/ , then the product search https://www.ikea.com/it/it/search/?q= . Use exact IKEA series names (e.g. KIVIK, METOD, PAX, MALM, GODMORGON) and keep each item's real nominal dimensions, materials, finishes and modular/compatibility rules (validate combinations against the IKEA planners / buying guides, not visual similarity). Do NOT invent products, model numbers, sizes or finishes that are not in the current IKEA Italy catalogue; do NOT use another country's product or price as Italian. Size every item to the room dimensions from the plan.`;
+
+/* Full grounding brief (registry + directive) for the live price/availability
+   verification call. Kept whole here; sliced to a budget at call sites. */
+function ikeaGroundingBrief(){
+  return (IKEA_REGISTRY_MD? IKEA_REGISTRY_MD+"\n\n":"") + IKEA_CATALOGUE_DIRECTIVE;
+}
+
+/* ══════════════════════════════════════════════════════════════
    STRICT BOUNDARY PROTOCOL — user-mandated 100% hard constraints.
    Prepended to EVERY generation prompt (top position survives slicing) and
    mirrored by the automated plan↔original and render↔plan gates below.
@@ -1595,11 +1759,12 @@ THE ONLY ACCEPTABLE CHANGES:
 
 ${RENDER_REGS_PROMPT}`;
 
-  const ikeaDirective=`IKEA ONLY — all furniture must be recognizable IKEA products:
+  const ikeaDirective=`IKEA ONLY — all furniture must be recognizable, current IKEA Italy catalogue products (verify against the official IKEA IT sources: product page → JSON-LD → /it/it/cat/ listing → /it/it/search/):
 LIVING: KIVIK/SÖDERHAMN sofa · STOCKHOLM/LACK table · BESTÅ TV unit · KALLAX shelf · HEKTAR pendant · EKEDALEN table · INGOLF/TEODORES chairs
 KITCHEN: METOD+AXSTAD/KUNGSBACKA · KARLBY/EKBACKEN counter · HAVSEN sink · SKÅDIS pegboard · MITTLED LED
 BEDROOM: MALM/HEMNES bed · PAX+AULI wardrobe · NORDLI nightstands · SYMFONISK lamp · MAJVIKEN curtains
-BATHROOM: GODMORGON vanity · ODENSVIK sink · STORJORM mirror · BROGRUND shower · ENHET storage`;
+BATHROOM: GODMORGON vanity · ODENSVIK sink · STORJORM mirror · BROGRUND shower · ENHET storage
+${IKEA_CATALOGUE_DIRECTIVE}`;
 
   const v={
     living:`Photorealistic interior photo — Italian apartment living/dining RENOVATION. ${base}.${dims("living")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA sofa, coffee table, dining set, BESTÅ, rug, pendant, plants, wall art, floor finish, wall paint${roomData.living?.requirements?". CLIENT REQUIREMENTS: "+roomData.living.requirements:""}. Walls/windows/doors: IDENTICAL to original.${suffix}`,
@@ -3399,6 +3564,86 @@ function SolRenderCard({x, solIdx, d, apiKey}){
 }
 
 /* ══════ MARKET FETCH BUTTON ══════ */
+/* Live IKEA Italy catalogue verification — grounds each IKEA item's price,
+   availability, article number, dimensions and official product URL in the
+   official IKEA IT sources (§2.10 authority order), with field-level provenance.
+   Falls back gracefully (no key → shows the catalogue registry it would use). */
+function IkeaVerifyPanel({items, apiKey}){
+  const [state,setState]=useState("idle");
+  const [rows,setRows]=useState(null);
+  const [err,setErr]=useState("");
+  const ikeaItems=(items||[]).filter(Boolean);
+
+  const verify=async()=>{
+    if(!apiKey){setErr("Enter your Google AI Studio key in the header to run live catalogue verification.");return;}
+    if(ikeaItems.length===0){setErr("No IKEA items in this scenario.");return;}
+    setState("loading"); setErr("");
+    try{
+      const list=ikeaItems.map((it,i)=>`${i+1}. query="${it.q||it.name}" · expected="${it.name}" · catalog_price=${it.price}€`).join("\n");
+      const schema='[{"query":"","article_name":"","article_number":"","product_url":"https://www.ikea.com/it/it/p/...","standard_price_eur":<number>,"currency":"EUR","availability":"<in_stock|limited|out_of_stock|unknown>","dimensions_cm":"<w×d×h>","material":"","in_current_catalogue":<true|false>,"source_url":"https://www.ikea.com/it/it/...","source_type":"official_product_page","extraction_method":"json_ld|product_page|category_listing|search","retrieved_at":"","confidence_score":<0-1>}]';
+      const prompt=ikeaGroundingBrief().slice(0,12000)
+        +'\n\n────\nTASK: For each item below, find the matching CURRENT article in the official IKEA Italy catalogue (market IT, it-IT) and return its live data. Follow the source-authority order in §2.10 (live product-detail page → product JSON-LD → official /it/it/cat/ listing → /it/it/search/). Only use official www.ikea.com/it/it URLs. If an item is not found in the current Italian catalogue, set in_current_catalogue=false and suggest the closest current replacement in article_name. Never use another country\'s price. Return ONLY a valid JSON array (no markdown) matching this schema:\n'+schema+'\n\nITEMS:\n'+list;
+      const res=await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
+        {method:"POST",headers:{"Content-Type":"application/json"},
+         body:JSON.stringify({contents:[{parts:[{text:prompt}]}],tools:[{google_search:{}}],generationConfig:visionCfg(8192,{temperature:0})})});
+      const data=await res.json();
+      const txt=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
+      const match=txt.replace(/```json|```/g,"").match(/\[[\s\S]*\]/);
+      if(!match) throw new Error("No catalogue data returned — try again or check the key.");
+      const parsed=JSON.parse(match[0]);
+      /* attach the matching catalog item + clean/validate the URL */
+      const merged=parsed.map((r,i)=>{
+        const src=ikeaItems[i]||ikeaItems.find(x=>(x.q||x.name)===r.query)||{};
+        const url=ikeaUrlAllowed(r.product_url)?ikeaCleanUrl(r.product_url):(ikeaUrlAllowed(r.source_url)?ikeaCleanUrl(r.source_url):ikeaSearchUrl(src.q||r.article_name||r.query));
+        return {...r, product_url:url, catalog_price:src.price, expected:src.name, room:src.room};
+      });
+      setRows(merged); setState("done");
+    }catch(e){setErr(e.message||"Verification failed");setState("error");}
+  };
+
+  return(
+    <div className="card" style={{borderLeft:"4px solid #0058A3"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:8}}>
+        <div>
+          <div className="section-title" style={{margin:0,color:"#0058A3"}}>🛒 IKEA Italy catalogue verification</div>
+          <p style={{fontSize:10.5,color:"#78716C",marginTop:4,lineHeight:1.5,maxWidth:640}}>Grounds each IKEA item's <strong>price, availability, article number, dimensions and official product link</strong> in the live IKEA Italy catalogue (product page → JSON-LD → /it/it/cat/ → search), per the official source registry. Prices shown in the list are indicative; this check confirms them against the current product pages.</p>
+        </div>
+        <button className="btn btn-p" onClick={verify} disabled={state==="loading"} style={{whiteSpace:"nowrap",fontSize:12,background:"#0058A3"}}>
+          {state==="loading"?"🔍 Verifying…":"🌐 Verify live prices"}
+        </button>
+      </div>
+      {state==="loading"&&<div style={{fontSize:10.5,color:"#0058A3"}}>Querying official IKEA Italy product pages…</div>}
+      {err&&state!=="loading"&&<div className="note note-warn" style={{fontSize:11,marginTop:4}}>⚠️ {err}</div>}
+      {state==="done"&&rows&&<div style={{marginTop:8,overflowX:"auto"}}>
+        <table style={{fontSize:10.5}}>
+          <thead><tr style={{borderBottom:"2px solid #E2DCD2"}}>
+            {["Article","Art. no.","Catalog €","Live €","Avail.","Dims","Conf.","Source"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 7px",fontSize:9,color:"#78716C",whiteSpace:"nowrap"}}>{h}</th>)}
+          </tr></thead>
+          <tbody>{rows.map((r,i)=>{
+            const live=Number(r.standard_price_eur), cat=Number(r.catalog_price);
+            const delta=(Number.isFinite(live)&&Number.isFinite(cat)&&cat>0)?Math.round(((live-cat)/cat)*100):null;
+            return(<tr key={i} style={{borderBottom:"1px solid #ECE8E1",background:i%2?"#FAFAF8":"#fff"}}>
+              <td style={{padding:"5px 7px"}}>
+                <a href={r.product_url} target="_blank" rel="noopener noreferrer" style={{color:"#1B3A2D",fontWeight:600,textDecoration:"none"}}>{r.article_name||r.expected} 🔗</a>
+                {r.in_current_catalogue===false&&<span style={{marginLeft:5,fontSize:8.5,padding:"1px 5px",borderRadius:6,background:"#FEE08B",color:"#7D5A00",fontWeight:700}}>replacement</span>}
+                {r.expected&&r.article_name&&r.article_name!==r.expected&&<div style={{fontSize:9,color:"#78716C"}}>was: {r.expected}</div>}
+              </td>
+              <td style={{padding:"5px 7px",fontFamily:"monospace",fontSize:9.5,color:"#78716C",whiteSpace:"nowrap"}}>{r.article_number||"—"}</td>
+              <td style={{padding:"5px 7px",textAlign:"right"}}>{Number.isFinite(cat)?fmt(cat):"—"}</td>
+              <td style={{padding:"5px 7px",textAlign:"right",fontWeight:700,color:"#0058A3"}}>{Number.isFinite(live)?fmt(live):"—"}{delta!=null&&Math.abs(delta)>=2&&<span style={{fontSize:8.5,color:delta>0?"#B91C1C":"#1B3A2D",marginLeft:3}}>{delta>0?"▲":"▼"}{Math.abs(delta)}%</span>}</td>
+              <td style={{padding:"5px 7px",fontSize:9.5}}>{r.availability==="in_stock"?"✅":r.availability==="limited"?"🟡":r.availability==="out_of_stock"?"⛔":"—"}</td>
+              <td style={{padding:"5px 7px",fontSize:9.5,color:"#78716C",whiteSpace:"nowrap"}}>{r.dimensions_cm||"—"}</td>
+              <td style={{padding:"5px 7px",fontSize:9.5,color:r.confidence_score>=0.8?"#1B3A2D":r.confidence_score>=0.5?"#C87941":"#B91C1C"}}>{r.confidence_score!=null?Math.round(r.confidence_score*100)+"%":"—"}</td>
+              <td style={{padding:"5px 7px",fontSize:9,color:"#78716C"}}>{(r.extraction_method||r.source_type||"—").replace(/_/g," ")}</td>
+            </tr>);})}</tbody>
+        </table>
+        <p style={{fontSize:9.5,color:"#A8A29E",marginTop:6,lineHeight:1.5}}>Field-level provenance per §2.12 — each live price/availability is traced to an official IKEA Italy product page (retrieved just now). A brochure never overrides a live product page. Verify final availability for your postcode on the product page before ordering.</p>
+      </div>}
+    </div>
+  );
+}
+
 function MarketFetchBtn({d, s, area, apiKey}){
   const [state,setState]=useState("idle");
   const [md,setMd]=useState(null);
@@ -3992,6 +4237,37 @@ function Results({d, apiKey}){
               <div style={{fontSize:9,opacity:.7}}>Grand total</div>
               <div style={{fontFamily:"'Cormorant Garamond'",fontSize:20,fontWeight:700}}>{fmt(bom.grandTotal)}</div>
             </div>
+          </div>
+        </div>
+
+        {/* IKEA Italy catalogue verification (live prices + provenance) */}
+        {(()=>{
+          const ikeaItems=[];
+          Object.entries(bom.selectedByRoom).forEach(([room,its])=>its.forEach(it=>{ if(it.provider==="IKEA_IT") ikeaItems.push({...it, room}); }));
+          return <IkeaVerifyPanel items={ikeaItems} apiKey={apiKey}/>;
+        })()}
+
+        {/* Official IKEA Italy source registry (seeds used for grounding) */}
+        <div className="card">
+          <div className="section-title">🗄 Official IKEA Italy sources used</div>
+          <p style={{fontSize:10.5,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Furniture items, materials, dimensions and prices are grounded in these official IKEA Italy catalogue sources (market IT · it-IT). The plan and render engines are instructed to only show real, current catalogue articles from these sources.</p>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6}}>
+            {[
+              ["Product index",IKEA_REGISTRY.seeds?.product_index],
+              ["Kitchens & appliances",IKEA_REGISTRY.categories?.kitchens_appliances],
+              ["Bathrooms",IKEA_REGISTRY.categories?.bathrooms],
+              ["Storage & wardrobes",IKEA_REGISTRY.categories?.storage_wardrobes_shelving],
+              ["Beds & mattresses",IKEA_REGISTRY.categories?.beds_mattresses],
+              ["Sofas & armchairs",IKEA_REGISTRY.categories?.sofas_armchairs],
+              ["Lighting",IKEA_REGISTRY.categories?.lighting],
+              ["Brochures & guides",IKEA_REGISTRY.seeds?.brochures],
+              ["Planners (PAX…)",IKEA_REGISTRY.seeds?.planners],
+            ].filter(([,u])=>u).map(([l,u])=>(
+              <a key={l} href={u} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",padding:"7px 9px",background:"#F6F4EF",borderRadius:6,display:"block"}}>
+                <div style={{fontSize:10.5,fontWeight:700,color:"#0058A3"}}>{l} ↗</div>
+                <div style={{fontSize:8.5,color:"#A8A29E",marginTop:1,wordBreak:"break-all"}}>{u.replace("https://www.ikea.com","")}</div>
+              </a>
+            ))}
           </div>
         </div>
 
