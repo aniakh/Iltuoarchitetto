@@ -7,6 +7,14 @@ prototype.
 - **`index.html`** — bilingual (IT / EN) marketing landing page.
 - **`demo.html`** — the live, interactive renovation tool (5-step wizard:
   property → floor plan → interventions → style → 3 solutions).
+- **`prototype.html`** — self-contained merged prototype (React + Babel inline,
+  no build step). Adds a **current property value** field (manual or pulled from
+  the listing), a **preferred budget & time limit** section that sizes the three
+  proposals to budget −25% / budget / +25% (hard cap), and a refined **Market
+  Analysis** tab (OMI · immobiliare.it · idealista · Borsino Immobiliare · ADE ·
+  Banca d'Italia) covering after-renovation price, gross/net rent income and
+  renovation & capital ROI. Open it directly over HTTP; paste a Google AI Studio
+  key in the header to enable listing extraction and renders.
 - **`src/demo-app.jsx`** — the demo's React source (the editable source of truth).
 - **`assets/`** — fonts (Cormorant Garamond + Source Sans 3), CSS, the i18n
   script, the React runtime, `js/demo-app.js` (the compiled demo) and
