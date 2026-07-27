@@ -280,6 +280,42 @@ A brochure must never override newer data from a live product page.
 }
 </script>
 
+<script type="text/plain" id="lombardy-valuation-engine-md">
+LOMBARDY APARTMENT RENOVATION VALUE & RENTAL-INCOME PREDICTION ENGINE — grounding brief for the live market query. Act as a senior real-estate data scientist, Italian chartered valuer, renovation cost consultant, GIS specialist and rental-investment analyst.
+
+OUTPUTS (each as a RANGE with confidence, never a single false-precise number): (1) pre-renovation market value; (2) pre-renovation achievable rent; (3) post-renovation market value; (4) post-renovation long-term rent; (5) short/medium-term & student rent where legally applicable; (6) renovation cost; (7) incremental value; (8) incremental rent; (9) gross & net yields; (10) renovation ROI; (11) total return / cash-on-cash / NPV / IRR; (12) conservative/base/upside scenarios; (13) confidence & prediction intervals; (14) transparent assumptions & sources.
+
+FOUR SEPARATE PRICE CONCEPTS — never merge into one "market price":
+A. verified_transaction_price — from deeds/agency/lender/comparable datasets. Do NOT claim individual Italian deeds are a public live feed.
+B. OMI (Agenzia delle Entrate) — omi_sale_min/max_eur_m2, omi_rent_min/max_eur_m2_month, omi_property_type, omi_condition, omi_zone_code, omi_semester. Zonal RANGES, not exact prices.
+C. asking / listing (immobiliare.it, idealista) — asking_sale_eur_m2, asking_rent_eur_m2_month, listing_source, listing_date, days_on_market, price_reductions, listing_condition, listing_energy_class. These are ASKING prices.
+D. modelled estimate — estimated_transaction_value, estimated_achievable_rent, estimated_post_renovation_value, estimated_post_renovation_rent, each with valuation date, sources, comparable count, geographic level, low/central/high, confidence, model version, assumptions.
+
+SOURCES: OMI Quotazioni (agenziaentrate.gov.it/…/omi/…); Idealista report Lombardia (idealista.it/sala-stampa/report-prezzo-immobile/…/lombardia/); Immobiliare.it Insights (immobiliare.it/mercato-immobiliare/lombardia/); CENED 2.0 energy certs (cened.it/opendata-cened-2.0); Regione Lombardia prezzario opere (prezzario.regione.lombardia.it); ISTAT comuni; Lombardy Geoportal; Milan 88 NIL (dati.comune.milano.it). Keep Idealista and Immobiliare.it measures SEPARATE. Cite OMI as "Agenzia delle Entrate – OMI".
+
+GEOGRAPHY: all 12 Lombardy provinces & every comune, all OMI zones, Milan's 88 NIL, and lake/mountain/tourist/student/metropolitan submarkets handled separately. Map address→comune→OMI zone→neighbourhood via an alias table (OMI, portals, NIL, common names differ). Do NOT smooth across lakefront vs inland, luxury vs ordinary, resort vs permanent, central Milan vs outer metro.
+
+RENOVATION LEVELS (no universal uplift): L0 none · L1 cosmetic refresh · L2 light functional · L3 complete standard · L4 high-spec · L5 deep energy+premium. Separate interior-quality, layout, energy, added-room, added-bathroom and furnished/turnkey uplifts; avoid double counting.
+
+COMPARABLES: same building → same street → same neighbourhood/OMI zone → adjacent zones → same comune → similar comuni. Filter by type/size/rooms/condition/energy/floor/lift/outdoor/parking/period/view/noise. Time-adjust with LOCAL indices (not national). Estimate asking→transaction discount from local evidence (not one fixed % for all Lombardy). Detect duplicate listings.
+
+POST-RENO COUNTERFACTUAL: value the SAME apartment pre and post, changing only variables the renovation affects (condition, bathrooms, layout efficiency, energy class, cooling, windows, furnished). Uplift = post − pre. Renovation cost ≠ value created. CAP post value at the best renovated comparables / local new-build / market ceiling — a luxury interior in an ordinary building is NOT a luxury new-build.
+
+ENERGY PREMIUM: from CENED + locally calibrated models; never a flat national 25%. Varies by province/comune/climate/value/age/heating/owner-vs-investor/energy prices/scarcity. Keep energy premium separate from finish-quality premium. Show current class, expected post class, probability of reaching it, €/yr energy saving, value & rent contribution, confidence range.
+
+RENOVATION COST: bottom-up from Regione Lombardia prezzario work items (demolition, partitions, plaster, floors, tiling, painting, doors, windows, electrical, plumbing, heating, cooling, ventilation, bath, kitchen, insulation, heat pump, PV…) + overheads/fees/permits/safety/APE/cadastral/contingency/VAT. Risk-based contingency (not fixed). Location cost factors (Milan vs metro vs provincial vs mountain/lake). Show bottom-up BoQ AND a €/m² reasonableness check.
+
+RENT MODELS: long-term (furnished/unfurnished, ordinary/canone concordato/student/transitory/corporate) and, only where legally & commercially applicable, short-term (ADR×365×occupancy, seasonal). Do NOT multiply portal €/m² by full cadastral area blindly. NOI = effective gross income − owner opex (non-recoverable condo, maintenance, management, insurance, IMU, letting fees, reserve). Report taxes separately. Short-term needs condominium/municipal/regional/CIN/safety checks first.
+
+INVESTMENT METRICS: total project cost = acquisition (price+taxes+notary+agency+DD+finance) + renovation + fees + furnishing + contingency + holding. gross yield = annual gross rent / total project cost; net yield = NOI / total project cost; renovation ROI = (post value − pre value − reno cost)/reno cost; cash-on-cash, profit on sale, NPV, IRR, payback, DSCR, break-even occupancy & rent.
+
+SCENARIOS: conservative (lower price/rent, higher cost/vacancy/contingency), base (central), upside (upper-but-defensible, no unjustified luxury premium). Sensitivity on price/rent ±5/10/15%, cost ±10/20/30%, delay, occupancy, rate, discount, exit, energy premium.
+
+CONFIDENCE 0–100 from comparable quantity/recency/proximity/similarity, source reliability, source agreement, dispersion, transaction-vs-listing evidence, liquidity, model validation. 85–100 high · 70–84 good · 50–69 moderate · <50 low. Low confidence → WIDER range + explanation, never false precision. Never a single exact value without a range.
+
+REQUIRED WARNINGS: automated estimate, not a certified appraisal; OMI values are broad zonal indications; portal prices are asking prices; actual transaction prices may differ; renovation costs need design + contractor quotes; energy-class improvement needs professional confirmation; rental income depends on vacancy/tenant/expenses/taxation/regulation; short-term use is subject to local/regional/national/condominium rules; legal/cadastral/planning/condominium compliance must be checked separately.
+</script>
+
 <div id="root"></div>
 <script type="text/babel">
 const {useState, useRef, useMemo, useCallback, useEffect} = React;
@@ -704,6 +740,37 @@ function calcLombardyVal(d, sol, renoCostOverride){
   const netYield = totalInvestment>0 ? (annualRentNet/totalInvestment)*100 : 0;     // net yield on capital
   trace.push({step:9, label:"Rent income generation", note:`immobiliare.it zone rent €${rentRef}/m²/mo × ${area}m² × ${rentCoef} condition coef · gross yield ${Math.round(grossYield*100)/100}% · net yield ${Math.round(netYield*100)/100}% (after ~30% vacancy/mgmt/condo/IMU)`, monthly:monthlyRent, annual:annualRent, monthly_net:monthlyRentNet, annual_net:annualRentNet, gross_yield_pct:Math.round(grossYield*100)/100, net_yield_pct:Math.round(netYield*100)/100});
 
+  /* STEP 9b: PRE-renovation achievable rent (current condition, lower coef) */
+  const preRentCoef = {"Da ristrutturare":0.82,"scadente":0.80,"to_renovate":0.82,"Buono / Abitabile":0.92,"normal":0.92,"habitable_old":0.88,"good":0.98,"Ristrutturato":1.00,"renovated":1.00,"Ottimo":1.03,"finely_renovated":1.05,"Nuovo / In costruzione":1.06}[d.currentStatus] ?? 0.9;
+  const preMonthlyRent = Math.round(rentRef * area * preRentCoef);
+  const preAnnualRentNet = Math.round(preMonthlyRent*12*NOI_FACTOR);
+  const rentUpliftMo = monthlyRent - preMonthlyRent;
+
+  /* STEP 11: Confidence score + prediction band (avoid false precision — a
+     modelled estimate is always a range, wider when evidence is thin). */
+  let confidence = 60;
+  if(anchor>0) confidence += 16;                 // real current value known
+  if(d.eCls && d.eCls!=="Unknown") confidence += 8;
+  if(milanZone) confidence += 8;                 // matched a specific OMI zone
+  if(sol.co && sol.co.total>0) confidence += 6;  // budget-scaled real cost
+  confidence = Math.max(35, Math.min(95, confidence));
+  const confidence_label = confidence>=85?"High":confidence>=70?"Good":confidence>=50?"Moderate":"Low";
+  const band = confidence>=85?0.05 : confidence>=70?0.08 : confidence>=50?0.12 : 0.18; // ± range width
+  const rng = c => [Math.round(c*(1-band)), Math.round(c), Math.round(c*(1+band))];
+
+  /* STEP 12: Conservative / Base / Upside scenarios (post value, rent & ROI) */
+  const scen = (label, priceMult, rentMult, costMult) => {
+    const pv = Math.round(postRenovTotal*priceMult);
+    const rc = Math.round(renoCost*costMult);
+    const roi = rc>0 ? Math.round(((pv - preRenovTotal - rc)/rc)*1000)/10 : 0;
+    return {label, post_value:pv, reno_cost:rc, roi_pct:roi, monthly_rent:Math.round(monthlyRent*rentMult)};
+  };
+  const scenarios = {
+    conservative: scen("Conservative", 0.93, 0.92, 1.15),
+    base:         scen("Base",         1.00, 1.00, 1.00),
+    upside:       scen("Upside",       1.07, 1.06, 0.95),
+  };
+
   /* STEP 10: Recommendation (based on renovation ROI) */
   let recommendation = "Not recommended unless strategic reason";
   if(renovationRoi >= 40) recommendation = "Strong value-add candidate";
@@ -731,7 +798,10 @@ function calcLombardyVal(d, sol, renoCostOverride){
     roi_pct: Math.round(renovationRoi*10)/10, capital_roi_pct: Math.round(capitalRoi*10)/10,
     monthly_rent: monthlyRent, annual_rent: annualRent,
     monthly_rent_net: monthlyRentNet, annual_rent_net: annualRentNet,
+    pre_monthly_rent: preMonthlyRent, pre_annual_rent_net: preAnnualRentNet, rent_uplift_mo: rentUpliftMo,
     gross_yield_pct: Math.round(grossYield*100)/100, net_yield_pct: Math.round(netYield*100)/100,
+    pre_value_range: rng(preRenovTotal), post_value_range: rng(postRenovTotal),
+    confidence, confidence_label, scenarios,
     recommendation, ceiling_hit: ceilingHit,
     trace
   };
@@ -1290,6 +1360,11 @@ const IKEA_REGISTRY = (typeof document!=="undefined" && document.getElementById(
   : {seeds:{search:"https://www.ikea.com/it/it/search/?q="},categories:{},allowed_prefixes:["https://www.ikea.com/it/it/"],strip_params:["utm_source","utm_medium","utm_campaign","utm_term","utm_content","msockid","gclid","fbclid"]};
 const IKEA_REGISTRY_MD = (typeof document!=="undefined" && document.getElementById("ikea-catalogue-registry-md"))
   ? document.getElementById("ikea-catalogue-registry-md").textContent.trim()
+  : "";
+/* Lombardy valuation & rental-income engine spec — grounds the live market query
+   so post-renovation sale price and rent stay accurate and source-separated. */
+const VALUATION_ENGINE_MD = (typeof document!=="undefined" && document.getElementById("lombardy-valuation-engine-md"))
+  ? document.getElementById("lombardy-valuation-engine-md").textContent.trim()
   : "";
 
 /* Strip tracking params and return the clean canonical IKEA URL (§2.8). */
@@ -2370,9 +2445,10 @@ Apply these STRICT BOUNDARY PROTOCOL tests (§7):
 - Boundary overlay: proposed external boundary overlays the original exactly (P_proposed ⊆ P_original, ΔB≈0).
 - Area: proposed net internal area ≤ original net internal area (A_proposed/A_original ≤ 1.00, small partition-thickness tolerance only). Set areaRatioOK=false if the proposal looks larger.
 - Traceability: EVERY room/space in the proposal must be obtainable from existing internal area (subdivision/merge/reallocation). Set allSpacesTraceable=false if any space cannot come from the original interior (i.e. it was added).
+OUTPUT-TYPE GATE: IMAGE 2 MUST itself be a 2D top-down architectural FLOOR PLAN — a line drawing seen from above with walls, room subdivisions, door/window symbols and (ideally) room labels/dimensions. If IMAGE 2 is a 3D view, a perspective, a photo, an elevation, an axonometric or anything other than a true 2D top-down plan, set isFloorPlan=false (and approved=false).
 Return ONLY valid JSON (no markdown):
-{"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"areaRatioOK":true/false,"noSpacesAdded":true/false,"allSpacesTraceable":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"internalLayoutRespectsScenario":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every envelope difference, any added room/space, anything outside the perimeter, and any internal change not allowed by the scenario"],"summary":"one line"}
-HARD GATE: if ANY of sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, areaRatioOK, noSpacesAdded, allSpacesTraceable, entranceMatch, windowsMatch, balconyDoorsMatch, internalLayoutRespectsScenario is false → approved:false and overallScore ≤ 40.`}
+{"isFloorPlan":true/false,"sameSpace":true/false,"outerWallsMatch":true/false,"overallShapeMatch":true/false,"totalAreaMatch":true/false,"withinOriginalBoundary":true/false,"areaRatioOK":true/false,"noSpacesAdded":true/false,"allSpacesTraceable":true/false,"entranceMatch":true/false,"windowsMatch":true/false,"balconyDoorsMatch":true/false,"internalLayoutRespectsScenario":true/false,"structuralWallsUntouched":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every envelope difference, any added room/space, anything outside the perimeter, and any internal change not allowed by the scenario"],"summary":"one line"}
+HARD GATE: if ANY of isFloorPlan, sameSpace, outerWallsMatch, overallShapeMatch, totalAreaMatch, withinOriginalBoundary, areaRatioOK, noSpacesAdded, allSpacesTraceable, entranceMatch, windowsMatch, balconyDoorsMatch, internalLayoutRespectsScenario is false → approved:false and overallScore ≤ 40.`}
        ]}],generationConfig:visionCfg(1400)})
       }
     );
@@ -2578,9 +2654,15 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         if(onPlanReady) onPlanReady(imgUrl);
         return;
       }
-      failing = planCompare.approved===false || planCompare.sameSpace===false
+      /* The post-renovation plan is shared to the room renders ONLY once it (a) is
+         actually a 2D floor plan, (b) keeps the envelope/space of the original,
+         and (c) passes the Italian/Lombardy building-code checks. */
+      const complianceBad = validation && [validation.complianceCeilingHeight, validation.complianceRoomAreas, validation.complianceLightVent, validation.complianceAccessibility, validation.complianceStructural].some(x=>x===false);
+      failing = planCompare.isFloorPlan===false
+              || planCompare.approved===false || planCompare.sameSpace===false
               || planCompare.withinOriginalBoundary===false || planCompare.noSpacesAdded===false
-              || planCompare.areaRatioOK===false;
+              || planCompare.areaRatioOK===false
+              || complianceBad;
     } else {
       if(planConsistency===undefined || planConsistency==="running") return; // wait for the render↔plan check
       if(planConsistency==null) return;        // no plan to compare against → accept
@@ -2724,6 +2806,10 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
           ["Sagoma",validation?.overallShapeUnchanged,"BLG-ENV-03"],
           ["Porte-finestra",validation?.balconyDoorsUnchanged,"BLG-ENV-05"],
           ["Superficie",validation?.totalAreaPreserved,"HYG-02"],
+          ["Altezze",validation?.complianceCeilingHeight,"HYG-01"],
+          ["Superfici min.",validation?.complianceRoomAreas,"HYG-03"],
+          ["Aeroillum.",validation?.complianceLightVent,"HYG-06"],
+          ["Accessibilità",validation?.complianceAccessibility,"ACC-DM-01"],
         ]:[
           ["Finestre",validation?validation.windowCountMatch!==false&&validation.windowPositionsMatch!==false:undefined,"BLG-ENV-04"],
           ["Porte-finestra",validation?.balconyDoorsUnchanged,"BLG-ENV-05"],
@@ -2755,6 +2841,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       {/* CROSS-CHECK 1 — post-intervention PLAN vs INITIAL plan (plan tile only) */}
       {phase==="done"&&!blocked&&isPlan&&planCompare&&(()=>{
         const rows=[
+          ["Planimetria 2D",planCompare.isFloorPlan],
           ["Muri esterni",planCompare.outerWallsMatch],
           ["Sagoma/impronta",planCompare.overallShapeMatch],
           ["Superficie",planCompare.totalAreaMatch],
@@ -3774,7 +3861,7 @@ function MarketFetchBtn({d, s, area, apiKey, onData}){
         `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
         {method:"POST",headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
-           contents:[{parts:[{text:`Search live immobiliare.it, idealista and OMI Agenzia delle Entrate data for ${city}, Italy (zone "${s?.vl?.zone||d.city}"). Ground every figure in those official/portal sources. Return ONLY valid JSON:\n{"omiMin":<€/m²>,"omiMax":<€/m²>,"omiZone":"<zone>","marketAvgSqm":<€/m²>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m² for the current condition>,"comparableRenovated":<€/m² for a renovated unit>,"marketRentSqm":<€/m²/month>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations>"}`}]}],
+           contents:[{parts:[{text:VALUATION_ENGINE_MD.slice(0,6000)+`\n\n────\nTASK: For ${city}, Lombardy (OMI zone "${s?.vl?.zone||d.city}"), return CURRENT source-separated figures, keeping OMI ranges, asking prices and rent distinct (never merged). Ground every figure in OMI (Agenzia delle Entrate), immobiliare.it and idealista. Return ONLY valid JSON:\n{"omiMin":<€/m² OMI sale min>,"omiMax":<€/m² OMI sale max>,"omiZone":"<zone>","omiRentMin":<€/m²/mo>,"omiRentMax":<€/m²/mo>,"askingSaleSqm":<€/m² immobiliare.it asking>,"askingSaleSqmIdealista":<€/m² idealista asking>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m² for the current condition>,"comparableRenovated":<€/m² for a renovated/finito unit>,"marketRentSqm":<€/m²/month asking rent>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations + source dates>"}`}]}],
            tools:[{google_search:{}}],
            generationConfig:visionCfg(4096,{temperature:0})
          })
@@ -3822,7 +3909,7 @@ function Results({d, apiKey}){
   /* Live market data (OMI + immobiliare.it/idealista), fetched on demand and
      used to ground the post-renovation price and rent generation. */
   const [liveMkt,setLiveMkt]=useState(null);
-  const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"energydetail",l:"Energy Detail",i:"🔋"},{id:"schedule",l:"Schedule",i:"📅"},{id:"valuation",l:"Value",i:"🏠"},{id:"market",l:"Market Analysis",i:"📈"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
+  const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"energydetail",l:"Energy Detail",i:"🔋"},{id:"schedule",l:"Schedule",i:"📅"},{id:"value",l:"Value & Rent",i:"🏠"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
 
   const SP=()=><div style={{display:"flex",gap:6,marginBottom:14}}>{sols.map((x,i)=>{const m=SM[i],on=si===i;return<button key={x.nm} onClick={()=>setSi(i)} style={{flex:1,padding:"11px 12px",borderRadius:9,border:on?"3px solid "+m.color:"1px solid #E2DCD2",background:on?m.gr:"#fff",cursor:"pointer",textAlign:"left",fontFamily:"inherit"}}><div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><span style={{fontSize:15}}>{m.em}</span><span style={{fontFamily:"'Cormorant Garamond'",fontSize:14,fontWeight:700,color:on?"#fff":"#1C1917"}}>{x.nm}</span>{i===1&&<span style={{padding:"1px 5px",borderRadius:7,background:on?"rgba(255,255,255,.3)":"#D1E7DD",fontSize:8.5,fontWeight:700,color:on?"#fff":"#1B3A2D"}}>REC</span>}</div><div style={{fontSize:12,fontWeight:700,color:on?"rgba(255,255,255,.95)":"#1C1917"}}>{fmt(x.co.total)}</div><div style={{fontSize:10,color:on?"rgba(255,255,255,.7)":"#78716C"}}>{x.ch.length} items · {x.sc.tw}wk · {x.en.bC}→{x.en.aC}</div></button>})}</div>;
 
@@ -4095,256 +4182,151 @@ function Results({d, apiKey}){
     {/* SCHEDULE */}
     {tab==="schedule"&&<div><SP/><div className="card"><h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:17,color:"#1B3A2D",marginBottom:10}}>{s.nm} — Schedule ({s.sc.tw}wk)</h3>{s.sc.t.map((t,i)=>{const pct=(t.w/s.sc.tw)*100,left=(t.s/s.sc.tw)*100;return<div key={t.n} style={{display:"flex",alignItems:"center",marginBottom:7,gap:9}}><div style={{width:110,fontSize:11,fontWeight:500,textAlign:"right",flexShrink:0}}>{t.n}</div><div style={{flex:1,position:"relative",height:24,background:"#F6F4EF",borderRadius:5}}><div style={{position:"absolute",left:left+"%",width:Math.max(pct,4)+"%",height:"100%",background:CLS[i%CLS.length],borderRadius:5,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,color:"#fff",fontWeight:600}}>{t.w}w</div></div></div>})}</div></div>}
 
-    {/* VALUATION — Traceable Lombardy engine with full breakdown */}
-    {tab==="valuation"&&(()=>{
-      const v = s.vl;
-      const t = v.trace || [];
-      const StepCard = ({step})=>(
-        <div style={{padding:"10px 12px",background:"#FAFAF8",borderLeft:"3px solid #1B3A2D",borderRadius:6,marginBottom:6}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:10}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#1B3A2D"}}>Step {step.step} · {step.label}</div>
-            {step.value!=null&&<div style={{fontFamily:"'Cormorant Garamond'",fontSize:15,fontWeight:700,color:"#1B3A2D"}}>{typeof step.value==="number"?(step.value>1000?fmt(step.value):step.value+" €/m²"):step.value}</div>}
-          </div>
-          {step.note&&<div style={{fontSize:10.5,color:"#78716C",marginTop:3,lineHeight:1.5}}>{step.note}</div>}
-          {step.total&&<div style={{fontSize:10,color:"#1B3A2D",marginTop:2}}><strong>Total: {fmt(step.total)}</strong></div>}
-          {step.OMI_min&&<div style={{fontSize:10,color:"#78716C",marginTop:2}}>OMI range €/m²: {step.OMI_min.toLocaleString()} – {step.OMI_max.toLocaleString()} · asking ref €{step.asking_ref.toLocaleString()}/m² · rent €{step.rent_ref}/m²·mo</div>}
-          {step.adders&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>{Object.entries(step.adders).map(([k,v])=><span key={k} style={{fontSize:9,padding:"1px 6px",background:"#FAEBD7",borderRadius:6,color:"#7D5A00"}}>{k}: €{Math.round(v).toLocaleString()}</span>)}</div>}
-          {step.gross_uplift!=null&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:5,fontSize:10}}><span>Gross uplift: <strong>{fmt(step.gross_uplift)}</strong></span><span>Net uplift: <strong style={{color:step.net_uplift>0?"#1B3A2D":"#B91C1C"}}>{fmt(step.net_uplift)}</strong></span><span>Profit if resold: <strong style={{color:step.profit_resold>0?"#1B3A2D":"#B91C1C"}}>{fmt(step.profit_resold)}</strong></span><span>ROI: <strong style={{color:step.roi_pct>0?"#1B3A2D":"#B91C1C"}}>{step.roi_pct}%</strong></span></div>}
-          {step.monthly!=null&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:5,fontSize:10}}><span>Monthly rent: <strong>{fmt(step.monthly)}</strong></span><span>Annual: <strong>{fmt(step.annual)}</strong></span><span>Gross yield: <strong style={{color:"#1B3A2D"}}>{step.gross_yield_pct}%</strong></span></div>}
-          {step.ceilingHit&&<div style={{marginTop:4,fontSize:10,padding:"3px 8px",background:"#FEE08B",borderRadius:5,color:"#7D5A00",display:"inline-block"}}>⚠ Market ceiling reached (€{step.ceiling.toLocaleString()}/m²) — value capped</div>}
-        </div>
-      );
-      const recColor = v.roi_pct>=15?"#1B3A2D":v.roi_pct>=8?"#2D5F45":v.roi_pct>=0?"#C87941":"#B91C1C";
-      return(<div>
-        <SP/>
-        {/* Headline */}
-        <div className="card" style={{background:"linear-gradient(135deg,#1B3A2D,#2D5F45)",color:"#fff",marginBottom:12}}>
-          <h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:20,fontWeight:700,marginBottom:3}}>🏠 Lombardy Valuation — {s.nm}</h3>
-          <p style={{fontSize:11,opacity:.85}}>📍 {v.zone} · {parseFloat(d.area)||85} m² · Energy {v.energy_pre}→{v.energy_post} · Condition {v.cond_pre} → {v.cond_post}</p>
-          <p style={{fontSize:10,opacity:.7,marginTop:2}}>OMI Agenzia Entrate · Immobiliare.it benchmarks (Apr 2026) · ADE declared transactions · Banca d'Italia energy premium calibration</p>
-          <div style={{marginTop:10,padding:"8px 12px",background:recColor,borderRadius:7,fontSize:12,fontWeight:700}}>
-            📊 {v.recommendation} · ROI {v.roi_pct}%
-          </div>
-        </div>
-
-        {/* Headline values */}
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:12}}>
-          {[
-            ["Pre-renovation value",fmt(v.vB),"#6B705C"],
-            ["Renovation cost",fmt(v.reno_cost),"#C87941"],
-            ["Post-renovation value",fmt(v.vA),"#1B3A2D"],
-            ["Net uplift",fmt(v.net_uplift),v.net_uplift>0?"#1B3A2D":"#B91C1C"],
-            ["Monthly rent potential",fmt(v.monthly_rent),"#2D5F45"],
-            ["Gross yield",v.gross_yield_pct+"%","#1B3A2D"],
-          ].map(([l,vl,c])=>(
-            <div key={l} className="card" style={{padding:"10px 12px",margin:0,textAlign:"center"}}>
-              <div style={{fontSize:9,color:"#78716C"}}>{l}</div>
-              <div style={{fontFamily:"'Cormorant Garamond'",fontSize:18,fontWeight:700,color:c}}>{vl}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Traceable methodology */}
-        <div className="card">
-          <div className="section-title">📋 Calculation Trace — every step + coefficient</div>
-          <p style={{fontSize:11,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Each step references the same official sources (OMI quotations, Milan zone benchmarks, OMI condition states). All coefficients are visible and adjustable in the source.</p>
-          {t.map((step,i)=><StepCard key={i} step={step}/>)}
-        </div>
-
-        {/* Sources */}
-        <div className="card">
-          <h4 style={{fontFamily:"'Cormorant Garamond'",fontSize:14,color:"#1B3A2D",marginBottom:8}}>📚 Data sources used</h4>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10.5}}>
-            {[
-              ["OMI Quotazioni Immobiliari","Agenzia delle Entrate · semiannual official quotations","https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm"],
-              ["ADE Declared transaction values","Calibration layer for nearby sold properties","https://www.agenziaentrate.gov.it/portale/web/guest/schede/fabbricatiterreni/oicv/dichiarati"],
-              ["Immobiliare.it Market","Milan zone asking + rent benchmarks (Apr 2026)","https://www.immobiliare.it/mercato-immobiliare/lombardia/"],
-              ["Banca d'Italia","Energy label capitalization premium research","https://www.bancaditalia.it"],
-              ["Milan Open Data","OMI Zones GeoJSON for spatial geolocation",""],
-            ].map(([k,desc,url])=>(
-              <div key={k} style={{padding:"7px 9px",background:"#F6F4EF",borderRadius:6}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#1B3A2D"}}>{k}</div>
-                <div style={{fontSize:10,color:"#78716C",marginTop:1}}>{desc}</div>
-                {url&&<a href={url} target="_blank" rel="noopener noreferrer" style={{fontSize:9.5,color:"#1B3A2D"}}>{url}</a>}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="note note-warn" style={{fontSize:10.5,lineHeight:1.5}}>
-          ⚠️ Asking-price benchmarks discounted 5% to reflect probable transaction price. Energy class premium does not double-count renovation quality. Post-renovation value capped at local market ceiling (1.05× zone asking benchmark). Validate against nearby ADE declared transactions for highest confidence.
-        </div>
-      </div>);
-    })()}
-
-    {/* MARKET ANALYSIS */}
-    {tab==="market"&&(()=>{
+    {/* VALUE & RENT — merged, simplified valuation + market analysis */}
+    {tab==="value"&&(()=>{
       const v=s.vl;
+      const eur=n=>"€"+Math.round(Number(n)||0).toLocaleString("it-IT");
       const listingPrice=d.listingExtracted?.price||null;
       const cityKey=(d.city||"").toLowerCase().trim();
       const omiRef=CITY_PRICES[cityKey]||LOMBARDY_AVG;
-      const currentVal=v.vB;                       // anchored to user/listing value when provided
-      const postRenovVal=v.vA;                     // post-renovation market value
-      const compReno=v.comparable_renovated||v.asking_ref; // renovated comparable €/m² (immobiliare.it)
-      const listingDelta=listingPrice?Math.round(((listingPrice-currentVal)/currentVal)*100):null;
-      const upliftPct=currentVal?Math.round(((postRenovVal-currentVal)/currentVal)*100):0;
-      const maxBar=Math.max(listingPrice||0,currentVal,postRenovVal,omiRef*area)*1.2||1;
-      const eur=n=>"€"+Math.round(n).toLocaleString("it-IT");
-      /* budget adherence */
-      const budget=parseEuro(d.budget);
-      const budgetPct=budget>0?Math.round((s.co.total/budget)*100):null;
-      /* time adherence */
-      const months=Math.round((s.sc.tw/4.345)*10)/10;
-      const timeLimit=parseFloat(d.timeLimit)||0;
-      const overTime=timeLimit>0&&months>timeLimit;
-      const Bar=({val,color,label,note})=>(
-        <div style={{marginBottom:10}}>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,fontSize:11}}>
-            <span style={{fontWeight:600}}>{label}</span>
-            <span style={{fontWeight:700,color}}>{fmt(val)} <span style={{fontSize:10,color:"#78716C"}}>{fmt(Math.round(val/area))}/m²</span> {note&&<span style={{fontSize:9,marginLeft:4}}>{note}</span>}</span>
+      const preR=v.pre_value_range||[v.vB,v.vB,v.vB];
+      const postR=v.post_value_range||[v.vA,v.vA,v.vA];
+      const upliftPct=v.vB?Math.round(((v.vA-v.vB)/v.vB)*100):0;
+      const rentUpPct=v.pre_monthly_rent?Math.round(((v.monthly_rent-v.pre_monthly_rent)/v.pre_monthly_rent)*100):0;
+      const sc=v.scenarios||{};
+      const confClr=v.confidence>=85?"#1B3A2D":v.confidence>=70?"#2D5F45":v.confidence>=50?"#C87941":"#B91C1C";
+      const recColor=/[Ss]trong/.test(v.recommendation||"")?"rgba(255,255,255,.22)":/[Ll]ow|[Nn]ot/.test(v.recommendation||"")?"rgba(180,40,40,.5)":"rgba(255,255,255,.15)";
+      /* live-grounded overrides (only when the user fetched live market data) */
+      const liveSqm=liveMkt&&liveMkt.comparableRenovated?Math.round(Number(liveMkt.comparableRenovated)):null;
+      const livePostVal=liveSqm?liveSqm*area:null;
+      const liveRentSqm=liveMkt&&liveMkt.marketRentSqm?Number(liveMkt.marketRentSqm):null;
+      const liveRentMo=liveRentSqm?Math.round(liveRentSqm*area*({Essential:1.05,Balanced:1.12,Premium:1.20}[s.nm]||1)):null;
+
+      /* now → after value pair */
+      const NowAfter=({label,now,after,pct,color})=>(
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <div style={{flex:"1 1 130px"}}>
+            <div style={{fontSize:9.5,color:"#78716C",textTransform:"uppercase",letterSpacing:".04em"}}>Now (pre-reno)</div>
+            <div style={{fontFamily:"'Cormorant Garamond'",fontSize:22,fontWeight:700,color:"#6B705C"}}>{now}</div>
           </div>
-          <div style={{height:26,background:"#F0EDE8",borderRadius:6,overflow:"hidden"}}>
-            <div style={{height:"100%",width:Math.max(2,Math.round((val/maxBar)*100))+"%",background:color,borderRadius:6,transition:"width .5s ease"}}/>
+          <div style={{fontSize:20,color:color||"#1B3A2D"}}>→</div>
+          <div style={{flex:"1 1 130px"}}>
+            <div style={{fontSize:9.5,color:"#78716C",textTransform:"uppercase",letterSpacing:".04em"}}>After renovation</div>
+            <div style={{fontFamily:"'Cormorant Garamond'",fontSize:22,fontWeight:700,color:color||"#1B3A2D"}}>{after}</div>
           </div>
+          {pct!=null&&<div style={{padding:"3px 10px",borderRadius:12,background:"#D1E7DD",color:"#1B3A2D",fontWeight:700,fontSize:13}}>{pct>=0?"+":""}{pct}%</div>}
         </div>
       );
-      const KPI=({l,v,c,sub})=>(
+      const KPI=({l,val,c,sub})=>(
         <div style={{padding:"8px 10px",background:"#F6F4EF",borderRadius:7,textAlign:"center"}}>
           <div style={{fontSize:9,color:"#78716C",marginBottom:3}}>{l}</div>
-          <div style={{fontFamily:"'Cormorant Garamond'",fontSize:15,fontWeight:700,color:c}}>{v}</div>
+          <div style={{fontFamily:"'Cormorant Garamond'",fontSize:15,fontWeight:700,color:c}}>{val}</div>
           {sub&&<div style={{fontSize:8.5,color:"#A8A29E",marginTop:1}}>{sub}</div>}
         </div>
       );
-      return(
-        <div>
-          <SP/>
-          <div className="card" style={{background:"linear-gradient(135deg,#1B3A2D,#2D5F45)",color:"#fff",marginBottom:12}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
-              <div>
-                <h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:20,fontWeight:700,marginBottom:3}}>Market Analysis — {d.city||"Lombardy"} · {v.zone}</h3>
-                <p style={{fontSize:11,opacity:.85}}>{d.address||"Property"} · {area}m² · Energy {d.eCls||"?"} → {s.en.aC} · Condition {v.cond_pre} → {v.cond_post}</p>
-                <p style={{fontSize:10,opacity:.7,marginTop:2}}>{v.value_anchored?"Current value anchored to your declared / listing price":"Current value estimated from the OMI model"}</p>
-              </div>
+
+      return(<div>
+        <SP/>
+
+        {/* HEADLINE */}
+        <div className="card" style={{background:"linear-gradient(135deg,#1B3A2D,#2D5F45)",color:"#fff",marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:10}}>
+            <div>
+              <h3 style={{fontFamily:"'Cormorant Garamond'",fontSize:20,fontWeight:700,marginBottom:3}}>Value &amp; Rent — {s.nm}</h3>
+              <p style={{fontSize:11,opacity:.85}}>📍 {v.zone} · {area} m² · Energy {v.energy_pre}→{v.energy_post} · Condition {v.cond_pre} → {v.cond_post}</p>
+              <p style={{fontSize:10,opacity:.7,marginTop:2}}>{v.value_anchored?"Anchored to your declared / listing value":"Estimated from the OMI model — enter a Current Property Value in step 1 for a sharper estimate"}</p>
+            </div>
+            <div style={{textAlign:"right"}}>
               <MarketFetchBtn d={d} s={s} area={area} apiKey={apiKey} onData={setLiveMkt}/>
+              <div style={{marginTop:8,fontSize:10,opacity:.85}}>Confidence <strong style={{color:"#fff"}}>{v.confidence}/100 · {v.confidence_label}</strong></div>
             </div>
           </div>
+          <div style={{marginTop:10,padding:"8px 12px",background:recColor,borderRadius:7,fontSize:12,fontWeight:700}}>📊 {v.recommendation} · renovation ROI {v.roi_pct}%</div>
+        </div>
 
-          {/* DATABASES QUERIED */}
-          <div className="card">
-            <div className="section-title">🗄 Databases &amp; sources used</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6}}>
-              {[
-                ["OMI — Agenzia delle Entrate","Official semiannual quotazioni per OMI zone & condition state","https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm"],
-                ["immobiliare.it","Live asking + rent €/m² benchmarks by Milan/Lombardy zone (Apr 2026)","https://www.immobiliare.it/mercato-immobiliare/lombardia/"+((d.city||"milano").toLowerCase().replace(/\s+/g,"-"))+"/"],
-                ["idealista","Cross-check asking prices & days-on-market","https://www.idealista.it/aree/"+((d.city||"milano").toLowerCase().replace(/\s+/g,"-"))+"/"],
-                ["Borsino Immobiliare","Renovated-stock comparables (€/m² finito ristrutturato)","https://www.borsinoimmobiliare.it/"],
-                ["ADE declared transactions","Rogito values — calibration to actual sold prices","https://www.agenziaentrate.gov.it/portale/web/guest/schede/fabbricatiterreni/oicv/dichiarati"],
-                ["Banca d'Italia","Energy-label (APE) capitalization premium research","https://www.bancaditalia.it"],
-              ].map(([k,desc,url])=>(
-                <a key={k} href={url} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",padding:"8px 10px",background:"#F6F4EF",borderRadius:7,display:"block"}}>
-                  <div style={{fontSize:11,fontWeight:700,color:"#1B3A2D"}}>{k} ↗</div>
-                  <div style={{fontSize:9.5,color:"#78716C",marginTop:2,lineHeight:1.4}}>{desc}</div>
-                </a>
-              ))}
-            </div>
-            <p style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>Method: current value = OMI quotazione (weighted by stato conservativo) blended 60/40 with the immobiliare.it asking benchmark, −5% asking→rogito gap; post-renovation value re-priced to the renovated comparable + APE energy-class delta (Banca d'Italia premium) + finish-quality premium, capped at the local renovated ceiling. Use “🌐 Fetch Live Market Data” above to overwrite the static benchmarks with a live OMI + immobiliare.it query.</p>
+        {/* VALUE now → after */}
+        <div className="card">
+          <div className="section-title">🏠 Market value</div>
+          <NowAfter now={eur(preR[1])} after={eur(livePostVal||postR[1])} pct={livePostVal?(v.vB?Math.round(((livePostVal-v.vB)/v.vB)*100):upliftPct):upliftPct} color="#1B3A2D"/>
+          <div style={{fontSize:10.5,color:"#78716C",marginTop:8,lineHeight:1.6}}>
+            Range: now {eur(preR[0])}–{eur(preR[2])} · after {eur(postR[0])}–{eur(postR[2])} ({fmt(v.pA)}/m²). Value added by the works: <strong style={{color:"#1B3A2D"}}>{eur(v.vA-v.vB)}</strong> ({upliftPct>=0?"+":""}{upliftPct}%).
+            {v.ceiling_hit&&<span style={{color:"#A16207"}}> Capped at the local renovated ceiling.</span>}
           </div>
+          {livePostVal&&<div className="note note-ok" style={{marginTop:8,fontSize:11}}>🌐 Live immobiliare.it/OMI renovated comparable {eur(liveSqm)}/m² → after ≈ <strong>{eur(livePostVal)}</strong>.</div>}
+        </div>
 
-          {/* VALUE COMPARISON */}
-          <div className="card">
-            <div className="section-title">📊 Value comparison — {s.nm} scenario</div>
-            {listingPrice&&<Bar val={listingPrice} color="#C87941" label="Listing / announcement price" note={listingDelta!=null?(listingDelta>0?"▲ "+listingDelta+"% vs value":"▼ "+Math.abs(listingDelta)+"% vs value"):null}/>}
-            <Bar val={omiRef*area} color="#B8AFA5" label={"OMI / immobiliare.it reference — "+fmt(omiRef)+"/m²"} note={null}/>
-            <Bar val={currentVal} color="#6B705C" label={"Current value — pre-renovation"+(v.value_anchored?" (your value)":" (estimate)")} note={null}/>
-            <Bar val={compReno*area} color="#87A98F" label={"Renovated comparable — "+fmt(compReno)+"/m²"} note={"immobiliare.it"}/>
-            <Bar val={postRenovVal} color="#1B3A2D" label={"Post-renovation value — "+s.nm} note={(upliftPct>=0?"+":"")+upliftPct+"%"}/>
-            {listingPrice&&<div style={{marginTop:10,padding:10,borderRadius:8,background:listingDelta>5?"#FEF2F2":listingDelta<-5?"#D1E7DD":"#F6F4EF",border:"1px solid "+(listingDelta>5?"#FECACA":listingDelta<-5?"#B5CDB8":"#E2DCD2"),fontSize:11.5,lineHeight:1.5}}>
-              {listingDelta>5&&<span style={{fontWeight:700,color:"#B91C1C"}}>⚠️ Listed {listingDelta}% above the estimated value — negotiation margin of {fmt(listingPrice-currentVal)} may exist</span>}
-              {listingDelta<=-5&&<span style={{fontWeight:700,color:"#1B3A2D"}}>✅ Listed {Math.abs(listingDelta)}% below the estimated value — potential upside of {fmt(currentVal-listingPrice)}</span>}
-              {listingDelta>-5&&listingDelta<=5&&<span style={{color:"#78716C"}}>✓ Listing price broadly in line with the estimated value ({listingDelta>0?"+":""}{listingDelta}%)</span>}
-            </div>}
+        {/* RENT now → after */}
+        <div className="card">
+          <div className="section-title">💶 Achievable rent (long-term)</div>
+          <NowAfter now={eur(v.pre_monthly_rent)+"/mo"} after={eur(liveRentMo||v.monthly_rent)+"/mo"} pct={rentUpPct} color="#2D5F45"/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginTop:10}}>
+            <KPI l="Gross rent / mo" val={eur(v.monthly_rent)} c="#2D5F45" sub={fmt(v.rent_ref)+"/m²·mo"}/>
+            <KPI l="Net rent / mo" val={eur(v.monthly_rent_net)} c="#2D5F45" sub="after ~30% costs"/>
+            <KPI l="Gross yield" val={v.gross_yield_pct+"%"} c="#1B3A2D" sub="on total capital"/>
+            <KPI l="Net yield" val={v.net_yield_pct+"%"} c="#1B3A2D" sub="vacancy/mgmt/IMU out"/>
           </div>
+          <div style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>Extra rent from the renovation: <strong style={{color:"#2D5F45"}}>{eur(v.rent_uplift_mo)}/mo</strong>. Gross annual {eur(v.annual_rent)} · net annual {eur(v.annual_rent_net)}. Long-term lease; canone concordato / student / short-term are separate regulated cases.</div>
+          {liveRentMo&&<div className="note note-ok" style={{marginTop:8,fontSize:11}}>🌐 Live immobiliare.it zone rent {eur(Math.round(liveRentSqm))}/m²·mo → after ≈ <strong>{eur(liveRentMo)}/mo</strong>.</div>}
+        </div>
 
-          {/* AFTER-RENOVATION MARKET PRICE */}
-          <div className="card">
-            <div className="section-title">🏠 After-renovation market price</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-              <KPI l="Post-reno €/m²" v={fmt(v.pA)} c="#1B3A2D" sub={"from "+fmt(v.pB)+"/m²"}/>
-              <KPI l="Post-reno value" v={fmt(v.vA)} c="#1B3A2D" sub={area+" m²"}/>
-              <KPI l="Value uplift" v={fmt(v.vA-v.vB)} c="#1B3A2D" sub={"+"+upliftPct+"%"}/>
-              <KPI l="Renovated comparable" v={fmt(compReno)+"/m²"} c="#87A98F" sub="immobiliare.it"/>
-            </div>
-            {liveMkt&&liveMkt.comparableRenovated&&(()=>{
-              const liveSqm=Math.round(Number(liveMkt.comparableRenovated));
-              const liveVal=liveSqm*area;
-              const liveUp=v.vB?Math.round(((liveVal-v.vB)/v.vB)*100):0;
-              return <div className="note note-ok" style={{marginTop:8,fontSize:11,lineHeight:1.6}}>
-                🌐 <strong>Grounded (live immobiliare.it · OMI):</strong> renovated comparable <strong>{fmt(liveSqm)}/m²</strong> → post-renovation value ≈ <strong>{fmt(liveVal)}</strong> ({liveUp>=0?"+":""}{liveUp}% vs current){liveMkt.marketTrend?" · market "+liveMkt.marketTrend+(liveMkt.marketTrendPct?" "+(liveMkt.marketTrendPct>0?"+":"")+liveMkt.marketTrendPct+"%":""):""}. The tiles above are the model estimate.
-              </div>;
-            })()}
-            {v.ceiling_hit&&<div className="note note-warn" style={{marginTop:8,fontSize:11}}>⚠️ Post-renovation €/m² capped at the local renovated ceiling — the zone will not support a higher price even with a premium finish.</div>}
-          </div>
-
-          {/* RENT INCOME GENERATION */}
-          <div className="card">
-            <div className="section-title">💶 Rent income generation</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-              <KPI l="Gross rent / mo" v={fmt(v.monthly_rent)} c="#2D5F45" sub={fmt(v.rent_ref)+"/m²·mo"}/>
-              <KPI l="Net rent / mo" v={fmt(v.monthly_rent_net)} c="#2D5F45" sub="after ~30% costs"/>
-              <KPI l="Gross yield" v={v.gross_yield_pct+"%"} c="#1B3A2D" sub="on total capital"/>
-              <KPI l="Net yield" v={v.net_yield_pct+"%"} c="#1B3A2D" sub="vacancy/mgmt/IMU out"/>
-            </div>
-            <p style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>Gross rent = immobiliare.it zone rent €{v.rent_ref}/m²·mo × {area} m² × condition coefficient. Net rent strips ~5% vacancy, ~8% management and ~17% condo/maintenance/IMU/insurance. Gross annual {fmt(v.annual_rent)} · net annual {fmt(v.annual_rent_net)}.</p>
-            {liveMkt&&liveMkt.marketRentSqm&&(()=>{
-              const coef={Essential:1.05,Balanced:1.12,Premium:1.20}[s.nm]||1;
-              const gm=Math.round(Number(liveMkt.marketRentSqm)*area*coef);
-              const ga=gm*12, na=Math.round(ga*0.70);
-              const inv=v.total_investment||0;
-              const gy=inv?Math.round((ga/inv)*10000)/100:0, ny=inv?Math.round((na/inv)*10000)/100:0;
-              return <div className="note note-ok" style={{marginTop:8,fontSize:11,lineHeight:1.6}}>
-                🌐 <strong>Grounded (live immobiliare.it):</strong> zone rent <strong>{fmt(Math.round(Number(liveMkt.marketRentSqm)))}/m²·mo</strong> → gross <strong>{fmt(gm)}/mo</strong> · net <strong>{fmt(Math.round(na/12))}/mo</strong> · gross yield <strong>{gy}%</strong> · net yield <strong>{ny}%</strong> on total capital.
-              </div>;
-            })()}
-          </div>
-
-          {/* ROI */}
-          <div className="card">
-            <div className="section-title">📈 Return on investment — {s.nm}</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-              <KPI l="Renovation ROI" v={v.roi_pct+"%"} c={v.roi_pct>=0?"#1B3A2D":"#B91C1C"} sub="net uplift ÷ reno cost"/>
-              <KPI l="Capital / flip ROI" v={v.capital_roi_pct+"%"} c={v.capital_roi_pct>=0?"#1B3A2D":"#B91C1C"} sub="profit ÷ total capital"/>
-              <KPI l="Net uplift" v={fmt(v.net_uplift)} c={v.net_uplift>=0?"#1B3A2D":"#B91C1C"} sub="uplift − reno cost"/>
-              <KPI l="Reno cost" v={fmt(s.co.total)} c="#C87941" sub={s.budgetScaled?"budget-sized":"model"}/>
-              <KPI l="Total investment" v={fmt(v.total_investment)} c="#78716C" sub="buy + fees + reno"/>
-              <KPI l="Tax back / yr" v={fmt(v.taxBenefitAnnual)} c="#2D5F45" sub="50% bonus, 10 yr"/>
-              <KPI l="Energy saving / yr" v={s.sv.yr>0?fmt(s.sv.yr):"—"} c="#2D5F45" sub={s.sv.yr>0?"lower bills":"no energy works"}/>
-              <KPI l="Payback (energy)" v={s.sv.mo>0?Math.round(s.co.total/s.sv.mo)+" mo":"—"} c="#78716C" sub={s.sv.mo>0?"reno ÷ mo saving":"n/a"}/>
-            </div>
-            <p style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>Renovation ROI is the return on the money spent on the works (the decision metric). Capital / flip ROI is the resale profit over all capital deployed (purchase + 3% agency + 4% notary/tax + renovation). {v.recommendation}.</p>
-          </div>
-
-          {/* BUDGET & TIME ADHERENCE */}
-          {(budget>0||timeLimit>0)&&<div className="card" style={{borderLeft:"4px solid #4A7AAA"}}>
-            <div className="section-title" style={{color:"#4A7AAA"}}>🎯 Budget &amp; time adherence — {s.nm}</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-              {budget>0&&<KPI l="Your budget" v={eur(budget)} c="#4A7AAA"/>}
-              {budget>0&&<KPI l={s.nm+" target"} v={eur(s.budgetTarget)} c="#4A7AAA" sub={s.nm==="Essential"?"−25%":s.nm==="Premium"?"+25% cap":"budget"}/>}
-              {budget>0&&<KPI l="Actual cost" v={fmt(s.co.total)} c={s.overBudgetCap?"#B91C1C":"#1B3A2D"} sub={budgetPct+"% of budget"}/>}
-              {timeLimit>0&&<KPI l="Timeline" v={months+" mo"} c={overTime?"#B91C1C":"#1B3A2D"} sub={"limit "+timeLimit+" mo"}/>}
-            </div>
-            {budget>0&&<div className="note" style={{marginTop:8,fontSize:11,background:s.overBudgetCap?"#FEF2F2":"#F0F9F4",color:s.overBudgetCap?"#B91C1C":"#1B3A2D"}}>
-              {s.overBudgetCap?"⚠️ Above the budget +25% cap ("+eur(budget*1.25)+") — scope trimmed automatically where possible.":"✓ Within the budget +25% cap ("+eur(budget*1.25)+"). "+(s.nm==="Essential"?"Essential is held at your budget −25%.":s.nm==="Balanced"?"Balanced tracks your budget.":"Premium sits at your budget +25%.")}
-            </div>}
-            {overTime&&<div className="note note-warn" style={{marginTop:8,fontSize:11}}>⚠️ Estimated {months} months of works exceeds your {timeLimit}-month limit — consider a lighter scope or phased works.</div>}
-          </div>}
-
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <a href="https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm" target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"7px 14px"}}>🏛 OMI Agenzia Entrate →</a>
-            <a href={"https://www.immobiliare.it/mercato-immobiliare/lombardia/"+(d.city||"milano").toLowerCase().replace(/\s+/g,"-")+"/"} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"7px 14px"}}>🏠 Immobiliare.it {d.city||"Lombardia"} →</a>
-            <a href="https://www.borsinoimmobiliare.it/" target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"7px 14px"}}>📕 Borsino Immobiliare →</a>
+        {/* INVESTMENT & RETURN */}
+        <div className="card">
+          <div className="section-title">📈 Cost &amp; return — {s.nm}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
+            <KPI l="Renovation cost" val={eur(v.reno_cost)} c="#C87941" sub={s.budgetScaled?"budget-sized":"model"}/>
+            <KPI l="Value added" val={eur(v.vA-v.vB)} c="#1B3A2D" sub={"+"+upliftPct+"%"}/>
+            <KPI l="Net gain" val={eur(v.net_uplift)} c={v.net_uplift>=0?"#1B3A2D":"#B91C1C"} sub="value − cost"/>
+            <KPI l="Renovation ROI" val={v.roi_pct+"%"} c={v.roi_pct>=0?"#1B3A2D":"#B91C1C"} sub="net uplift ÷ cost"/>
+            <KPI l="Total investment" val={eur(v.total_investment)} c="#78716C" sub="buy + fees + reno"/>
+            <KPI l="Flip ROI" val={v.capital_roi_pct+"%"} c={v.capital_roi_pct>=0?"#1B3A2D":"#B91C1C"} sub="profit ÷ capital"/>
+            <KPI l="Tax back / yr" val={eur(v.taxBenefitAnnual)} c="#2D5F45" sub="50% bonus, 10y"/>
+            <KPI l="Energy saving/yr" val={s.sv.yr>0?eur(s.sv.yr):"—"} c="#2D5F45" sub={s.sv.yr>0?"lower bills":"no energy works"}/>
           </div>
         </div>
-      );
+
+        {/* SCENARIOS */}
+        {sc.base&&<div className="card">
+          <div className="section-title">🎯 Scenarios — after-renovation value &amp; ROI</div>
+          <div style={{overflowX:"auto"}}><table style={{fontSize:12}}>
+            <thead><tr style={{borderBottom:"2px solid #E2DCD2"}}>
+              {["","Post-reno value","Reno cost","Renovation ROI","Rent / mo"].map((h,i)=><th key={i} style={{textAlign:i===0?"left":"right",padding:"6px 9px",fontSize:9,color:"#78716C",textTransform:"uppercase"}}>{h}</th>)}
+            </tr></thead>
+            <tbody>{[["Conservative",sc.conservative,"#B08968"],["Base",sc.base,"#1B3A2D"],["Upside",sc.upside,"#2D5F45"]].map(([lbl,o,c])=>o&&(
+              <tr key={lbl} style={{borderBottom:"1px solid #ECE8E1",background:lbl==="Base"?"#F6F9F6":"#fff"}}>
+                <td style={{padding:"7px 9px",fontWeight:700,color:c}}>{lbl}</td>
+                <td style={{padding:"7px 9px",textAlign:"right"}}>{eur(o.post_value)}</td>
+                <td style={{padding:"7px 9px",textAlign:"right"}}>{eur(o.reno_cost)}</td>
+                <td style={{padding:"7px 9px",textAlign:"right",fontWeight:700,color:o.roi_pct>=0?"#1B3A2D":"#B91C1C"}}>{o.roi_pct}%</td>
+                <td style={{padding:"7px 9px",textAlign:"right"}}>{eur(o.monthly_rent)}</td>
+              </tr>))}</tbody>
+          </table></div>
+        </div>}
+
+        {/* MARKET EVIDENCE — four price concepts kept separate */}
+        <div className="card">
+          <div className="section-title">📚 Market evidence (kept separate)</div>
+          <div style={{overflowX:"auto"}}><table style={{fontSize:12}}>
+            <tbody>
+              <tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"6px 9px"}}>OMI range (Agenzia Entrate) — zonal, not a transaction price</td><td style={{padding:"6px 9px",textAlign:"right",fontWeight:600}}>{liveMkt&&liveMkt.omiMin?eur(liveMkt.omiMin)+"–"+eur(liveMkt.omiMax):eur(v.OMI_range[0])+"–"+eur(v.OMI_range[1])}/m²</td></tr>
+              <tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"6px 9px"}}>Asking — immobiliare.it{liveMkt&&liveMkt.askingSaleSqmIdealista?" / idealista":""}</td><td style={{padding:"6px 9px",textAlign:"right",fontWeight:600}}>{eur(liveMkt&&liveMkt.askingSaleSqm?liveMkt.askingSaleSqm:v.asking_ref)}/m²{liveMkt&&liveMkt.askingSaleSqmIdealista?" · "+eur(liveMkt.askingSaleSqmIdealista)+"/m²":""}</td></tr>
+              <tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"6px 9px"}}>Renovated comparable</td><td style={{padding:"6px 9px",textAlign:"right",fontWeight:600}}>{eur(liveSqm||v.comparable_renovated)}/m²</td></tr>
+              {listingPrice&&<tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"6px 9px"}}>This listing (asking)</td><td style={{padding:"6px 9px",textAlign:"right",fontWeight:600}}>{eur(listingPrice)} · {eur(Math.round(listingPrice/area))}/m²</td></tr>}
+              <tr><td style={{padding:"6px 9px",fontWeight:700,color:"#1B3A2D"}}>Modelled estimate (this app) — pre → post</td><td style={{padding:"6px 9px",textAlign:"right",fontWeight:700,color:"#1B3A2D"}}>{eur(v.vB)} → {eur(v.vA)}</td></tr>
+            </tbody>
+          </table></div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+            <a href="https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm" target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"6px 12px"}}>🏛 OMI →</a>
+            <a href={"https://www.immobiliare.it/mercato-immobiliare/lombardia/"+(d.city||"milano").toLowerCase().replace(/\s+/g,"-")+"/"} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"6px 12px"}}>🏠 Immobiliare.it →</a>
+            <a href={"https://www.idealista.it/sala-stampa/report-prezzo-immobile/vendita/lombardia/report/"} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"6px 12px"}}>📊 Idealista →</a>
+            <a href="https://www.borsinoimmobiliare.it/" target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{fontSize:11,textDecoration:"none",padding:"6px 12px"}}>📕 Borsino →</a>
+          </div>
+        </div>
+
+        {/* CONFIDENCE + WARNINGS */}
+        <div className="note" style={{background:"#F6F4EF",fontSize:10.5,lineHeight:1.6,color:"#57534E"}}>
+          <strong style={{color:confClr}}>Confidence {v.confidence}/100 ({v.confidence_label}).</strong> This is an automated market estimate, not a certified appraisal. OMI values are broad zonal indications; portal figures are <em>asking</em> prices; actual notarised transaction prices may differ. Renovation cost needs design + contractor quotes; the energy-class improvement needs professional confirmation. Rental income depends on vacancy, tenant quality, expenses, taxation and regulation; short-term letting is subject to municipal/regional/CIN/condominium rules. Legal, cadastral, planning and condominium compliance must be checked separately.
+        </div>
+      </div>);
     })()}
 
     {/* FURNISHING — Multi-provider BOM with placement notes */}
