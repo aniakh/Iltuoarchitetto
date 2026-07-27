@@ -1325,6 +1325,26 @@ function ikeaGroundingBrief(){
   return (IKEA_REGISTRY_MD? IKEA_REGISTRY_MD+"\n\n":"") + IKEA_CATALOGUE_DIRECTIVE;
 }
 
+/* ── Generic multi-provider catalogue compliance ──
+   The same source-registry / grounding approach used for IKEA, applied to EVERY
+   furniture, appliance, lighting and finishing provider used in the BOM. */
+const CATALOGUE_COMPLIANCE_DIRECTIVE = `████ FURNITURE & MATERIALS CATALOGUE COMPLIANCE — ALL PROVIDERS (client hard requirement) ████
+Every furniture, appliance, lighting, kitchen, bathroom and finishing item MUST be a REAL, CURRENT article sold on the provider's OFFICIAL Italian website (market IT, in Italian). For each item: (1) resolve the official PRODUCT-DETAIL page on that provider's own domain — never a marketplace, reseller or another country's site — preferring structured data (schema.org/Product / JSON-LD) then the visible product page; (2) confirm the LINK works (returns the live product page, not a dead/redirected/search-fallback page); (3) confirm the PRICE equals the current listed selling price on that page (never use a brochure, cached or foreign price as the Italian price); (4) confirm the SIZE / dimensions match the product's stated measurements; (5) store the clean canonical URL (strip utm_*/msockid/gclid/fbclid tracking parameters); (6) keep field-level provenance (source_url, extraction_method, retrieved_at, confidence). Do NOT invent products, article codes, prices or sizes. If an item is discontinued or out of the current Italian catalogue, return the closest current replacement on the same provider and mark it as a replacement. Respect each site's robots/ToS, rate-limit, and never bypass anti-bot controls.`;
+
+/* Host of a provider base URL, without leading www. */
+function providerHost(base){ try{ return new URL(base).hostname.replace(/^www\./,""); }catch(e){ return ""; } }
+/* Strip common tracking params → clean canonical URL (any provider). */
+function cleanTrackingUrl(url){
+  if(!url) return url;
+  try{ const u=new URL(url); ["utm_source","utm_medium","utm_campaign","utm_term","utm_content","msockid","gclid","fbclid"].forEach(k=>u.searchParams.delete(k)); return u.origin+u.pathname+(u.searchParams.toString()?("?"+u.searchParams.toString()):""); }catch(e){ return String(url).split(/[?&]/)[0]; }
+}
+/* Accept a product URL only on that provider's own official (https) domain. */
+function providerUrlAllowed(providerId, url){
+  const p = (typeof PROVIDERS!=="undefined") ? PROVIDERS[providerId] : null;
+  if(!p||!url) return false;
+  try{ const u=new URL(url, p.base); if(u.protocol!=="https:") return false; const host=u.hostname.replace(/^www\./,""); return host===providerHost(p.base)||host.endsWith("."+providerHost(p.base)); }catch(e){ return false; }
+}
+
 /* ══════════════════════════════════════════════════════════════
    STRICT BOUNDARY PROTOCOL — user-mandated 100% hard constraints.
    Prepended to EVERY generation prompt (top position survives slicing) and
@@ -2465,13 +2485,17 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
 }
 
 /* ══════ RENDER TILE — shows only the final approved render ══════ */
-function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, originalPhotoFile, batchTrigger, planImg, onPlanReady}) {
+function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, originalPhotoFile, batchTrigger, planImg, onPlanReady, cache, cacheKey}) {
   const isPlan = room==="Floor Plan";
-  const [phase, setPhase] = useState("idle"); // idle | pipeline | done | error
+  /* Rehydrate from the parent render cache so a generated render NEVER
+     disappears when you switch tabs / solutions and come back. */
+  const cached = (cache && cacheKey && cache.current && cache.current[cacheKey]) || null;
+  const [phase, setPhase] = useState(cached?"done":"idle"); // idle | pipeline | done | error
   const [progress, setProgress] = useState({stage:"generating",round:1,total:MAX_ROUNDS});
-  const [imgUrl, setImgUrl] = useState("");
-  const [finalScore, setFinalScore] = useState(null);
-  const [validation, setValidation] = useState(null);
+  const [imgUrl, setImgUrl] = useState(cached?.url||"");
+  const [keptUrl, setKeptUrl] = useState(cached?.url||""); // last successfully generated image — persistent, never blanked
+  const [finalScore, setFinalScore] = useState(cached?.score??null);
+  const [validation, setValidation] = useState(cached?.validation||null);
   const [planCompare, setPlanCompare] = useState(null); // plan-tile: generated plan vs original plan
   const [planConsistency, setPlanConsistency] = useState(undefined); // room-tile: render vs plan (undefined=not run)
   const [attempts, setAttempts] = useState(0);  // full generation attempts made for conformance
@@ -2484,7 +2508,10 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
 
   const start = useCallback(async (attemptNo) => {
     if(!apiKey){ setError("Set Nano Banana API key above"); setPhase("error"); return; }
-    setPhase("pipeline"); setError(""); setImgUrl(""); setFinalScore(null); setPlanCompare(null); setPlanConsistency(undefined);
+    /* Do NOT blank the current image while (re)generating — the previously
+       generated render stays visible under a "refining…" overlay so it never
+       disappears. Only metadata for the in-flight attempt is reset. */
+    setPhase("pipeline"); setError(""); setFinalScore(null); setPlanCompare(null); setPlanConsistency(undefined);
     try{
       const usePrompt = (attemptNo>0) ? (prompt + CONFORM_NUDGE) : prompt;
       const result = await runRefinementPipeline(
@@ -2494,14 +2521,16 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         isPlan ? undefined : planImg   // room renders are generated FROM the approved plan
       );
       setImgUrl(result.url);
+      setKeptUrl(result.url);          // persist the newly generated image
       setFinalScore(result.score);
       setValidation(result.validation||null);
       setPlanCompare(result.planCompare||null);
+      if(cache && cacheKey) cache.current[cacheKey] = {url:result.url, score:result.score, validation:result.validation||null, planCompare:result.planCompare||null};
       setPhase("done");
       /* NOTE: the plan is shared to room tiles ONLY once it conforms — see the
          conformance-gate effect below (never share a non-conforming plan). */
     }catch(e){ setError(e.message||"Failed"); setPhase("error"); }
-  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady, solName, planImg]);
+  }, [prompt, apiKey, spatialData, room, originalPhotoFile, isPlan, onPlanReady, solName, planImg, cache, cacheKey]);
 
   /* Fresh user-initiated generation. Room renders are generated FROM the
      approved plan, so when a plan is expected (batch run) we WAIT for it to
@@ -2513,8 +2542,10 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   },[isPlan, planImg, start]);
   const restart = useCallback(()=>beginGeneration(false),[beginGeneration]); // manual click: render now (best effort)
 
-  /* Auto-start when batch trigger fires (only if idle/waiting) */
-  useEffect(()=>{ if(batchTrigger>0 && (phase==="idle"||phase==="waiting")){ beginGeneration(true); } },[batchTrigger]);
+  /* Auto-start when the batch trigger fires (Generate All). Fires even for a
+     cached/done tile so "Generate All" truly regenerates; the old image stays
+     on screen under the refining overlay until the new one is ready. */
+  useEffect(()=>{ if(batchTrigger>0){ beginGeneration(true); } },[batchTrigger]);
 
   /* A deferred room render begins as soon as the conforming plan is available */
   useEffect(()=>{ if(phase==="waiting" && planImg && !isPlan){ start(0); } },[phase, planImg, isPlan, start]);
@@ -2586,7 +2617,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   return (
     <div className="card" style={{padding:0,overflow:"hidden",border:"1px solid #E2DCD2"}}>
       {/* IDLE */}
-      {phase==="idle"&&(
+      {phase==="idle"&&!keptUrl&&(
         <div className="render-idle" onClick={restart}
           style={{background:"linear-gradient(135deg,"+(STYLES[style]?.pal||["#F5F0E8"])[2]+"88,"+(STYLES[style]?.pal||["#E8DCC8"])[1]+"55)"}}>
           <span style={{fontSize:36,marginBottom:6}}>🎨</span>
@@ -2602,7 +2633,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       )}
 
       {/* WAITING — room render deferred until its scenario's plan conforms */}
-      {phase==="waiting"&&(
+      {phase==="waiting"&&!keptUrl&&(
         <div className="render-idle" onClick={()=>start(0)} style={{background:"linear-gradient(135deg,#EEF4FA,#F5F0E8)",cursor:"default"}}>
           <div className="spinner" style={{width:26,height:26,borderWidth:3,marginBottom:8}}/>
           <span style={{fontSize:12,fontWeight:700,color:"#2E5A82",textAlign:"center",padding:"0 14px"}}>In attesa del piano conforme…</span>
@@ -2610,8 +2641,9 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>
       )}
 
-      {/* PIPELINE IN PROGRESS */}
-      {phase==="pipeline"&&(
+      {/* PIPELINE IN PROGRESS (only as a full card when there is no image yet;
+          if a render already exists it stays visible with an overlay below) */}
+      {phase==="pipeline"&&!keptUrl&&(
         <div className="render-loading" style={{flexDirection:"column",gap:0,padding:24}}>
           <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:18}}>
             <div className="spinner"/>
@@ -2644,9 +2676,10 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>
       )}
 
-      {/* BLOCKED — could not produce a conforming result after MAX attempts.
-          The non-conforming image is NOT shown; the user regenerates instead. */}
-      {blocked&&(
+      {/* BLOCKED with no image ever produced — show the retry card. If an image
+          was already generated it stays on screen (see the render block below)
+          with a "best attempt" badge instead of disappearing. */}
+      {blocked&&!keptUrl&&(
         <div className="render-idle" onClick={restart} style={{background:"#FEF2F2"}}>
           <span style={{fontSize:30}}>⛔</span>
           <span style={{fontSize:12,color:"#B91C1C",fontWeight:800,marginTop:6,textAlign:"center",padding:"0 14px"}}>Nessuna soluzione conforme dopo {MAX_CONFORM_ATTEMPTS} tentativi</span>
@@ -2655,14 +2688,28 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>
       )}
 
-      {/* FINAL RENDER — only shown once it CONFORMS (blocked results never render) */}
-      {phase==="done"&&imgUrl&&!blocked&&(
+      {/* RENDER — once generated it PERSISTS. While a regeneration is running the
+          image stays with a "refining…" overlay; if the conformance gate is
+          exhausted (blocked) the image stays with a "best attempt" badge. */}
+      {keptUrl&&(
         <div style={{position:"relative"}}>
-          <img src={imgUrl} alt={style+" "+room+" — "+solName} className="render-img"
-            onError={()=>{setPhase("error");setError("Image failed to load");}}/>
-          {sc!=null&&(
+          <img src={keptUrl} alt={style+" "+room+" — "+solName} className="render-img"
+            onError={()=>{ if(keptUrl) setKeptUrl(""); setPhase("error"); setError("Image failed to load"); }}/>
+          {sc!=null&&phase==="done"&&!blocked&&(
             <div style={{position:"absolute",top:8,right:8,background:scoreClr+"ee",padding:"4px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:"#fff",backdropFilter:"blur(4px)"}}>
               {scoreLabel} {sc}/100
+            </div>
+          )}
+          {phase==="pipeline"&&(
+            <div style={{position:"absolute",inset:0,background:"rgba(27,58,45,.55)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8,backdropFilter:"blur(1px)"}}>
+              <div className="spinner" style={{borderTopColor:"#fff"}}/>
+              <div style={{color:"#fff",fontSize:11,fontWeight:700}}>{stageIcon[progress.stage]} {stageLabel[progress.stage]}</div>
+              <div style={{color:"rgba(255,255,255,.8)",fontSize:9.5}}>Round {progress.round}/{progress.total}{attempts>0?" · attempt "+(attempts+1):""} · previous render kept</div>
+            </div>
+          )}
+          {blocked&&(
+            <div style={{position:"absolute",top:8,left:8,right:8,background:"#A16207ee",padding:"5px 10px",borderRadius:8,fontSize:9.5,fontWeight:700,color:"#fff",backdropFilter:"blur(4px)"}}>
+              ⚠ Best attempt shown — could not fully verify against the plan after {MAX_CONFORM_ATTEMPTS} tries. Use 🔄 to retry.
             </div>
           )}
         </div>
@@ -2780,7 +2827,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>
         <div style={{display:"flex",gap:4}}>
           {(phase==="done"||blocked)&&<button className="btn btn-g" style={{padding:"3px 8px",fontSize:10}} onClick={restart}>🔄</button>}
-          {phase==="done"&&imgUrl&&!blocked&&<a href={imgUrl} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{padding:"3px 8px",fontSize:10,textDecoration:"none"}}>🔗</a>}
+          {keptUrl&&<a href={keptUrl} target="_blank" rel="noopener noreferrer" className="btn btn-g" style={{padding:"3px 8px",fontSize:10,textDecoration:"none"}}>🔗</a>}
         </div>
       </div>
     </div>
@@ -3518,12 +3565,22 @@ const TIER_FLEX = {
   Balanced:  {label:"some internal walls/doors may move, be added or removed", color:"#1B3A2D"},
   Premium:   {label:"free internal reorganisation — kitchen/living/bedroom may be relocated", color:"#C87941"}
 };
-function SolRenderCard({x, solIdx, d, apiKey}){
+function SolRenderCard({x, solIdx, d, apiKey, renderCache}){
   const m=SM[solIdx];
+  /* Fall back to a local cache if the parent didn't pass one */
+  const localCache=useRef({});
+  const cache=renderCache||localCache;
+  const planCacheKey=x.nm+"::planShared";
   const [batchTrigger,setBatchTrigger]=useState(0);
-  const [planImg,setPlanImg]=useState(""); // THIS scenario's own post-intervention plan, shared to its room tiles
+  /* Rehydrate the approved plan so room renders stay linked after a tab switch */
+  const [planImg,setPlanImg]=useState(()=>cache.current[planCacheKey]||"");
+  const handlePlanReady=useCallback((url)=>{ setPlanImg(url); cache.current[planCacheKey]= url||""; },[cache, planCacheKey]);
   const flex=TIER_FLEX[x.nm]||TIER_FLEX.Balanced;
   const tiles=[];
+  /* PLAN FIRST — the post-intervention plan is generated before the renders and
+     is the single source of truth every room render is checked against 1-to-1. */
+  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
+  tiles.push({roomKey:"plan",label:"Floor Plan",photoFile:planPhoto,spatialData:d.extractedPlan||null});
   [{roomKey:"living",label:"Living Area"},{roomKey:"kitchen",label:"Kitchen"},{roomKey:"bedroom",label:"Bedroom"},{roomKey:"bathroom",label:"Bathroom"}].forEach(({roomKey,label})=>{
     const photos=(d.roomDetails?.[roomKey]?.photos||[]).filter(f=>f instanceof File);
     const spatialData=d.roomDetails?.[roomKey]?.extractedData||null;
@@ -3535,11 +3592,6 @@ function SolRenderCard({x, solIdx, d, apiKey}){
       tiles.push({roomKey,label,photoFile:null,spatialData});
     }
   });
-  /* Each scenario has its OWN plan (with its own internal-flexibility level).
-     Plan tile is generated first; its image is shared to this card's room
-     tiles so every render is 1-to-1 checked against THIS scenario's plan. */
-  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
-  tiles.push({roomKey:"plan",label:"Floor Plan",photoFile:planPhoto,spatialData:d.extractedPlan||null});
   const imgToImg=tiles.filter(t=>t.photoFile).length;
   return(
     <div className="card" style={{borderColor:solIdx===1?m.color+"60":"#E2DCD2",borderWidth:solIdx===1?2:1,marginBottom:12}}>
@@ -3549,13 +3601,13 @@ function SolRenderCard({x, solIdx, d, apiKey}){
           <div style={{fontFamily:"'Cormorant Garamond'",fontSize:17,fontWeight:700,color:m.color}}>{x.nm} — {fmt(x.co.total)}</div>
           <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · {imgToImg>0?imgToImg+" image-to-image":"text-to-image"}</div>
         </div>
-        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setPlanImg("");setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
+        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{handlePlanReady("");setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
       </div>
       <div style={{fontSize:10,color:m.color,marginBottom:4,fontWeight:600}}>🏗 Internal flexibility: {flex.label}. Envelope (external walls, entrance, windows, footprint) always frozen.</div>
       <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Each render is checked 1-to-1 against THIS scenario's plan (<strong>viewpoint, walls/doors/windows, furniture, adjacent spaces</strong>); non-compliant results are regenerated or rejected.</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
         {tiles.map((t,ti)=>(
-          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={planImg} onPlanReady={setPlanImg}/>
+          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={planImg} onPlanReady={handlePlanReady} cache={cache} cacheKey={x.nm+"::"+t.roomKey+"::"+ti}/>
         ))}
       </div>
       <div style={{marginTop:8,padding:7,background:"#F6F4EF",borderRadius:6,fontSize:10.5,color:"#78716C"}}><strong>Materials:</strong> {x.mg}</div>
@@ -3564,25 +3616,30 @@ function SolRenderCard({x, solIdx, d, apiKey}){
 }
 
 /* ══════ MARKET FETCH BUTTON ══════ */
-/* Live IKEA Italy catalogue verification — grounds each IKEA item's price,
-   availability, article number, dimensions and official product URL in the
-   official IKEA IT sources (§2.10 authority order), with field-level provenance.
-   Falls back gracefully (no key → shows the catalogue registry it would use). */
-function IkeaVerifyPanel({items, apiKey}){
+/* Live catalogue verification — ALL providers. Grounds each item's price,
+   availability, article code, dimensions and official product URL in the
+   provider's own official Italian product page (same source-registry approach
+   as IKEA), and checks that the LINK works and the PRICE and SIZE correspond to
+   the announcement. Field-level provenance; graceful fallback without a key. */
+function CatalogueVerifyPanel({items, apiKey}){
   const [state,setState]=useState("idle");
   const [rows,setRows]=useState(null);
   const [err,setErr]=useState("");
-  const ikeaItems=(items||[]).filter(Boolean);
+  const allItems=(items||[]).filter(Boolean);
 
   const verify=async()=>{
     if(!apiKey){setErr("Enter your Google AI Studio key in the header to run live catalogue verification.");return;}
-    if(ikeaItems.length===0){setErr("No IKEA items in this scenario.");return;}
+    if(allItems.length===0){setErr("No items in this scenario.");return;}
     setState("loading"); setErr("");
     try{
-      const list=ikeaItems.map((it,i)=>`${i+1}. query="${it.q||it.name}" · expected="${it.name}" · catalog_price=${it.price}€`).join("\n");
-      const schema='[{"query":"","article_name":"","article_number":"","product_url":"https://www.ikea.com/it/it/p/...","standard_price_eur":<number>,"currency":"EUR","availability":"<in_stock|limited|out_of_stock|unknown>","dimensions_cm":"<w×d×h>","material":"","in_current_catalogue":<true|false>,"source_url":"https://www.ikea.com/it/it/...","source_type":"official_product_page","extraction_method":"json_ld|product_page|category_listing|search","retrieved_at":"","confidence_score":<0-1>}]';
-      const prompt=ikeaGroundingBrief().slice(0,12000)
-        +'\n\n────\nTASK: For each item below, find the matching CURRENT article in the official IKEA Italy catalogue (market IT, it-IT) and return its live data. Follow the source-authority order in §2.10 (live product-detail page → product JSON-LD → official /it/it/cat/ listing → /it/it/search/). Only use official www.ikea.com/it/it URLs. If an item is not found in the current Italian catalogue, set in_current_catalogue=false and suggest the closest current replacement in article_name. Never use another country\'s price. Return ONLY a valid JSON array (no markdown) matching this schema:\n'+schema+'\n\nITEMS:\n'+list;
+      const list=allItems.map((it,i)=>{
+        const pv=PROVIDERS[it.provider]||{};
+        const dims=(it.w?it.w+"×"+it.d+"×"+it.h+"cm":"?");
+        return `${i+1}. provider="${pv.name||it.provider}" official_site="${pv.base||""}" · expected_article="${it.name}" · search_term="${it.q||it.name}" · listed_price=${it.price}€ · listed_size=${dims}`;
+      }).join("\n");
+      const schema='[{"idx":<1-based number matching the item>,"provider":"","article_name":"","article_code":"","product_url":"https://<official provider domain>/...","live_price_eur":<number>,"currency":"EUR","availability":"<in_stock|limited|out_of_stock|unknown>","dimensions_cm":"<w×d×h>","link_ok":<true|false>,"price_matches":<true|false>,"size_matches":<true|false>,"in_current_catalogue":<true|false>,"source_url":"","extraction_method":"json_ld|product_page|category_listing|search","retrieved_at":"","confidence_score":<0-1>}]';
+      const prompt=(IKEA_REGISTRY_MD? IKEA_REGISTRY_MD.slice(0,4000)+"\n\n":"")+CATALOGUE_COMPLIANCE_DIRECTIVE
+        +'\n\n────\nTASK: For EACH item below, find the matching CURRENT article on that provider\'s OFFICIAL Italian website and return its live data. Use ONLY the provider\'s own official domain (the official_site shown), never a marketplace or another country. Confirm the product LINK resolves to a live product page (link_ok), the PRICE equals the current listed selling price (price_matches vs listed_price), and the SIZE matches the listed dimensions (size_matches vs listed_size). Strip tracking params from product_url. If the exact article is discontinued, return the closest current replacement on the SAME provider and set in_current_catalogue=false. Return ONLY a valid JSON array (no markdown), one object per item, matching this schema:\n'+schema+'\n\nITEMS:\n'+list;
       const res=await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
         {method:"POST",headers:{"Content-Type":"application/json"},
@@ -3592,59 +3649,65 @@ function IkeaVerifyPanel({items, apiKey}){
       const match=txt.replace(/```json|```/g,"").match(/\[[\s\S]*\]/);
       if(!match) throw new Error("No catalogue data returned — try again or check the key.");
       const parsed=JSON.parse(match[0]);
-      /* attach the matching catalog item + clean/validate the URL */
       const merged=parsed.map((r,i)=>{
-        const src=ikeaItems[i]||ikeaItems.find(x=>(x.q||x.name)===r.query)||{};
-        const url=ikeaUrlAllowed(r.product_url)?ikeaCleanUrl(r.product_url):(ikeaUrlAllowed(r.source_url)?ikeaCleanUrl(r.source_url):ikeaSearchUrl(src.q||r.article_name||r.query));
-        return {...r, product_url:url, catalog_price:src.price, expected:src.name, room:src.room};
+        const src=allItems[(Number(r.idx)||i+1)-1]||allItems[i]||{};
+        const pid=src.provider;
+        /* Validate the returned URL is on the provider's own official domain; else fall back to the official search URL. */
+        const okUrl=providerUrlAllowed(pid,r.product_url)?cleanTrackingUrl(r.product_url):(providerUrlAllowed(pid,r.source_url)?cleanTrackingUrl(r.source_url):mkSearchUrl(pid,src.q||r.article_name||src.name));
+        const onOfficial=providerUrlAllowed(pid,r.product_url)||providerUrlAllowed(pid,r.source_url);
+        return {...r, product_url:okUrl, on_official_domain:onOfficial, catalog_price:src.price, expected:src.name, provider_name:(PROVIDERS[pid]||{}).name||pid, listed_size:(src.w?src.w+"×"+src.d+"×"+src.h+"cm":"—"), room:src.room};
       });
       setRows(merged); setState("done");
     }catch(e){setErr(e.message||"Verification failed");setState("error");}
   };
 
+  const okCount=rows?rows.filter(r=>r.link_ok!==false&&r.on_official_domain).length:0;
   return(
     <div className="card" style={{borderLeft:"4px solid #0058A3"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:8}}>
         <div>
-          <div className="section-title" style={{margin:0,color:"#0058A3"}}>🛒 IKEA Italy catalogue verification</div>
-          <p style={{fontSize:10.5,color:"#78716C",marginTop:4,lineHeight:1.5,maxWidth:640}}>Grounds each IKEA item's <strong>price, availability, article number, dimensions and official product link</strong> in the live IKEA Italy catalogue (product page → JSON-LD → /it/it/cat/ → search), per the official source registry. Prices shown in the list are indicative; this check confirms them against the current product pages.</p>
+          <div className="section-title" style={{margin:0,color:"#0058A3"}}>🛒 Catalogue verification — all providers (live)</div>
+          <p style={{fontSize:10.5,color:"#78716C",marginTop:4,lineHeight:1.5,maxWidth:660}}>Grounds every item's <strong>price, availability, dimensions and official product link</strong> in the provider's own official Italian product page (same source-registry approach as IKEA), and checks that the <strong>link works</strong> and the <strong>price and size correspond to the announcement</strong>. Listed values are indicative until verified.</p>
         </div>
         <button className="btn btn-p" onClick={verify} disabled={state==="loading"} style={{whiteSpace:"nowrap",fontSize:12,background:"#0058A3"}}>
-          {state==="loading"?"🔍 Verifying…":"🌐 Verify live prices"}
+          {state==="loading"?"🔍 Verifying…":"🌐 Verify live prices & links"}
         </button>
       </div>
-      {state==="loading"&&<div style={{fontSize:10.5,color:"#0058A3"}}>Querying official IKEA Italy product pages…</div>}
+      {state==="loading"&&<div style={{fontSize:10.5,color:"#0058A3"}}>Querying official provider product pages ({allItems.length} items)…</div>}
       {err&&state!=="loading"&&<div className="note note-warn" style={{fontSize:11,marginTop:4}}>⚠️ {err}</div>}
       {state==="done"&&rows&&<div style={{marginTop:8,overflowX:"auto"}}>
+        <div className="note note-ok" style={{fontSize:10.5,marginBottom:8}}>✓ {okCount}/{rows.length} items resolved to a working official product page. Price ▲/▼ = live vs listed; ⚠ flags a link, price or size that did not match.</div>
         <table style={{fontSize:10.5}}>
           <thead><tr style={{borderBottom:"2px solid #E2DCD2"}}>
-            {["Article","Art. no.","Catalog €","Live €","Avail.","Dims","Conf.","Source"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 7px",fontSize:9,color:"#78716C",whiteSpace:"nowrap"}}>{h}</th>)}
+            {["Article","Provider","Code","Listed €","Live €","Link","Size","Avail.","Conf."].map(h=><th key={h} style={{textAlign:"left",padding:"5px 7px",fontSize:9,color:"#78716C",whiteSpace:"nowrap"}}>{h}</th>)}
           </tr></thead>
           <tbody>{rows.map((r,i)=>{
-            const live=Number(r.standard_price_eur), cat=Number(r.catalog_price);
+            const live=Number(r.live_price_eur), cat=Number(r.catalog_price);
             const delta=(Number.isFinite(live)&&Number.isFinite(cat)&&cat>0)?Math.round(((live-cat)/cat)*100):null;
+            const linkOk=r.link_ok!==false&&r.on_official_domain;
             return(<tr key={i} style={{borderBottom:"1px solid #ECE8E1",background:i%2?"#FAFAF8":"#fff"}}>
               <td style={{padding:"5px 7px"}}>
                 <a href={r.product_url} target="_blank" rel="noopener noreferrer" style={{color:"#1B3A2D",fontWeight:600,textDecoration:"none"}}>{r.article_name||r.expected} 🔗</a>
                 {r.in_current_catalogue===false&&<span style={{marginLeft:5,fontSize:8.5,padding:"1px 5px",borderRadius:6,background:"#FEE08B",color:"#7D5A00",fontWeight:700}}>replacement</span>}
                 {r.expected&&r.article_name&&r.article_name!==r.expected&&<div style={{fontSize:9,color:"#78716C"}}>was: {r.expected}</div>}
               </td>
-              <td style={{padding:"5px 7px",fontFamily:"monospace",fontSize:9.5,color:"#78716C",whiteSpace:"nowrap"}}>{r.article_number||"—"}</td>
+              <td style={{padding:"5px 7px",fontSize:9.5,color:"#C87941",fontWeight:600,whiteSpace:"nowrap"}}>{r.provider_name}</td>
+              <td style={{padding:"5px 7px",fontFamily:"monospace",fontSize:9,color:"#78716C",whiteSpace:"nowrap"}}>{r.article_code||"—"}</td>
               <td style={{padding:"5px 7px",textAlign:"right"}}>{Number.isFinite(cat)?fmt(cat):"—"}</td>
-              <td style={{padding:"5px 7px",textAlign:"right",fontWeight:700,color:"#0058A3"}}>{Number.isFinite(live)?fmt(live):"—"}{delta!=null&&Math.abs(delta)>=2&&<span style={{fontSize:8.5,color:delta>0?"#B91C1C":"#1B3A2D",marginLeft:3}}>{delta>0?"▲":"▼"}{Math.abs(delta)}%</span>}</td>
+              <td style={{padding:"5px 7px",textAlign:"right",fontWeight:700,color:"#0058A3"}}>{Number.isFinite(live)?fmt(live):"—"}{delta!=null&&Math.abs(delta)>=2&&<span style={{fontSize:8.5,color:delta>0?"#B91C1C":"#1B3A2D",marginLeft:3}}>{delta>0?"▲":"▼"}{Math.abs(delta)}%</span>}{r.price_matches===false&&<span title="price differs from listing" style={{marginLeft:3}}>⚠</span>}</td>
+              <td style={{padding:"5px 7px",fontSize:11}} title={r.product_url}>{linkOk?"🔗":"⚠"}</td>
+              <td style={{padding:"5px 7px",fontSize:9.5,color:"#78716C",whiteSpace:"nowrap"}}>{r.dimensions_cm||r.listed_size||"—"}{r.size_matches===false&&<span title={"listing: "+r.listed_size} style={{marginLeft:3,color:"#B91C1C"}}>⚠</span>}</td>
               <td style={{padding:"5px 7px",fontSize:9.5}}>{r.availability==="in_stock"?"✅":r.availability==="limited"?"🟡":r.availability==="out_of_stock"?"⛔":"—"}</td>
-              <td style={{padding:"5px 7px",fontSize:9.5,color:"#78716C",whiteSpace:"nowrap"}}>{r.dimensions_cm||"—"}</td>
               <td style={{padding:"5px 7px",fontSize:9.5,color:r.confidence_score>=0.8?"#1B3A2D":r.confidence_score>=0.5?"#C87941":"#B91C1C"}}>{r.confidence_score!=null?Math.round(r.confidence_score*100)+"%":"—"}</td>
-              <td style={{padding:"5px 7px",fontSize:9,color:"#78716C"}}>{(r.extraction_method||r.source_type||"—").replace(/_/g," ")}</td>
             </tr>);})}</tbody>
         </table>
-        <p style={{fontSize:9.5,color:"#A8A29E",marginTop:6,lineHeight:1.5}}>Field-level provenance per §2.12 — each live price/availability is traced to an official IKEA Italy product page (retrieved just now). A brochure never overrides a live product page. Verify final availability for your postcode on the product page before ordering.</p>
+        <p style={{fontSize:9.5,color:"#A8A29E",marginTop:6,lineHeight:1.5}}>Field-level provenance — each live price/link is traced to the provider's official Italian product page (retrieved just now). A brochure never overrides a live product page; confirm final price and availability for your postcode on the product page before ordering.</p>
       </div>}
     </div>
   );
 }
 
-function MarketFetchBtn({d, s, area, apiKey}){
+function MarketFetchBtn({d, s, area, apiKey, onData}){
   const [state,setState]=useState("idle");
   const [md,setMd]=useState(null);
   const [err,setErr]=useState("");
@@ -3658,7 +3721,7 @@ function MarketFetchBtn({d, s, area, apiKey}){
         `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
         {method:"POST",headers:{"Content-Type":"application/json"},
          body:JSON.stringify({
-           contents:[{parts:[{text:`Search immobiliare.it Lombardia market data and OMI Agenzia Entrate for ${city}, Italy. Return ONLY valid JSON:\n{"omiMin":<€/m²>,"omiMax":<€/m²>,"omiZone":"<zone>","marketAvgSqm":<€/m²>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m²>,"comparableRenovated":<€/m²>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations>"}`}]}],
+           contents:[{parts:[{text:`Search live immobiliare.it, idealista and OMI Agenzia delle Entrate data for ${city}, Italy (zone "${s?.vl?.zone||d.city}"). Ground every figure in those official/portal sources. Return ONLY valid JSON:\n{"omiMin":<€/m²>,"omiMax":<€/m²>,"omiZone":"<zone>","marketAvgSqm":<€/m²>,"marketTrend":"<increasing|stable|decreasing>","marketTrendPct":<number>,"comparableCurrent":<€/m² for the current condition>,"comparableRenovated":<€/m² for a renovated unit>,"marketRentSqm":<€/m²/month>,"energyPremium":<€/m²>,"demandScore":<1-10>,"avgDaysOnMarket":<days>,"notes":"<key observations>"}`}]}],
            tools:[{google_search:{}}],
            generationConfig:visionCfg(4096,{temperature:0})
          })
@@ -3667,7 +3730,7 @@ function MarketFetchBtn({d, s, area, apiKey}){
       const data=await res.json();
       const txt=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
       const match=txt.match(/\{[\s\S]*?\}/);
-      if(match){const p=JSON.parse(match[0]);setMd(p);setState("done");}
+      if(match){const p=JSON.parse(match[0]);setMd(p);setState("done"); if(onData) onData(p);}
       else throw new Error("No data returned");
     }catch(e){setErr(e.message||"Failed");setState("error");}
   };
@@ -3681,7 +3744,7 @@ function MarketFetchBtn({d, s, area, apiKey}){
       {state==="loading"&&<div style={{fontSize:10,color:"rgba(255,255,255,.7)",marginTop:4}}>Searching OMI + immobiliare.it…</div>}
       {err&&<div style={{fontSize:10,color:"#FECACA",marginTop:4}}>{err}</div>}
       {state==="done"&&md&&<div style={{marginTop:12,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
-        {[["OMI Range",md.omiMin&&md.omiMax?fmt(md.omiMin*area)+"–"+fmt(md.omiMax*area):"—"],["Market Avg/m²",md.marketAvgSqm?fmt(md.marketAvgSqm):"—"],["Trend",md.marketTrend+" "+(md.marketTrendPct?(md.marketTrendPct>0?"+":"")+md.marketTrendPct+"%":"")],["Renovated/m²",md.comparableRenovated?fmt(md.comparableRenovated):"—"],["Energy premium",md.energyPremium?fmt(md.energyPremium*area):"—"],["Demand",md.demandScore?md.demandScore+"/10":"—"]].map(([l,v])=>(
+        {[["OMI Range",md.omiMin&&md.omiMax?fmt(md.omiMin*area)+"–"+fmt(md.omiMax*area):"—"],["Market Avg/m²",md.marketAvgSqm?fmt(md.marketAvgSqm):"—"],["Trend",md.marketTrend+" "+(md.marketTrendPct?(md.marketTrendPct>0?"+":"")+md.marketTrendPct+"%":"")],["Renovated/m²",md.comparableRenovated?fmt(md.comparableRenovated):"—"],["Rent/m²·mo",md.marketRentSqm?fmt(md.marketRentSqm):"—"],["Demand",md.demandScore?md.demandScore+"/10":"—"]].map(([l,v])=>(
           <div key={l} style={{padding:"6px 8px",background:"rgba(255,255,255,.12)",borderRadius:6}}>
             <div style={{fontSize:9,opacity:.7}}>{l}</div>
             <div style={{fontSize:11,fontWeight:700}}>{v}</div>
@@ -3700,6 +3763,12 @@ function Results({d, apiKey}){
   const sols=useMemo(()=>genSols(d),[d]);
   const s=sols[si];
   const area=parseFloat(d.area)||85;
+  /* Persist generated renders across tab/solution switches so a render never
+     disappears once produced (keyed by solution + room). */
+  const renderCache=useRef({});
+  /* Live market data (OMI + immobiliare.it/idealista), fetched on demand and
+     used to ground the post-renovation price and rent generation. */
+  const [liveMkt,setLiveMkt]=useState(null);
   const tabs=[{id:"compare",l:"Compare",i:"⚖️"},{id:"renders",l:"Renders",i:"🎨"},{id:"detail",l:"Detail",i:"📋"},{id:"costs",l:"Costs",i:"💰"},{id:"energy",l:"Energy",i:"⚡"},{id:"energydetail",l:"Energy Detail",i:"🔋"},{id:"schedule",l:"Schedule",i:"📅"},{id:"valuation",l:"Value",i:"🏠"},{id:"market",l:"Market Analysis",i:"📈"},{id:"furnishing",l:"Furnishing",i:"🛋"},{id:"dd",l:"Compliance",i:"🏛"}];
 
   const SP=()=><div style={{display:"flex",gap:6,marginBottom:14}}>{sols.map((x,i)=>{const m=SM[i],on=si===i;return<button key={x.nm} onClick={()=>setSi(i)} style={{flex:1,padding:"11px 12px",borderRadius:9,border:on?"3px solid "+m.color:"1px solid #E2DCD2",background:on?m.gr:"#fff",cursor:"pointer",textAlign:"left",fontFamily:"inherit"}}><div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><span style={{fontSize:15}}>{m.em}</span><span style={{fontFamily:"'Cormorant Garamond'",fontSize:14,fontWeight:700,color:on?"#fff":"#1C1917"}}>{x.nm}</span>{i===1&&<span style={{padding:"1px 5px",borderRadius:7,background:on?"rgba(255,255,255,.3)":"#D1E7DD",fontSize:8.5,fontWeight:700,color:on?"#fff":"#1B3A2D"}}>REC</span>}</div><div style={{fontSize:12,fontWeight:700,color:on?"rgba(255,255,255,.95)":"#1C1917"}}>{fmt(x.co.total)}</div><div style={{fontSize:10,color:on?"rgba(255,255,255,.7)":"#78716C"}}>{x.ch.length} items · {x.sc.tw}wk · {x.en.bC}→{x.en.aC}</div></button>})}</div>;
@@ -3716,7 +3785,7 @@ function Results({d, apiKey}){
       <SP/>
       {!apiKey&&<div className="note note-warn" style={{marginBottom:12}}>⚠️ <strong>Nano Banana API key not set.</strong> Enter your key in the header bar to generate photorealistic renders with spatial refinement.</div>}
       <div className="note note-info" style={{marginBottom:12}}>ℹ️ Each scenario has its OWN plan with its own internal-flexibility level: <strong>Essenziale</strong> keeps the layout locked (no walls/doors changed), <strong>Bilanciato</strong> allows some internal walls/doors to move, <strong>Premium</strong> allows relocating kitchen/living/bedroom. The apartment envelope (external walls, entrance, windows, footprint) stays frozen in all three. Generate each scenario's plan first; its renders are then validated 1-to-1 against that plan.</div>
-      {sols.map((x,solIdx)=><SolRenderCard key={x.nm} x={x} solIdx={solIdx} d={d} apiKey={apiKey}/>)}
+      {sols.map((x,solIdx)=><SolRenderCard key={x.nm} x={x} solIdx={solIdx} d={d} apiKey={apiKey} renderCache={renderCache}/>)}
     </div>}
 
     {/* DETAIL */}
@@ -4103,7 +4172,7 @@ function Results({d, apiKey}){
                 <p style={{fontSize:11,opacity:.85}}>{d.address||"Property"} · {area}m² · Energy {d.eCls||"?"} → {s.en.aC} · Condition {v.cond_pre} → {v.cond_post}</p>
                 <p style={{fontSize:10,opacity:.7,marginTop:2}}>{v.value_anchored?"Current value anchored to your declared / listing price":"Current value estimated from the OMI model"}</p>
               </div>
-              <MarketFetchBtn d={d} s={s} area={area} apiKey={apiKey}/>
+              <MarketFetchBtn d={d} s={s} area={area} apiKey={apiKey} onData={setLiveMkt}/>
             </div>
           </div>
 
@@ -4152,6 +4221,14 @@ function Results({d, apiKey}){
               <KPI l="Value uplift" v={fmt(v.vA-v.vB)} c="#1B3A2D" sub={"+"+upliftPct+"%"}/>
               <KPI l="Renovated comparable" v={fmt(compReno)+"/m²"} c="#87A98F" sub="immobiliare.it"/>
             </div>
+            {liveMkt&&liveMkt.comparableRenovated&&(()=>{
+              const liveSqm=Math.round(Number(liveMkt.comparableRenovated));
+              const liveVal=liveSqm*area;
+              const liveUp=v.vB?Math.round(((liveVal-v.vB)/v.vB)*100):0;
+              return <div className="note note-ok" style={{marginTop:8,fontSize:11,lineHeight:1.6}}>
+                🌐 <strong>Grounded (live immobiliare.it · OMI):</strong> renovated comparable <strong>{fmt(liveSqm)}/m²</strong> → post-renovation value ≈ <strong>{fmt(liveVal)}</strong> ({liveUp>=0?"+":""}{liveUp}% vs current){liveMkt.marketTrend?" · market "+liveMkt.marketTrend+(liveMkt.marketTrendPct?" "+(liveMkt.marketTrendPct>0?"+":"")+liveMkt.marketTrendPct+"%":""):""}. The tiles above are the model estimate.
+              </div>;
+            })()}
             {v.ceiling_hit&&<div className="note note-warn" style={{marginTop:8,fontSize:11}}>⚠️ Post-renovation €/m² capped at the local renovated ceiling — the zone will not support a higher price even with a premium finish.</div>}
           </div>
 
@@ -4165,6 +4242,16 @@ function Results({d, apiKey}){
               <KPI l="Net yield" v={v.net_yield_pct+"%"} c="#1B3A2D" sub="vacancy/mgmt/IMU out"/>
             </div>
             <p style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>Gross rent = immobiliare.it zone rent €{v.rent_ref}/m²·mo × {area} m² × condition coefficient. Net rent strips ~5% vacancy, ~8% management and ~17% condo/maintenance/IMU/insurance. Gross annual {fmt(v.annual_rent)} · net annual {fmt(v.annual_rent_net)}.</p>
+            {liveMkt&&liveMkt.marketRentSqm&&(()=>{
+              const coef={Essential:1.05,Balanced:1.12,Premium:1.20}[s.nm]||1;
+              const gm=Math.round(Number(liveMkt.marketRentSqm)*area*coef);
+              const ga=gm*12, na=Math.round(ga*0.70);
+              const inv=v.total_investment||0;
+              const gy=inv?Math.round((ga/inv)*10000)/100:0, ny=inv?Math.round((na/inv)*10000)/100:0;
+              return <div className="note note-ok" style={{marginTop:8,fontSize:11,lineHeight:1.6}}>
+                🌐 <strong>Grounded (live immobiliare.it):</strong> zone rent <strong>{fmt(Math.round(Number(liveMkt.marketRentSqm)))}/m²·mo</strong> → gross <strong>{fmt(gm)}/mo</strong> · net <strong>{fmt(Math.round(na/12))}/mo</strong> · gross yield <strong>{gy}%</strong> · net yield <strong>{ny}%</strong> on total capital.
+              </div>;
+            })()}
           </div>
 
           {/* ROI */}
@@ -4240,17 +4327,27 @@ function Results({d, apiKey}){
           </div>
         </div>
 
-        {/* IKEA Italy catalogue verification (live prices + provenance) */}
+        {/* Live catalogue verification — ALL providers (prices, links, sizes + provenance) */}
         {(()=>{
-          const ikeaItems=[];
-          Object.entries(bom.selectedByRoom).forEach(([room,its])=>its.forEach(it=>{ if(it.provider==="IKEA_IT") ikeaItems.push({...it, room}); }));
-          return <IkeaVerifyPanel items={ikeaItems} apiKey={apiKey}/>;
+          const allItems=[];
+          Object.entries(bom.selectedByRoom).forEach(([room,its])=>its.forEach(it=>{ allItems.push({...it, room}); }));
+          return <CatalogueVerifyPanel items={allItems} apiKey={apiKey}/>;
         })()}
 
-        {/* Official IKEA Italy source registry (seeds used for grounding) */}
+        {/* Provider catalogue sources — official Italian sites used for grounding */}
         <div className="card">
-          <div className="section-title">🗄 Official IKEA Italy sources used</div>
-          <p style={{fontSize:10.5,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Furniture items, materials, dimensions and prices are grounded in these official IKEA Italy catalogue sources (market IT · it-IT). The plan and render engines are instructed to only show real, current catalogue articles from these sources.</p>
+          <div className="section-title">🗄 Official provider catalogue sources used</div>
+          <p style={{fontSize:10.5,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Every item's material, dimensions and price is grounded in the provider's <strong>official Italian product pages</strong> (same source-registry approach as IKEA, applied to all {Object.keys(PROVIDERS).length} providers). The plan and render engines only show real, current catalogue articles.</p>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:6,marginBottom:12}}>
+            {Object.entries(PROVIDERS).map(([pid,pv])=>(
+              <a key={pid} href={pv.base} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",padding:"6px 9px",background:"#F6F4EF",borderRadius:6,display:"block"}}>
+                <div style={{fontSize:10.5,fontWeight:700,color:"#C87941"}}>{pv.name} ↗</div>
+                <div style={{fontSize:8.5,color:"#A8A29E",marginTop:1,wordBreak:"break-all"}}>{providerHost(pv.base)}</div>
+              </a>
+            ))}
+          </div>
+          <div className="section-title" style={{color:"#0058A3"}}>🗄 IKEA Italy source registry (seed URLs)</div>
+          <p style={{fontSize:10.5,color:"#78716C",marginBottom:8,lineHeight:1.5}}>The full official IKEA Italy source registry (§2) embedded in this app — product index, category seeds, brochures and planners used for catalogue discovery.</p>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6}}>
             {[
               ["Product index",IKEA_REGISTRY.seeds?.product_index],
