@@ -2963,42 +2963,58 @@ function S1({d,u,apiKey}){
       return tryGemini(AI_MODELS.vision, body, 'A:plain', 20000);
     };
 
-    /* === Attempt B: google_search with paraphrase instruction === */
+    /* Known-good extraction models to try (in order) for the tool-based attempts.
+       The auto-detected model can be a preview that doesn't support url_context /
+       google_search; falling back to stable Flash models makes extraction work
+       regardless of what detectBestModels picked. */
+    const EXTRACT_MODELS = [AI_MODELS.vision, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"].filter((v,i,a)=>v&&a.indexOf(v)===i);
+    /* Tool calls cannot use responseMimeType:json; build a plain config and only
+       disable thinking on models that actually think (2.5 / 3.x). */
+    const toolCfg = (model, maxTokens, temp) => { const c={temperature:temp??0.1, maxOutputTokens:maxTokens||4096}; if(/gemini-(2\.5|3(\.\d+)?)/.test(model||"")) c.thinkingConfig={thinkingBudget:0}; return c; };
+
+    /* === Attempt B: google_search grounding (tries each stable model) === */
     const attemptSearch = async () => {
-      const body = {
-        contents:[{parts:[{text:'Search for this Italian property listing on the web and extract structured numerical/categorical fields. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nOutput JSON only:\n'+SCHEMA}]}],
-        tools:[{google_search:{}}],
-        generationConfig:visionCfg(4096)
-      };
-      const r = await tryGemini(AI_MODELS.vision, body, 'B:search', 32000);
-      if(r === 'RETRY_PARAPHRASE'){
-        const body2 = {
-          contents:[{parts:[{text:'Find this listing online. Output STRICTLY numerical and categorical data only — never quote any text. '+ANTI_RECITATION+' Use the city name and zone but paraphrase everything else.\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
+      for(const model of EXTRACT_MODELS){
+        const body = {
+          contents:[{parts:[{text:'Search for this Italian property listing on the web and extract structured numerical/categorical fields. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nOutput JSON only:\n'+SCHEMA}]}],
           tools:[{google_search:{}}],
-          generationConfig:visionCfg(4096,{temperature:0.3})
+          generationConfig:toolCfg(model,4096)
         };
-        return tryGemini(AI_MODELS.vision, body2, 'B2:search-paraphrase', 32000);
+        let r = await tryGemini(model, body, 'B:search['+model+']', 32000);
+        if(r === 'RETRY_PARAPHRASE'){
+          const body2 = {
+            contents:[{parts:[{text:'Find this listing online. Output STRICTLY numerical and categorical data only — never quote any text. '+ANTI_RECITATION+' Use the city name and zone but paraphrase everything else.\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
+            tools:[{google_search:{}}],
+            generationConfig:toolCfg(model,4096,0.3)
+          };
+          r = await tryGemini(model, body2, 'B2:search-para['+model+']', 32000);
+        }
+        if(r && r !== 'RETRY_PARAPHRASE') return r;
       }
-      return r;
+      return null;
     };
 
-    /* === Attempt C: url_context with paraphrase + retry === */
+    /* === Attempt C: url_context — the model fetches & reads the page directly
+       (most reliable, no CORS). Tries each stable model + paraphrase retry. === */
     const attemptUrlCtx = async () => {
-      const body = {
-        contents:[{parts:[{text:'Open this URL and extract numerical/categorical fields only. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
-        tools:[{url_context:{}}],
-        generationConfig:visionCfg(4096)
-      };
-      const r = await tryGemini(AI_MODELS.vision, body, 'C:urlctx', 32000);
-      if(r === 'RETRY_PARAPHRASE'){
-        const body2 = {
-          contents:[{parts:[{text:'Open this page and output ONLY: area (number), rooms (number), bathrooms (number), floor (number), energy class (single letter), price (number), city name (one word). No quotations from page allowed. Paraphrase any descriptive text. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON:\n'+SCHEMA}]}],
-          tools:[{url_context:{}}],
-          generationConfig:visionCfg(4096,{temperature:0.4})
+      for(const model of EXTRACT_MODELS){
+        const body = {
+          contents:[{parts:[{text:'Open this URL and read the Italian real-estate listing (annuncio immobiliare). Extract every property field. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nReturn ONLY valid JSON matching this schema (use null for anything not present):\n'+SCHEMA}]}],
+          tools:[{url_context:{}},{google_search:{}}],
+          generationConfig:toolCfg(model,6144)
         };
-        return tryGemini(AI_MODELS.vision, body2, 'C2:urlctx-paraphrase', 32000);
+        let r = await tryGemini(model, body, 'C:urlctx['+model+']', 34000);
+        if(r === 'RETRY_PARAPHRASE'){
+          const body2 = {
+            contents:[{parts:[{text:'Open this page and output ONLY numbers and single-word categories: area (m²), rooms, bathrooms, floor, energy class (single letter A4–G), price (€), city, CAP, heating type, condition. No quotations from the page; paraphrase any descriptive text. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON:\n'+SCHEMA}]}],
+            tools:[{url_context:{}}],
+            generationConfig:toolCfg(model,6144,0.4)
+          };
+          r = await tryGemini(model, body2, 'C2:urlctx-para['+model+']', 34000);
+        }
+        if(r && r !== 'RETRY_PARAPHRASE') return r;
       }
-      return r;
+      return null;
     };
 
     /* === Attempt D: gemini-2.0-flash search === */
@@ -3124,9 +3140,46 @@ function S1({d,u,apiKey}){
       return keys.length > 0 ? mined : null;
     };
 
+    /* Raw-text Gemini call (for the two-step describe→structure strategy) */
+    const geminiText = async (model, body, label, timeoutMs=32000) => {
+      try{
+        const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),timeoutMs);
+        const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+apiKey,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ctrl.signal});
+        clearTimeout(t);
+        if(!r.ok){ log(label+' HTTP '+r.status); return ''; }
+        const j=await r.json(); const c=j.candidates?.[0];
+        const txt=(c?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+        log(label+' '+(c?.finishReason||'')+' '+txt.length+'ch');
+        return txt;
+      }catch(e){ log(label+' '+(e.name==='AbortError'?'TIMEOUT':e.message)); return ''; }
+    };
+
+    /* === Attempt G: two-step grounded search → structure. Grounding works best
+       WITHOUT a strict-JSON constraint, so we first get a paraphrased description
+       via google_search, then convert that (recitation-safe) text to JSON. This
+       is the most reliable path for listings that are indexed on the web. === */
+    const attemptSearchDescribe = async () => {
+      for(const model of EXTRACT_MODELS){
+        const desc = await geminiText(model, {
+          contents:[{parts:[{text:'Search the web for this Italian real-estate listing (annuncio immobiliare) and describe it in your OWN words — never copy sentences from the page. Include, if available: surface area in m², number of locali/rooms, bathrooms, floor, energy class (single letter A4–G), price in €, full street address, city, CAP, heating type, condition, property type, and the main features.\n\nURL: '+url}]}],
+          tools:[{google_search:{}}],
+          generationConfig:toolCfg(model,8192,0.2)
+        }, 'G:describe['+model+']', 34000);
+        if(desc && desc.length>40 && !/unable to|non sono riuscito|not find|no information/i.test(desc)){
+          const r = await tryGemini(model, {
+            contents:[{parts:[{text:'From this paraphrased description of an Italian property listing, output ONLY valid JSON matching the schema (use null for anything unknown). Convert Italian floor words (piano terra→Ground, primo→1, etc.) and normalise the energy class to a single code.\n'+SCHEMA+'\n\nDESCRIPTION:\n'+desc}]}],
+            generationConfig:visionCfg(4096,{responseMimeType:'application/json'})
+          }, 'G2:structure['+model+']', 20000);
+          if(r && r!=='RETRY_PARAPHRASE') return r;
+        }
+      }
+      return null;
+    };
+
     const results = await Promise.all([
       attemptPlain().catch(()=>null),
       attemptSearch().catch(()=>null),
+      attemptSearchDescribe().catch(()=>null),
       attemptUrlCtx().catch(()=>null),
       attempt20().catch(()=>null),
       attemptScrape().catch(()=>null),
@@ -4588,7 +4641,13 @@ function App(){
      The repo copy ships WITHOUT a hardcoded key: GitHub secret scanning blocks
      any committed key and Google auto-revokes it. Paste your key into the
      header field (the downloadable build can have it pre-filled). */
-  const [apiKey,setApiKey]=useState("");
+  /* Google AI Studio key. Paste your key here (or in the header field) to enable
+     listing extraction, valuation grounding and renders. It is intentionally
+     left EMPTY in the repository: a key committed to GitHub is blocked by push
+     protection and auto-revoked by Google. The downloadable build ships with the
+     key pre-filled. */
+  const EMBEDDED_KEY = ""; // ← put your AQ.… / AIza… key here for a self-hosted build
+  const [apiKey,setApiKey]=useState(EMBEDDED_KEY);
   const [showKey,setShowKey]=useState(false);
   const [models,setModels]=useState(AI_MODELS);
 
