@@ -2553,7 +2553,7 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
 }
 
 /* ══════ RENDER TILE — shows only the final approved render ══════ */
-function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, originalPhotoFile, batchTrigger, planImg, onPlanReady}) {
+function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, originalPhotoFile, batchTrigger, planImg, onPlanReady, onDone}) {
   const isPlan = room==="Floor Plan";
   const [phase, setPhase] = useState("idle"); // idle | pipeline | done | error
   const [progress, setProgress] = useState({stage:"generating",round:1,total:MAX_ROUNDS});
@@ -2563,9 +2563,10 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
   const [planCompare, setPlanCompare] = useState(null); // plan-tile: generated plan vs original plan
   const [planConsistency, setPlanConsistency] = useState(undefined); // room-tile: render vs plan (undefined=not run)
   const [attempts, setAttempts] = useState(0);  // full generation attempts made for conformance
-  const [blocked, setBlocked] = useState(false); // could not produce a conforming result after MAX attempts
+  const [blocked, setBlocked] = useState(false); // best-attempt shown (could not fully verify after MAX)
   const [error, setError] = useState("");
-  const MAX_CONFORM_ATTEMPTS = 5; // keep regenerating until it conforms, up to this many tries
+  const doneFired = useRef(false);               // room tile: signalled completion once (for the sequential queue)
+  const MAX_CONFORM_ATTEMPTS = 3; // regenerate up to this many times, then present the best attempt
 
   /* Extra pressure appended on each regeneration attempt */
   const CONFORM_NUDGE = "\n\n⛔ PREVIOUS ATTEMPT WAS REJECTED FOR BREAKING THE APARTMENT BOUNDARY OR ADDING SPACE. REGENERATE STRICTLY: keep the proposal ENTIRELY inside the original apartment perimeter (P_proposed ⊆ P_original), add NO room/space/balcony/terrace/corridor outside it, do NOT enlarge the footprint or total area, and change ONLY what this scenario permits internally. Fit every space inside the existing boundary.";
@@ -2595,7 +2596,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
      approved plan, so when a plan is expected (batch run) we WAIT for it to
      conform before rendering the room, instead of guessing. */
   const beginGeneration = useCallback((deferForPlan)=>{
-    setAttempts(0); setBlocked(false);
+    setAttempts(0); setBlocked(false); doneFired.current=false;
     if(!isPlan && deferForPlan && !planImg){ setPhase("waiting"); return; }
     start(0);
   },[isPlan, planImg, start]);
@@ -2643,13 +2644,23 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       if(planConsistency==null) return;        // no plan to compare against → accept
       failing = planConsistency.approved===false || planConsistency.consistent===false;
     }
-    if(!failing){                                // CONFORMS → present it (and share the plan only now)
-      if(isPlan && onPlanReady) onPlanReady(imgUrl);
+    if(!failing){                                // CONFORMS → present it
+      if(isPlan){ if(onPlanReady) onPlanReady(imgUrl); }        // share the approved plan
+      else if(onDone && !doneFired.current){ doneFired.current=true; onDone(true); } // advance the sequential queue
       return;
     }
     if(attempts < MAX_CONFORM_ATTEMPTS-1){ setAttempts(a=>a+1); start(attempts+1); }
-    else { setBlocked(true); if(isPlan && onPlanReady) onPlanReady(""); } // exhausted → block; never share a bad plan
-  },[phase, blocked, isPlan, planCompare, planConsistency, attempts, start, onPlanReady, imgUrl]);
+    else {
+      /* Exhausted: PRESENT the best attempt (flagged unverified) instead of
+         hiding it, so the plan can still be shown and the room queue proceeds. */
+      setBlocked(true);
+      if(isPlan){ if(onPlanReady) onPlanReady(imgUrl); }        // share best plan so renders can start
+      else if(onDone && !doneFired.current){ doneFired.current=true; onDone(false); }
+    }
+  },[phase, blocked, isPlan, planCompare, planConsistency, attempts, start, onPlanReady, onDone, imgUrl]);
+
+  /* If a room render errors out, still advance the sequential queue */
+  useEffect(()=>{ if(!isPlan && phase==="error" && onDone && !doneFired.current){ doneFired.current=true; onDone(false); } },[phase, isPlan, onDone]);
 
   const stageLabel = {
     generating: originalPhotoFile ? "Editing your original photo…" : ((!isPlan && planImg) ? "Rendering from the approved plan…" : "Generating render…"),
@@ -2732,32 +2743,36 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
         </div>
       )}
 
-      {/* BLOCKED — could not produce a conforming result after MAX attempts.
-          The non-conforming image is NOT shown; the user regenerates instead. */}
-      {blocked&&(
+      {/* BLOCKED with no image at all — offer a manual retry */}
+      {blocked&&!imgUrl&&(
         <div className="render-idle" onClick={restart} style={{background:"#FEF2F2"}}>
-          <span style={{fontSize:30}}>⛔</span>
-          <span style={{fontSize:12,color:"#B91C1C",fontWeight:800,marginTop:6,textAlign:"center",padding:"0 14px"}}>Nessuna soluzione conforme dopo {MAX_CONFORM_ATTEMPTS} tentativi</span>
-          <span style={{fontSize:10,color:"#B91C1C",marginTop:3,textAlign:"center",padding:"0 16px",lineHeight:1.4}}>Il modello ha superato il confine dell'appartamento o aggiunto spazi. La proposta non conforme non viene mostrata.</span>
+          <span style={{fontSize:30}}>⚠️</span>
+          <span style={{fontSize:12,color:"#B91C1C",fontWeight:800,marginTop:6,textAlign:"center",padding:"0 14px"}}>Impossibile generare dopo {MAX_CONFORM_ATTEMPTS} tentativi</span>
           <span style={{fontSize:11,color:"#B91C1C",marginTop:6,fontWeight:700}}>↻ Riprova · Click to regenerate</span>
         </div>
       )}
 
-      {/* FINAL RENDER — only shown once it CONFORMS (blocked results never render) */}
-      {phase==="done"&&imgUrl&&!blocked&&(
+      {/* FINAL RENDER — presented once done; if it is the best-attempt (blocked)
+          it is still shown with an "unverified" badge so the workflow proceeds. */}
+      {phase==="done"&&imgUrl&&(
         <div style={{position:"relative"}}>
           <img src={imgUrl} alt={style+" "+room+" — "+solName} className="render-img"
             onError={()=>{setPhase("error");setError("Image failed to load");}}/>
-          {sc!=null&&(
+          {sc!=null&&!blocked&&(
             <div style={{position:"absolute",top:8,right:8,background:scoreClr+"ee",padding:"4px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:"#fff",backdropFilter:"blur(4px)"}}>
               {scoreLabel} {sc}/100
+            </div>
+          )}
+          {blocked&&(
+            <div style={{position:"absolute",top:8,left:8,right:8,background:"#A16207ee",padding:"5px 10px",borderRadius:8,fontSize:9.5,fontWeight:700,color:"#fff",backdropFilter:"blur(4px)"}}>
+              ⚠ Best attempt — not fully verified vs {isPlan?"the original":"the plan"}. Use 🔄 to regenerate.
             </div>
           )}
         </div>
       )}
 
-      {/* V7 COMPLIANCE STATUS — shown for conforming (presented) results only */}
-      {phase==="done"&&!blocked&&(()=>{
+      {/* V7 COMPLIANCE STATUS — shown for any presented result (incl. best attempt) */}
+      {phase==="done"&&imgUrl&&(()=>{
         const isPlan=room==="Floor Plan";
         const checks=isPlan?[
           ["Muri esterni",validation?.outerWallsUnchanged,"BLG-ENV-01"],
@@ -2794,7 +2809,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       })()}
 
       {/* CROSS-CHECK 1 — post-intervention PLAN vs INITIAL plan (plan tile only) */}
-      {phase==="done"&&!blocked&&isPlan&&planCompare&&(()=>{
+      {phase==="done"&&imgUrl&&isPlan&&planCompare&&(()=>{
         const rows=[
           ["Muri esterni",planCompare.outerWallsMatch],
           ["Sagoma/impronta",planCompare.overallShapeMatch],
@@ -2823,7 +2838,7 @@ function AIRenderTile({prompt, style, solName, room, apiKey, spatialData, origin
       })()}
 
       {/* CROSS-CHECK 2 — 3D render vs the post-intervention PLAN (room tiles) */}
-      {phase==="done"&&!blocked&&!isPlan&&planConsistency!==undefined&&(()=>{
+      {phase==="done"&&imgUrl&&!isPlan&&planConsistency!==undefined&&(()=>{
         if(planConsistency==="running") return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#EEF4FA",fontSize:9.5,color:"#2E5A82",display:"flex",alignItems:"center",gap:7}}><div className="spinner" style={{width:14,height:14,borderWidth:2}}/> Verifica coerenza render ↔ piano…</div>);
         if(planConsistency===null) return(<div style={{padding:"7px 12px",borderTop:"1px solid #ECE8E1",background:"#F6F4EF",fontSize:9,color:"#78716C"}}>Render ↔ piano: confronto non disponibile (piano non ancora generato).</div>);
         const rows=[
@@ -3661,44 +3676,69 @@ const TIER_FLEX = {
 };
 function SolRenderCard({x, solIdx, d, apiKey}){
   const m=SM[solIdx];
-  const [batchTrigger,setBatchTrigger]=useState(0);
-  const [planImg,setPlanImg]=useState(""); // THIS scenario's own post-intervention plan, shared to its room tiles
+  /* Two-step workflow:
+     ① generate the post-intervention PLAN, confirm it against the Italian/
+        Lombardy norms + the envelope, and SHOW it to the user;
+     ② only then render the spaces ONE BY ONE (each from the original photo +
+        dimensions + the approved plan + the changes made). */
+  const [planTrigger,setPlanTrigger]=useState(0);  // fires the plan generation
+  const [planImg,setPlanImg]=useState("");          // approved / best-attempt plan (shared to rooms)
+  const [roomsStarted,setRoomsStarted]=useState(false);
+  const [roomIdx,setRoomIdx]=useState(0);           // index of the room currently rendering
   const flex=TIER_FLEX[x.nm]||TIER_FLEX.Balanced;
-  const tiles=[];
+
+  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
+  const planSpatial=d.extractedPlan||null;
+  /* room tiles (rendered sequentially) */
+  const rooms=[];
   [{roomKey:"living",label:"Living Area"},{roomKey:"kitchen",label:"Kitchen"},{roomKey:"bedroom",label:"Bedroom"},{roomKey:"bathroom",label:"Bathroom"}].forEach(({roomKey,label})=>{
     const photos=(d.roomDetails?.[roomKey]?.photos||[]).filter(f=>f instanceof File);
     const spatialData=d.roomDetails?.[roomKey]?.extractedData||null;
-    if(photos.length>0){
-      photos.forEach((photoFile,pi)=>{
-        tiles.push({roomKey,label:`${label}${photos.length>1?" ("+(pi+1)+"/"+photos.length+")":""}`,photoFile,spatialData});
-      });
-    } else {
-      tiles.push({roomKey,label,photoFile:null,spatialData});
-    }
+    if(photos.length>0){ photos.forEach((photoFile,pi)=>rooms.push({roomKey,label:`${label}${photos.length>1?" ("+(pi+1)+"/"+photos.length+")":""}`,photoFile,spatialData})); }
+    else rooms.push({roomKey,label,photoFile:null,spatialData});
   });
-  /* Each scenario has its OWN plan (with its own internal-flexibility level).
-     Plan tile is generated first; its image is shared to this card's room
-     tiles so every render is 1-to-1 checked against THIS scenario's plan. */
-  const planPhoto=(d.plans||[]).find(f=>f instanceof File)||null;
-  tiles.push({roomKey:"plan",label:"Floor Plan",photoFile:planPhoto,spatialData:d.extractedPlan||null});
-  const imgToImg=tiles.filter(t=>t.photoFile).length;
+  const advance=useCallback(()=>setRoomIdx(i=>i+1),[]);
+  const allRoomsDone = roomsStarted && roomIdx>=rooms.length;
+  const imgToImg=rooms.filter(t=>t.photoFile).length + (planPhoto?1:0);
+
   return(
     <div className="card" style={{borderColor:solIdx===1?m.color+"60":"#E2DCD2",borderWidth:solIdx===1?2:1,marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
         <span style={{fontSize:17}}>{m.em}</span>
         <div style={{flex:1}}>
           <div style={{fontFamily:"'Cormorant Garamond'",fontSize:17,fontWeight:700,color:m.color}}>{x.nm} — {fmt(x.co.total)}</div>
-          <div style={{fontSize:10.5,color:"#78716C"}}>{tiles.length} renders · {imgToImg>0?imgToImg+" image-to-image":"text-to-image"}</div>
+          <div style={{fontSize:10.5,color:"#78716C"}}>{rooms.length} space renders · plan-first · {imgToImg>0?imgToImg+" from photos":"text-to-image"}</div>
         </div>
-        {apiKey&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setPlanImg("");setBatchTrigger(t=>t+1);}}>⚡ Generate All</button>}
+        {apiKey&&!planImg&&<button className="btn btn-p" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setRoomsStarted(false);setRoomIdx(0);setPlanImg("");setPlanTrigger(t=>t+1);}}>① Genera planimetria</button>}
+        {apiKey&&planImg&&<button className="btn btn-g" style={{fontSize:10,padding:"5px 12px",whiteSpace:"nowrap"}} onClick={()=>{setRoomsStarted(false);setRoomIdx(0);setPlanImg("");setPlanTrigger(t=>t+1);}}>↻ Rigenera piano</button>}
       </div>
       <div style={{fontSize:10,color:m.color,marginBottom:4,fontWeight:600}}>🏗 Internal flexibility: {flex.label}. Envelope (external walls, entrance, windows, footprint) always frozen.</div>
-      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Each render is checked 1-to-1 against THIS scenario's plan (<strong>viewpoint, walls/doors/windows, furniture, adjacent spaces</strong>); non-compliant results are regenerated or rejected.</div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-        {tiles.map((t,ti)=>(
-          <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={batchTrigger} planImg={planImg} onPlanReady={setPlanImg}/>
-        ))}
-      </div>
+      <div style={{fontSize:10,color:"#78716C",marginBottom:8,lineHeight:1.5}}>Step ① the post-intervention 2D plan is generated and verified against the envelope and Italian/Lombardy norms; step ② the space renders are produced <strong>one by one</strong> from the original photos, dimensions and the approved plan, each cross-checked against it.</div>
+
+      {/* STEP ① — PLAN */}
+      <div style={{fontSize:10,fontWeight:700,color:m.color,margin:"6px 0 4px",textTransform:"uppercase",letterSpacing:".05em"}}>① Planimetria post-intervento</div>
+      <AIRenderTile key={x.nm+"-plan"} prompt={renderPrompt(d,x,"plan")} style={d.style} solName={x.nm} room="Floor Plan" apiKey={apiKey} spatialData={planSpatial} originalPhotoFile={planPhoto} batchTrigger={planTrigger} planImg="" onPlanReady={setPlanImg}/>
+
+      {/* GATE — plan confirmed, choose to render the spaces */}
+      {planImg&&!roomsStarted&&<div style={{marginTop:10,padding:"11px 13px",background:"linear-gradient(135deg,#EDF3EE,#F5F0E8)",borderRadius:9,border:"1px solid #B5CDB8"}}>
+        <div style={{fontSize:12,fontWeight:700,color:"#1B3A2D",marginBottom:3}}>✓ Planimetria post-intervento pronta — verifica la conformità sopra (norme &amp; involucro), poi genera i render.</div>
+        <div style={{fontSize:10.5,color:"#57534E",marginBottom:9,lineHeight:1.5}}>I render degli spazi verranno prodotti <strong>uno alla volta</strong> a partire dalle foto originali, dalle dimensioni e da questa planimetria approvata.</div>
+        <button className="btn btn-p" style={{fontSize:11}} onClick={()=>{setRoomsStarted(true);setRoomIdx(0);}}>② Genera i render degli spazi (uno alla volta) →</button>
+      </div>}
+
+      {/* STEP ② — SPACE RENDERS, one by one */}
+      {roomsStarted&&<div style={{marginTop:12}}>
+        <div style={{fontSize:10,fontWeight:700,color:m.color,margin:"0 0 6px",textTransform:"uppercase",letterSpacing:".05em"}}>② Render degli spazi {allRoomsDone?"— completati":`(${Math.min(roomIdx+1,rooms.length)}/${rooms.length})`}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {rooms.map((t,ti)=>{
+            const active=ti<=roomIdx;                 // only reveal tiles up to the current one
+            if(!active) return <div key={x.nm+"-"+t.roomKey+"-"+ti} style={{border:"1px dashed #E2DCD2",borderRadius:8,minHeight:120,display:"flex",alignItems:"center",justifyContent:"center",color:"#B8AFA5",fontSize:11,textAlign:"center",padding:12}}>⏳ In coda — {t.label}</div>;
+            return <AIRenderTile key={x.nm+"-"+t.roomKey+"-"+ti} prompt={renderPrompt(d,x,t.roomKey)} style={d.style} solName={x.nm} room={t.label} apiKey={apiKey} spatialData={t.spatialData} originalPhotoFile={t.photoFile} batchTrigger={ti===roomIdx?1:0} planImg={planImg} onDone={()=>{ if(ti===roomIdx) advance(); }}/>;
+          })}
+        </div>
+        {allRoomsDone&&<div style={{marginTop:8,padding:"8px 11px",background:"#D1E7DD",borderRadius:8,fontSize:11,fontWeight:700,color:"#1B3A2D"}}>✓ Tutti i render degli spazi sono stati generati e verificati rispetto alla planimetria.</div>}
+      </div>}
+
       <div style={{marginTop:8,padding:7,background:"#F6F4EF",borderRadius:6,fontSize:10.5,color:"#78716C"}}><strong>Materials:</strong> {x.mg}</div>
     </div>
   );
