@@ -267,7 +267,7 @@ function calcLombardyVal(d, sol){
   trace.push({step:7, label:"Post-renovation €/m²", note:`post-condition ${tier.postCond} + ${targetECls} class +${(ePremPost*100).toFixed(1)}% + quality +${(tier.qualityAdj*100).toFixed(1)}%${ceilingHit?" [capped at market ceiling]":""}`, value:postPerSqm, total:postRenovTotal, ceilingHit, ceiling});
 
   /* STEP 8: Investment + ROI */
-  const purchase = d.listingExtracted?.price || preRenovTotal;
+  const purchase = parseFloat(d.existingValue) || d.listingExtracted?.price || preRenovTotal;
   const agencyFee = purchase * 0.03;
   const notaryTax = purchase * 0.04;
   const totalInvestment = Math.round(purchase + agencyFee + notaryTax + renoCost);
@@ -309,6 +309,10 @@ function calcLombardyVal(d, sol){
     profit_resold: profitIfResold, roi_pct: Math.round(roi*10)/10,
     monthly_rent: monthlyRent, annual_rent: annualRent, gross_yield_pct: Math.round(grossYield*100)/100,
     recommendation, ceiling_hit: ceilingHit,
+    /* user-stated existing value + renovation preferences */
+    user_existing_value: parseFloat(d.existingValue)||null,
+    pref_budget: parseFloat(d.prefBudget)||null,
+    pref_timeline: d.prefTimeline||null,
     trace
   };
 }
@@ -1644,6 +1648,20 @@ function S1({d,u,apiKey}){
       return out;
     };
 
+    /* Shared plain-text miner for Italian real-estate copy — fills only missing keys */
+    const mineText = (txt, mined) => {
+      const grab = re => { const mm = txt.match(re); return mm ? mm[1] : null; };
+      if(!mined.area){ const a = grab(/(\d{2,4})\s*(?:m²|mq\b|metri\s*quadr)/i) || grab(/superficie[^\d]{0,14}(\d{2,4})/i); if(a) mined.area = parseFloat(a); }
+      if(!mined.rooms){ const r0 = grab(/(\d{1,2})\s*(?:locali|vani\b)/i); if(r0) mined.rooms = parseInt(r0); }
+      if(!mined.bathrooms){ const b0 = grab(/(\d{1,2})\s*bagn/i); if(b0) mined.bathrooms = parseInt(b0); }
+      if(!mined.eCls){ const e0 = grab(/classe\s*energetica[:\s]*([A-G][1-4]?)\b/i) || grab(/\bAPE[:\s]*([A-G][1-4]?)\b/i) || grab(/\bclasse\s+([A-G][1-4]?)\b/i); if(e0) mined.eCls = e0.toUpperCase(); }
+      if(!mined.price){ const p0 = grab(/€\s*([\d.]{4,})/) || grab(/([\d.]{5,})\s*€/) || grab(/prezzo[^\d]{0,14}([\d.]{5,})/i); if(p0){ const n = parseInt(p0.replace(/[.\s]/g,'')); if(n>=10000) mined.price = n; } }
+      if(!mined.floor){ const f0 = grab(/piano\s*([0-9]{1,2})/i) || grab(/([0-9]{1,2})°\s*piano/i); if(f0) mined.floor = f0; }
+      if(!mined.ceiling){ const h0 = grab(/altezza[^\d]{0,10}([2-4][.,]\d{1,2})\s*m/i); if(h0) mined.ceiling = parseFloat(h0.replace(',','.')); }
+      if(!mined.cap){ const c0 = grab(/\b(\d{5})\b/); if(c0) mined.cap = c0; }
+      return mined;
+    };
+
     const tryGemini = async (model, body, label, timeoutMs=15000) => {
       if(!apiKey){ log(label+': no API key'); return null; }
       try{
@@ -1735,6 +1753,7 @@ function S1({d,u,apiKey}){
     /* === Attempt E: proxy scrape + text-mine === */
     const attemptScrape = async () => {
       const proxies = [
+        u => 'https://r.jina.ai/' + u,                                    /* reader proxy — returns clean text, bypasses most anti-bot blocking */
         u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
         u => 'https://corsproxy.io/?' + encodeURIComponent(u),
         u => 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u),
@@ -1743,12 +1762,12 @@ function S1({d,u,apiKey}){
       for(const p of proxies){
         try{
           const ctrl = new AbortController();
-          const t = setTimeout(()=>ctrl.abort(), 6000);
+          const t = setTimeout(()=>ctrl.abort(), 9000);
           const r = await fetch(p(url), {signal:ctrl.signal});
           clearTimeout(t);
           if(r.ok){
             const txt = await r.text();
-            if(txt && txt.length > 3000 && !/<title>[^<]*(403|404|denied)/i.test(txt)){ html = txt; log('E:proxy '+txt.length+'ch'); break; }
+            if(txt && txt.length > 800 && !/<title>[^<]*(403|404|denied)/i.test(txt)){ html = txt; log('E:proxy '+txt.length+'ch'); break; }
           }
         }catch(e){}
       }
@@ -1758,14 +1777,7 @@ function S1({d,u,apiKey}){
       [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].forEach(m=>{
         try{ const j=JSON.parse(m[1]); (Array.isArray(j)?j:[j]).forEach(o=>{ if(o['@graph'])o['@graph'].forEach(x=>Object.assign(mined,extractFromSchema(x))); Object.assign(mined,extractFromSchema(o));});}catch(e){}
       });
-      const rx = {area:/(\d{2,4})\s*(?:m²|mq)/i, rooms:/(\d{1,2})\s*(?:locali|stanze|vani)/i, bathrooms:/(\d{1,2})\s*bagn/i, eCls:/classe energetica[:\s]*([A-G][1-4]?)/i, price:/€\s*([\d.,]{4,})/, cap:/\b(\d{5})\b/};
-      const m = k => (txt.match(rx[k])||[])[1];
-      if(!mined.area && m('area')) mined.area = parseFloat(m('area'));
-      if(!mined.rooms && m('rooms')) mined.rooms = parseInt(m('rooms'));
-      if(!mined.bathrooms && m('bathrooms')) mined.bathrooms = parseInt(m('bathrooms'));
-      if(!mined.eCls && m('eCls')) mined.eCls = m('eCls').toUpperCase();
-      if(!mined.price && m('price')) mined.price = parseInt(m('price').replace(/[.,]/g,''));
-      if(!mined.cap && m('cap')) mined.cap = m('cap');
+      mineText(txt, mined);
       const keys = Object.keys(mined).filter(k=>mined[k]);
       log('E:mine '+keys.length+'k');
       return keys.length > 0 ? mined : null;
@@ -1793,14 +1805,7 @@ function S1({d,u,apiKey}){
         try{ const j=JSON.parse(m[1]); (Array.isArray(j)?j:[j]).forEach(o=>{ if(o['@graph'])o['@graph'].forEach(x=>Object.assign(mined,extractFromSchema(x))); Object.assign(mined,extractFromSchema(o));});}catch(e){}
       });
       const txt = html.replace(/<script[\s\S]*?<\/script>/g,' ').replace(/<style[\s\S]*?<\/style>/g,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
-      const rx = {area:/(\d{2,4})\s*(?:m²|mq)/i, rooms:/(\d{1,2})\s*(?:locali|stanze|vani)/i, bathrooms:/(\d{1,2})\s*bagn/i, eCls:/classe energetica[:\s]*([A-G][1-4]?)/i, price:/€\s*([\d.,]{4,})/, cap:/\b(\d{5})\b/};
-      const mm = k => (txt.match(rx[k])||[])[1];
-      if(!mined.area && mm('area')) mined.area = parseFloat(mm('area'));
-      if(!mined.rooms && mm('rooms')) mined.rooms = parseInt(mm('rooms'));
-      if(!mined.bathrooms && mm('bathrooms')) mined.bathrooms = parseInt(mm('bathrooms'));
-      if(!mined.eCls && mm('eCls')) mined.eCls = mm('eCls').toUpperCase();
-      if(!mined.price && mm('price')) mined.price = parseInt(mm('price').replace(/[.,]/g,''));
-      if(!mined.cap && mm('cap')) mined.cap = mm('cap');
+      mineText(txt, mined);
 
       // 2) Enrich with Gemini extraction on cleaned HTML
       const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<!--[\s\S]*?-->/g,' ').slice(0, 50000);
@@ -1841,9 +1846,34 @@ function S1({d,u,apiKey}){
       return k>0 ? out : null;
     })();
 
+    /* === Attempt G: reader proxy → clean page text → Gemini structured extract ===
+       Works without the Cloudflare Worker (direct-key mode): a reader proxy
+       fetches the listing as plain text — bypassing site anti-bot blocking —
+       then Gemini extracts fields from the text WE supply, so there is no live
+       page for the recitation filter to guard. */
+    const attemptReaderAI = async () => {
+      if(!apiKey) return null;
+      let text = '';
+      try{
+        const ctrl = new AbortController();
+        const t = setTimeout(()=>ctrl.abort(), 12000);
+        const r = await fetch('https://r.jina.ai/' + url, {signal:ctrl.signal, headers:{'Accept':'text/plain'}});
+        clearTimeout(t);
+        if(r.ok){ text = await r.text(); log('G:reader '+text.length+'ch'); }
+        else log('G:reader HTTP '+r.status);
+      }catch(e){ log('G:reader '+(e.name==='AbortError'?'TIMEOUT':e.message)); }
+      if(!text || text.length < 200) return null;
+      const body = {
+        contents:[{parts:[{text:'Below is the already-fetched readable text of an Italian real-estate listing page (annuncio immobiliare). Extract the property fields from it. '+ANTI_RECITATION+'\n\n=== PAGE TEXT (truncated) ===\n'+text.slice(0,14000)+'\n=== END PAGE TEXT ===\n\nReturn JSON only matching this schema (use null for anything not present):\n'+SCHEMA}]}],
+        generationConfig:{temperature:0.1,maxOutputTokens:1500,responseMimeType:'application/json'}
+      };
+      return tryGemini('gemini-2.5-flash', body, 'G:reader-ai', 25000);
+    };
+
     const results = await Promise.all([
       Promise.resolve(urlSlug),
       attemptWorkerScrape().catch(()=>null),
+      attemptReaderAI().catch(()=>null),
       attemptPlain().catch(()=>null),
       attemptSearch().catch(()=>null),
       attemptUrlCtx().catch(()=>null),
@@ -1982,6 +2012,30 @@ function S1({d,u,apiKey}){
         <div><label className="lbl">Property Type {le?.pType&&<span style={{color:"#1B3A2D",fontSize:9}}>✓</span>}</label><select value={d.pType||"Apartment"} onChange={e=>u({...d,pType:e.target.value})} style={le?.pType?{borderColor:"#1B3A2D",background:"#EDF3EE"}:{}}>{["Apartment","Attico","Loft","Monolocale","Villa","Mansarda"].map(o=><option key={o}>{o}</option>)}</select></div>
       </div>
       <div className="note note-info">Market price reference: <a href={"https://www.immobiliare.it/mercato-immobiliare/lombardia/"+(d.city||"milano").toLowerCase()+"-provincia/"} target="_blank" rel="noopener noreferrer" style={{color:"#1B3A2D",fontWeight:600}}>immobiliare.it/{(d.city||"Milano").toLowerCase()}</a> — {fmt(CITY_PRICES[(d.city||"").toLowerCase()]||LOMBARDY_AVG)}/m² avg (Mar 2026)</div>
+    </div>
+    <div className="card">
+      <div className="section-title">💶 Valuation & Renovation Preferences</div>
+      <p style={{fontSize:11,color:"#78716C",marginBottom:10,lineHeight:1.5}}>Your current value and preferences drive the ROI and the existing-vs-post-renovation comparison in the Market Analysis.</p>
+      <div className="grid2">
+        <div>
+          <label className="lbl">Existing property value (€) {le?.price&&<span style={{color:"#1B3A2D",fontSize:9}}>from listing</span>}</label>
+          <input type="number" value={d.existingValue||""} onChange={e=>u({...d,existingValue:e.target.value})} placeholder={le?.price?String(le.price):"e.g. 320000"} style={d.existingValue?{borderColor:"#1B3A2D",background:"#EDF3EE"}:{}}/>
+          {le?.price&&!d.existingValue&&<div style={{marginTop:4}}><button className="btn btn-s" style={{fontSize:10,padding:"3px 9px"}} onClick={()=>u({...d,existingValue:String(le.price)})}>Use listing price · {fmt(le.price)}</button></div>}
+          <div style={{fontSize:9.5,color:"#78716C",marginTop:3}}>Current worth or purchase price — the pre-renovation baseline.</div>
+        </div>
+        <div>
+          <label className="lbl">Preferred renovation budget (€)</label>
+          <input type="number" value={d.prefBudget||""} onChange={e=>u({...d,prefBudget:e.target.value})} placeholder="e.g. 60000" style={d.prefBudget?{borderColor:"#1B3A2D",background:"#EDF3EE"}:{}}/>
+          <div style={{fontSize:9.5,color:"#78716C",marginTop:3}}>How much you want to spend — compared against the estimated cost.</div>
+        </div>
+        <div style={{gridColumn:"1/3"}}>
+          <label className="lbl">Preferred timeline</label>
+          <select value={d.prefTimeline||""} onChange={e=>u({...d,prefTimeline:e.target.value})} style={d.prefTimeline?{borderColor:"#1B3A2D",background:"#EDF3EE"}:{}}>
+            {["","As soon as possible","Within 3 months","3–6 months","6–12 months","Over 12 months","Flexible"].map(o=><option key={o} value={o}>{o||"— Select —"}</option>)}
+          </select>
+          <div style={{fontSize:9.5,color:"#78716C",marginTop:3}}>When you would like the works completed — flagged against the scenario's typical duration.</div>
+        </div>
+      </div>
     </div>
   </div>);
 }
@@ -2638,8 +2692,19 @@ function Results({d, apiKey}){
       const omiRef=CITY_PRICES[cityKey]||LOMBARDY_AVG;
       const currentVal=s.vl.vB;
       const postRenovVal=s.vl.vA;
+      /* user-entered inputs from page 1 */
+      const existingValueUser=parseFloat(d.existingValue)||null;
+      const budgetUser=parseFloat(d.prefBudget)||null;
+      const timeline=d.prefTimeline||null;
+      /* the baseline the client actually cares about: their stated value if given, else the model estimate */
+      const baseline=existingValueUser||currentVal;
+      const renoCost=s.co.total;
+      const upliftAbs=postRenovVal-baseline;
+      const upliftPct=baseline?Math.round((upliftAbs/baseline)*100):null;
+      /* typical on-site duration per scenario (weeks) — used to flag the preferred timeline */
+      const durWeeks={Essential:[4,6],Balanced:[8,12],Premium:[12,20]}[s.nm]||[8,12];
       const listingDelta=listingPrice?Math.round(((listingPrice-currentVal)/currentVal)*100):null;
-      const maxBar=Math.max(listingPrice||0,currentVal,postRenovVal,omiRef*area)*1.2||1;
+      const maxBar=Math.max(listingPrice||0,currentVal,postRenovVal,omiRef*area,existingValueUser||0)*1.2||1;
       const Bar=({val,color,label,note})=>(
         <div style={{marginBottom:10}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,fontSize:11}}>
@@ -2665,17 +2730,52 @@ function Results({d, apiKey}){
           </div>
 
           <div className="card">
-            <div className="section-title">Value Comparison</div>
+            <div className="section-title">Value Comparison — existing vs post-renovation</div>
             {listingPrice&&<Bar val={listingPrice} color="#C87941" label="Listing / Announcement Price" note={listingDelta!=null?(listingDelta>0?"▲ "+listingDelta+"% above market":"▼ "+Math.abs(listingDelta)+"% below market"):null}/>}
             <Bar val={omiRef*area} color="#B8AFA5" label={"OMI Reference ("+d.city+") — "+fmt(omiRef)+"/m²"} note={null}/>
-            <Bar val={currentVal} color="#6B705C" label={"Current Market Value — pre renovation"} note={null}/>
-            <Bar val={postRenovVal} color="#1B3A2D" label={"Post-Renovation Value — "+s.nm+" scenario"} note={"+"+Math.round(((postRenovVal-currentVal)/currentVal)*100)+"%"}/>
+            {existingValueUser&&<Bar val={existingValueUser} color="#8B6F4E" label="Your stated existing value" note="entered on page 1"/>}
+            <Bar val={currentVal} color="#6B705C" label={"Current Market Value — pre renovation (model estimate)"} note={null}/>
+            <Bar val={postRenovVal} color="#1B3A2D" label={"Post-Renovation Value — "+s.nm+" scenario"} note={upliftPct!=null?("+"+upliftPct+"% vs "+(existingValueUser?"your value":"estimate")):null}/>
+
+            {/* Existing → post-renovation headline */}
+            <div style={{marginTop:12,padding:12,borderRadius:8,background:"linear-gradient(135deg,#EDF3EE,#F5F0E8)",border:"1px solid #B5CDB8"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,fontSize:12.5}}>
+                <span style={{fontWeight:600,color:"#1B3A2D"}}>Existing <strong>{fmt(baseline)}</strong> → Post-renovation <strong>{fmt(postRenovVal)}</strong></span>
+                <span style={{fontWeight:700,color:upliftAbs>0?"#1B3A2D":"#B91C1C"}}>{upliftAbs>0?"+":""}{fmt(upliftAbs)}{upliftPct!=null?" · "+(upliftPct>0?"+":"")+upliftPct+"%":""}</span>
+              </div>
+              <div style={{fontSize:9.5,color:"#78716C",marginTop:4}}>Baseline = {existingValueUser?"your stated existing value (page 1)":"the model's pre-renovation estimate"}. Gain before deducting renovation cost of {fmt(renoCost)}.</div>
+            </div>
+
             {listingPrice&&<div style={{marginTop:10,padding:10,borderRadius:8,background:listingDelta>5?"#FEF2F2":listingDelta<-5?"#D1E7DD":"#F6F4EF",border:"1px solid "+(listingDelta>5?"#FECACA":listingDelta<-5?"#B5CDB8":"#E2DCD2"),fontSize:11.5,lineHeight:1.5}}>
               {listingDelta>5&&<span style={{fontWeight:700,color:"#B91C1C"}}>⚠️ Listed {listingDelta}% above market — negotiation margin of {fmt(listingPrice-currentVal)} exists</span>}
               {listingDelta<=-5&&<span style={{fontWeight:700,color:"#1B3A2D"}}>✅ Listed {Math.abs(listingDelta)}% below market — potential upside of {fmt(currentVal-listingPrice)}</span>}
               {listingDelta>-5&&listingDelta<=5&&<span style={{color:"#78716C"}}>✓ Listing price broadly in line with market estimate ({listingDelta>0?"+":""}{listingDelta}%)</span>}
             </div>}
           </div>
+
+          {/* Your preferences — budget & timeline vs this scenario */}
+          {(budgetUser||timeline)&&<div className="card">
+            <div className="section-title">Your Preferences vs {s.nm} Scenario</div>
+            {budgetUser&&(()=>{
+              const diff=budgetUser-renoCost; const over=diff<0; const pct=Math.round(Math.abs(diff)/renoCost*100);
+              return(<div style={{marginBottom:timeline?10:0,padding:11,borderRadius:8,background:over?"#FEF2F2":"#D1E7DD",border:"1px solid "+(over?"#FECACA":"#B5CDB8"),fontSize:11.5,lineHeight:1.5}}>
+                <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                  <span style={{fontWeight:600}}>💶 Budget {fmt(budgetUser)} vs estimated cost {fmt(renoCost)}</span>
+                  <span style={{fontWeight:700,color:over?"#B91C1C":"#1B3A2D"}}>{over?"▲ "+pct+"% over":"▼ "+pct+"% under"}</span>
+                </div>
+                <div style={{marginTop:4,color:over?"#B91C1C":"#1B3A2D"}}>{over
+                  ? "Estimated cost exceeds your budget by "+fmt(-diff)+". Consider the Essential scenario or trimming interventions."
+                  : "Within budget — "+fmt(diff)+" of headroom for upgrades or contingency."}</div>
+              </div>);
+            })()}
+            {timeline&&<div style={{padding:11,borderRadius:8,background:"#F6F4EF",border:"1px solid #E2DCD2",fontSize:11.5,lineHeight:1.5}}>
+              <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                <span style={{fontWeight:600}}>⏱ Preferred timeline: {timeline}</span>
+                <span style={{color:"#78716C"}}>{s.nm} works typically {durWeeks[0]}–{durWeeks[1]} weeks on site</span>
+              </div>
+              {(timeline==="As soon as possible"||timeline==="Within 3 months")&&durWeeks[1]>12&&<div style={{marginTop:4,color:"#B91C1C"}}>⚠️ A {s.nm} renovation may not finish within 3 months — allow more time or reduce scope.</div>}
+            </div>}
+          </div>}
 
           <div className="card">
             <div className="section-title">KPIs — {s.nm} Scenario</div>
@@ -2892,7 +2992,7 @@ function App(){
   const [ld,setLd]=useState(false);
   const [apiKey,setApiKey]=useState(HAS_PROXY ? "__proxy__" : "");
   const [showKey,setShowKey]=useState(false);
-  const [d,setD]=useState({address:"",city:"Milano",cap:"",area:"85",rooms:"3",eCls:"E",band:"Major city",floor:"3",ceiling:"2.7",currentStatus:"Da ristrutturare",heatingType:"Centralizzato",annualEnergy:"",pType:"Apartment",listingUrl:"",plans:[],photos:[],roomDetails:{},changes:["Kitchen upgrade","Bathroom upgrade","Finishes refresh","Storage boost"],style:"Japandi",customStyle:"",fengshui:[],preferredPalette:null});
+  const [d,setD]=useState({address:"",city:"Milano",cap:"",area:"85",rooms:"3",eCls:"E",band:"Major city",floor:"3",ceiling:"2.7",currentStatus:"Da ristrutturare",heatingType:"Centralizzato",annualEnergy:"",pType:"Apartment",listingUrl:"",existingValue:"",prefBudget:"",prefTimeline:"",plans:[],photos:[],roomDetails:{},changes:["Kitchen upgrade","Bathroom upgrade","Finishes refresh","Storage boost"],style:"Japandi",customStyle:"",fengshui:[],preferredPalette:null});
   const steps=[{n:"Proprietà",i:"🏛️"},{n:"Planimetria",i:"📐"},{n:"Interventi",i:"🏗️"},{n:"Stile",i:"🎨"},{n:"Analisi",i:"📊"}];
   const ok=step===0?(d.city&&d.area):step===2?d.changes.length>0:true;
   const go=()=>{setLd(true);setTimeout(()=>{setLd(false);setStep(4)},1800)};

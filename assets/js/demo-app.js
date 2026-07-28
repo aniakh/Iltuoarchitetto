@@ -1,4 +1,6 @@
-/* Compiled from src/demo-app.jsx — do not edit directly. */
+/* Il Tuo Architetto — renovation demo app (React).
+   Source of truth: edit this file, then recompile to assets/js/demo-app.js with Babel (preset-react). */
+
 const {
   useState,
   useRef,
@@ -6,11 +8,18 @@ const {
   useCallback,
   useEffect
 } = React;
+/* Proxy support: if window.GEMINI_PROXY is set (in assets/js/config.js),
+   route Gemini calls through the Cloudflare Worker so visitors don't
+   need their own API key. Otherwise fall back to per-visitor key entry. */
 const GEMINI_PROXY = typeof window !== 'undefined' && window.GEMINI_PROXY ? String(window.GEMINI_PROXY).replace(/\/+$/, '') : '';
 const HAS_PROXY = !!GEMINI_PROXY;
 function geminiUrl(model, apiKey) {
   return HAS_PROXY ? GEMINI_PROXY + '/v1beta/models/' + model + ':generateContent' : 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + (apiKey || '');
 }
+
+/* ══════════════════════════════════════════════════════════════
+   ENGINE DATA — Updated March 2026 immobiliare.it prices
+   ══════════════════════════════════════════════════════════════ */
 const STYLES = {
   Japandi: {
     mat: "light oak, warm white plaster, linen, soft stone, matte finishes",
@@ -53,7 +62,10 @@ const STYLES = {
     pal: ["#A8C5A0", "#C5DDB8", "#E8F0E4", "#6B8F60", "#3D5C35"]
   }
 };
+
+/* Expanded interventions with tax benefit & conformity info */
 const INTERVENTIONS = {
+  /* Structure (5) */
   "Internal layout optimization": {
     l: "Optimize layout (non-structural walls)",
     ic: "🏗️",
@@ -99,6 +111,7 @@ const INTERVENTIONS = {
     tax50: true,
     nonConf: false
   },
+  /* Rooms (5) */
   "Kitchen upgrade": {
     l: "Renovate kitchen with new appliances & layout",
     ic: "🍳",
@@ -144,6 +157,7 @@ const INTERVENTIONS = {
     tax50: true,
     nonConf: true
   },
+  /* Finishes (5) */
   "Finishes refresh": {
     l: "Refresh flooring, doors, paint, lighting",
     ic: "🎨",
@@ -189,6 +203,7 @@ const INTERVENTIONS = {
     tax50: true,
     nonConf: false
   },
+  /* Systems (5) */
   "Electrical upgrade": {
     l: "Upgrade electrical system (CEI 64-8)",
     ic: "⚡",
@@ -234,6 +249,7 @@ const INTERVENTIONS = {
     tax50: true,
     nonConf: false
   },
+  /* Energy Upgrade (7) — renamed from Envelope */
   "Opaque envelope": {
     l: "External/internal wall insulation (cappotto)",
     ic: "🧱",
@@ -324,6 +340,14 @@ const PALETTE_OPTIONS = [{
   name: "Forest & Moss",
   colors: ["#1B3A2D", "#2D5F45", "#87A98F", "#D1E7DD", "#F5F0E8"]
 }];
+
+/* ═══════════════════════════════════════════════════════════
+   LOMBARDY VALUATION ENGINE v2 — OMI + Milan zone benchmarks
+   Based on ADE OMI Quotazioni · Immobiliare.it Apr 2026
+   Output is fully traceable: every step + coefficient logged
+   ═══════════════════════════════════════════════════════════ */
+
+/* Milan zone asking-price + rent benchmarks (Apr 2026, immobiliare.it) */
 const MILAN_ZONE_BENCHMARKS = [{
   z: "Centro",
   sale: 11233,
@@ -453,6 +477,8 @@ const MILAN_ZONE_BENCHMARKS = [{
   sale: 5732,
   rent: 20.90
 }];
+
+/* Apartment condition → OMI position weight (0=min OMI, 1=max OMI) */
 const COND_POSITION = {
   "Da ristrutturare": 0.20,
   "Buono / Abitabile": 0.50,
@@ -467,6 +493,8 @@ const COND_POSITION = {
   "renovated": 0.85,
   "finely_renovated": 0.95
 };
+
+/* Energy class premium/discount vs class D (baseline) */
 const ENERGY_PREMIUM = {
   A4: 0.14,
   A3: 0.12,
@@ -480,6 +508,8 @@ const ENERGY_PREMIUM = {
   G: -0.09,
   Unknown: -0.03
 };
+
+/* Renovation cost €/sqm by target tier */
 const RENO_COST_PER_SQM = {
   "light_refresh": {
     min: 250,
@@ -507,6 +537,8 @@ const RENO_COST_PER_SQM = {
     max: 2600
   }
 };
+
+/* Map solution tier → target reno class + post-condition */
 const TIER_TO_RENO = {
   "Essential": {
     tier: "light_refresh",
@@ -524,9 +556,12 @@ const TIER_TO_RENO = {
     qualityAdj: 0.13
   }
 };
+
+/* Match user city / address to Milan zone (fuzzy keyword) */
 function matchMilanZone(d) {
   const hay = ((d.address || "") + " " + (d.city || "") + " " + (d.listingExtracted?.address || "")).toLowerCase();
   if (!hay.includes("milan") && !hay.includes("milano")) return null;
+  /* find best matching zone by keyword */
   let best = null,
     bestScore = 0;
   MILAN_ZONE_BENCHMARKS.forEach(zone => {
@@ -540,15 +575,19 @@ function matchMilanZone(d) {
       best = zone;
     }
   });
-  return bestScore > 0 ? best : MILAN_ZONE_BENCHMARKS.find(z => z.z === "Centro");
+  return bestScore > 0 ? best : MILAN_ZONE_BENCHMARKS.find(z => z.z === "Centro"); // default Milan central if no match
 }
+
+/* Master valuation function — returns full traceable breakdown */
 function calcLombardyVal(d, sol) {
   const area = parseFloat(d.area) || 85;
-  const trace = [];
+  const trace = []; // step-by-step log
+
+  /* STEP 1: Geography → reference €/m² */
   const milanZone = matchMilanZone(d);
   const askingRef = milanZone?.sale || CITY_PRICES[(d.city || "").toLowerCase().trim()] || LOMBARDY_AVG;
   const rentRef = milanZone?.rent || 14;
-  const omiMin = Math.round(askingRef * 0.85);
+  const omiMin = Math.round(askingRef * 0.85); // OMI typically 15% below listing
   const omiMax = Math.round(askingRef * 1.05);
   trace.push({
     step: 1,
@@ -559,6 +598,8 @@ function calcLombardyVal(d, sol) {
     asking_ref: askingRef,
     rent_ref: rentRef
   });
+
+  /* STEP 2: Base OMI €/m² weighted by current condition */
   const condPos = COND_POSITION[d.currentStatus] ?? 0.50;
   const baseOMI = Math.round(omiMin + (omiMax - omiMin) * condPos);
   trace.push({
@@ -567,6 +608,8 @@ function calcLombardyVal(d, sol) {
     note: `${d.currentStatus || "normal"} → position ${condPos}`,
     value: baseOMI
   });
+
+  /* STEP 3: Market calibration — blend OMI (60%) with asking (40%) - discount 5% */
   const OMI_WEIGHT = 0.60,
     ASK_WEIGHT = 0.40,
     ASK_DISCOUNT = 0.05;
@@ -577,7 +620,10 @@ function calcLombardyVal(d, sol) {
     note: `60% OMI + 40% asking (–5% to transaction)`,
     value: calibrated
   });
+
+  /* STEP 4: Property-specific adjustments */
   const adj = {};
+  /* Floor */
   const floor = parseInt(d.floor) || 3;
   const hasElevator = d.elevator !== false;
   if (hasElevator) {
@@ -585,8 +631,10 @@ function calcLombardyVal(d, sol) {
   } else {
     if (floor === 0) adj.floor = -0.05;else if (floor >= 4) adj.floor = -0.10;else if (floor >= 3) adj.floor = -0.06;else adj.floor = -0.02;
   }
+  /* Outdoor space (best guess from features) */
   const features = (d.listingExtracted?.features || []).map(f => f.toLowerCase()).join(" ");
   if (features.includes("terraz")) adj.outdoor = features.includes("grand") || features.includes("large") ? 0.08 : 0.05;else if (features.includes("balcon")) adj.outdoor = 0.02;else adj.outdoor = 0;
+  /* Condo expenses */
   const condoY = parseFloat(d.listingExtracted?.condominium) || 0;
   if (condoY > 0) {
     if (condoY < 1200) adj.condo = 0.02;else if (condoY < 2500) adj.condo = 0.00;else if (condoY < 4000) adj.condo = -0.03;else adj.condo = -0.06;
@@ -600,6 +648,8 @@ function calcLombardyVal(d, sol) {
     value: adjusted,
     adjustments: adj
   });
+
+  /* STEP 5: Energy class premium (pre-renovation) */
   const ePremPre = ENERGY_PREMIUM[d.eCls] ?? -0.03;
   const preRenovPerSqm = Math.round(adjusted * (1 + ePremPre));
   const preRenovTotal = Math.round(preRenovPerSqm * area);
@@ -610,15 +660,18 @@ function calcLombardyVal(d, sol) {
     value: preRenovPerSqm,
     total: preRenovTotal
   });
+
+  /* STEP 6: Renovation cost from tier + interventions */
   const tier = TIER_TO_RENO[sol.nm] || TIER_TO_RENO["Balanced"];
   const renoBase = RENO_COST_PER_SQM[tier.tier].typ;
   let renoCost = area * renoBase;
+  /* Add intervention adders */
   const interv = sol.ch || [];
   const adders = {};
   if (interv.includes("Electrical upgrade")) adders.electrical = 6000;
   if (interv.includes("Plumbing upgrade")) adders.plumbing = 12000;
   if (interv.includes("Bathroom upgrade")) adders.bathroom = 12000;
-  if (interv.includes("Transparent envelope")) adders.windows = area * 0.15 * 750;
+  if (interv.includes("Transparent envelope")) adders.windows = area * 0.15 * 750; // ~15% wall is windows
   if (interv.includes("Heating system")) adders.heatpump = 9000;
   if (interv.includes("Cooling system")) adders.aircon = 4500;
   if (interv.includes("Complete energy upgrade")) adders.deep_retrofit = 15000;
@@ -634,12 +687,15 @@ function calcLombardyVal(d, sol) {
     adders,
     contingency: Math.round(contingency)
   });
+
+  /* STEP 7: Post-renovation value */
   const postCondPos = COND_POSITION[tier.postCond];
   const postBaseOMI = Math.round(omiMin + (omiMax - omiMin) * postCondPos);
   const postCalibrated = Math.round(OMI_WEIGHT * postBaseOMI + ASK_WEIGHT * askingRef * (1 - ASK_DISCOUNT));
   const targetECls = sol.en?.aC || "C";
   const ePremPost = ENERGY_PREMIUM[targetECls] ?? 0.02;
   let postPerSqmUncapped = Math.round(postCalibrated * (1 + adjSum + ePremPost + tier.qualityAdj));
+  /* Market ceiling = local prime benchmark × 1.05 */
   const ceiling = Math.round(askingRef * 1.05);
   const postPerSqm = Math.min(postPerSqmUncapped, ceiling);
   const ceilingHit = postPerSqmUncapped > ceiling;
@@ -653,7 +709,9 @@ function calcLombardyVal(d, sol) {
     ceilingHit,
     ceiling
   });
-  const purchase = d.listingExtracted?.price || preRenovTotal;
+
+  /* STEP 8: Investment + ROI */
+  const purchase = parseFloat(d.existingValue) || d.listingExtracted?.price || preRenovTotal;
   const agencyFee = purchase * 0.03;
   const notaryTax = purchase * 0.04;
   const totalInvestment = Math.round(purchase + agencyFee + notaryTax + renoCost);
@@ -671,6 +729,8 @@ function calcLombardyVal(d, sol) {
     profit_resold: profitIfResold,
     roi_pct: Math.round(roi * 10) / 10
   });
+
+  /* STEP 9: Rent + yield */
   const rentCoef = {
     "Essential": 1.05,
     "Balanced": 1.12,
@@ -687,9 +747,12 @@ function calcLombardyVal(d, sol) {
     annual: annualRent,
     gross_yield_pct: Math.round(grossYield * 100) / 100
   });
+
+  /* STEP 10: Recommendation */
   let recommendation = "Not recommended unless strategic reason";
   if (roi >= 15) recommendation = "Strong investment candidate";else if (roi >= 8) recommendation = "Moderate investment candidate";else if (roi >= 0) recommendation = "Low-margin — negotiate price or reduce reno scope";
   return {
+    /* legacy compat */
     pB: preRenovPerSqm,
     pA: postPerSqm,
     vB: preRenovTotal,
@@ -697,6 +760,7 @@ function calcLombardyVal(d, sol) {
     up: Math.round((postPerSqm / preRenovPerSqm - 1) * 1000) / 10,
     taxBenefit: Math.round(renoCost * 0.50),
     taxBenefitAnnual: Math.round(renoCost * 0.50 / 10),
+    /* new traceable detail */
     zone: milanZone?.z || d.city || "Lombardy",
     OMI_range: [omiMin, omiMax],
     asking_ref: askingRef,
@@ -717,9 +781,15 @@ function calcLombardyVal(d, sol) {
     gross_yield_pct: Math.round(grossYield * 100) / 100,
     recommendation,
     ceiling_hit: ceilingHit,
+    /* user-stated existing value + renovation preferences */
+    user_existing_value: parseFloat(d.existingValue) || null,
+    pref_budget: parseFloat(d.prefBudget) || null,
+    pref_timeline: d.prefTimeline || null,
     trace
   };
 }
+
+/* Updated Lombardy prices from immobiliare.it March 2026 */
 const CITY_PRICES = {
   milano: 4136,
   milan: 4136,
@@ -736,59 +806,101 @@ const CITY_PRICES = {
   sondrio: 1884,
   varese: 1741
 };
-const LOMBARDY_AVG = 2753;
+const LOMBARDY_AVG = 2753; // March 2026
+
+/* ══════ ITALIAN BUILDING REGULATIONS ══════
+   Sources: DM Sanità 5/7/1975 · DM 236/1989 · DPCM 5/12/1997 · 
+   Reg. Edilizio Milano 2016 (Art.95-110) · DM Requisiti Minimi · NTC 2018 */
 const REGS = {
+  /* Minimum CEILING heights (m) */
   ceilingMain: 2.70,
+  // soggiorno, camere, cucina (DM 5/7/1975 Art.1)
   ceilingAccessory: 2.40,
+  // corridoi, disimpegni, bagni, ripostigli
   ceilingService: 2.10,
+  // locali tecnici
   ceilingMountainAbove1000m: 2.55,
   ceilingExistingMin: 2.40,
+  // recupero esistente (Reg.Ed. Art.95)
+  /* Minimum room AREAS (m²) — Reg.Ed. Milano Art.97 + DM 5/7/1975 */
   minRoom: {
     soggiorno: 14,
     soggiornoConCottura: 17,
     cucina: 5,
     cameraSingola: 9,
+    // DM 5/7/1975 (8 in Reg.Ed.)
     cameraDoppia: 14,
+    // DM 5/7/1975 (12 in Reg.Ed.)
     studio: 7,
     bagnoLatoMin: 1.20,
+    // lato minimo bagno
     bagnoMinSqm: 3.5
   },
+  /* Whole apartment minimums */
   minMonolocale1pers: 28,
+  // DM 5/7/1975 Art.3
   minMonolocale2pers: 38,
   minAlloggio: 28,
+  // Reg.Ed. Art.96
   minAlloggioDisabili: 45,
+  // accessibile
+  /* Per-occupant area */
   sqmPerOccupantFirst4: 14,
   sqmPerOccupantAdditional: 10,
+  /* AERATION (natural ventilation) — Reg.Ed. Art.103 */
   aerationRatio: 0.10,
+  // openable window ≥ 1/10 floor area
   bagnoMinWindow: 0.50,
+  // m² minimum bath window
+  /* ILLUMINATION — Reg.Ed. Art.105 + DM 5/7/1975 */
   illumRatio: 0.125,
+  // 1/8 floor area, fattore luce diurna ≥ 2%
   illumDepthRatio: 2.5,
+  // distance window→far wall ≤ 2.5× window height
   zenitalIllumRatio: 1 / 12,
+  // skylight
+  /* ACCESSIBILITY — DM 236/1989 */
   doorWidthEntrance: 0.80,
+  // luce netta porta ingresso
   doorWidthInternal: 0.75,
+  // altre porte
   corridorMin: 1.00,
+  // larghezza corridoio comune (1.40 nei pubblici)
   wheelchairTurn: 1.50,
+  // diametro rotazione sedia rotelle
   rampMaxSlope: 0.08,
+  // 8%
   handrailHeight: 0.90,
   parapetMin: 1.00,
+  /* ENERGY — DM Requisiti Minimi (DM 26/6/2015) */
   minEnergyClassRenov: "C",
+  // ristrutturazione importante 1° livello target
+  /* ACOUSTIC — DPCM 5/12/1997 (Cat.A residenziale) */
   acoustic: {
     facciataD2mnT: 40,
+    // dB isolamento facciata
     partizioneR: 50,
-    calpestioL: 63
+    // dB potere fonoisolante pareti tra unità
+    calpestioL: 63 // dB rumore calpestio max
   },
+  /* ENERGY-EFFICIENCY — Lombardy DGR */
   insulationUmaxWall: 0.26,
+  // W/m²K (zona E Milano)
   insulationUmaxRoof: 0.22,
   insulationUmaxFloor: 0.30,
   insulationUmaxWindow: 1.40
 };
+
+/* Compliance checker — runs against design data + scenario plan */
 function runCompliance(d, s, area) {
-  const issues = [];
+  const issues = []; // {sev:"err"|"warn"|"ok", cat, code, msg}
   const ch = parseFloat(d.ch) || 2.7;
   const eCls = d.eCls || "E";
   const postECls = s?.en?.aC || "C";
   const rooms = parseInt(d.rooms) || 3;
   const baths = parseInt(d.baths) || 1;
+
+  /* Ceiling height — DM 5/7/1975 Art.1 */
   if (ch < REGS.ceilingExistingMin) issues.push({
     sev: "err",
     cat: "Altezza",
@@ -805,6 +917,8 @@ function runCompliance(d, s, area) {
     code: "DM 5/7/1975",
     msg: `Altezza ${ch}m ≥ ${REGS.ceilingMain}m ✓`
   });
+
+  /* Total floor area */
   if (area < REGS.minAlloggio) issues.push({
     sev: "err",
     cat: "Superficie",
@@ -816,6 +930,8 @@ function runCompliance(d, s, area) {
     code: "Reg.Ed. Art.96",
     msg: `Sup. utile ${area}m² ≥ ${REGS.minAlloggio}m² ✓`
   });
+
+  /* Estimate per-room area & flag if undersized */
   const livingArea = Math.max(14, area * 0.30);
   const bedroomArea = rooms > 1 ? area * 0.20 : 0;
   if (rooms >= 2 && bedroomArea < REGS.minRoom.cameraDoppia) issues.push({
@@ -830,6 +946,8 @@ function runCompliance(d, s, area) {
     code: "DM 5/7/1975",
     msg: `Soggiorno < ${REGS.minRoom.soggiorno}m² minimo`
   });
+
+  /* Bathroom — verify ≥ 1 with window OR VMC */
   if (baths < 1) issues.push({
     sev: "err",
     cat: "Servizi",
@@ -841,12 +959,16 @@ function runCompliance(d, s, area) {
     code: "Reg.Ed. Art.97-98",
     msg: `${baths} bagno/i — verificare lato min 1.20m e dotazione completa ✓`
   });
+
+  /* Aeration & Illumination — needs window area data; flag as advisory */
   issues.push({
     sev: "warn",
     cat: "Aeroilluminazione",
     code: "Reg.Ed. Art.103-105",
     msg: `Verificare apribile ≥ 1/10 superficie locale (${(area * REGS.aerationRatio).toFixed(1)}m² tot.) e illuminante ≥ 1/8 (${(area * REGS.illumRatio).toFixed(1)}m²)`
   });
+
+  /* Energy — DM Requisiti Minimi */
   const cls = ["A4", "A3", "A2", "A1", "B", "C", "D", "E", "F", "G"];
   const post = cls.indexOf(postECls),
     target = cls.indexOf(REGS.minEnergyClassRenov);
@@ -866,18 +988,24 @@ function runCompliance(d, s, area) {
     code: "DM 26/6/2015",
     msg: `Classe ${postECls} ≥ ${REGS.minEnergyClassRenov} target ✓`
   });
+
+  /* Accessibility — DM 236/1989 visitabilità sempre richiesta */
   issues.push({
     sev: "warn",
     cat: "Accessibilità",
     code: "DM 236/1989",
     msg: `Visitabilità: porta ingresso luce netta ≥ ${REGS.doorWidthEntrance * 100}cm, almeno 1 bagno raggiungibile, soggiorno fruibile`
   });
+
+  /* Acoustic — DPCM 5/12/1997 */
   issues.push({
     sev: "warn",
     cat: "Acustico",
     code: "DPCM 5/12/1997",
     msg: `Cat.A residenziale: facciata D2m,nT ≥ ${REGS.acoustic.facciataD2mnT}dB, R'w pareti ≥ ${REGS.acoustic.partizioneR}dB, calpestio L'nw ≤ ${REGS.acoustic.calpestioL}dB`
   });
+
+  /* Riscontro d'aria — Reg.Ed. Art.100 */
   if (area >= 60) issues.push({
     sev: "warn",
     cat: "Riscontro d'aria",
@@ -891,6 +1019,8 @@ function runCompliance(d, s, area) {
   });
   return issues;
 }
+
+/* Hard constraints to inject into render prompts so AI respects rules */
 const RENDER_REGS_PROMPT = `STRICT ITALIAN BUILDING CODE COMPLIANCE (DM 5/7/1975 + Reg.Ed. Milano + DM 236/1989):
 - Min ceiling 2.70m (2.40m in renovation existing)
 - Living room ≥ 14m² (≥ 17m² if open kitchen), kitchen ≥ 5m²
@@ -954,6 +1084,8 @@ const BANDS = {
     p: .78
   }
 };
+
+/* Cost rates */
 const CR = {
   fin: 95,
   flr: 35,
@@ -1031,6 +1163,7 @@ function calcCosts(a, ch, st, bd, rm) {
   }
   const sm = 1 + (["Classic Modern", "Mediterranean"].includes(st) ? .03 : 0) + (["Biophilic", "Japandi"].includes(st) ? .02 : 0);
   const sub = Object.values(o).reduce((x, y) => x + y, 0) * cc * sm;
+  /* Professional fees: minimum €5000 */
   o.professional_fees = Math.max(5000, Math.round(sub * (CR.de + CR.pe + CR.co)));
   o.total = Math.round(sub) + o.professional_fees;
   Object.keys(o).forEach(k => {
@@ -1039,19 +1172,22 @@ function calcCosts(a, ch, st, bd, rm) {
   return o;
 }
 function calcEnergy(cls, ch, a) {
+  /* Reductions calibrated on ENEA "riqualificazione importante" data 2020-2024.
+     Combined multiplicatively (not summed) on the residual demand. */
   const b = ENERGY_MID[cls] || 230;
   let residual = 1.0;
-  if (ch.includes("Opaque envelope")) residual *= 0.74;
-  if (ch.includes("Transparent envelope")) residual *= 0.90;
-  if (ch.includes("Ventilation system")) residual *= 0.93;
-  if (ch.includes("Heating system")) residual *= 0.78;
-  if (ch.includes("Renewable sources")) residual *= 0.85;
-  if (ch.includes("Cooling system")) residual *= 0.96;
-  if (ch.includes("Smart controls")) residual *= 0.96;
+  if (ch.includes("Opaque envelope")) residual *= 0.74; // cappotto -26%
+  if (ch.includes("Transparent envelope")) residual *= 0.90; // serramenti -10%
+  if (ch.includes("Ventilation system")) residual *= 0.93; // VMC double-flow -7%
+  if (ch.includes("Heating system")) residual *= 0.78; // condensing boiler or PdC -22%
+  if (ch.includes("Renewable sources")) residual *= 0.85; // solar+PV self-cons -15%
+  if (ch.includes("Cooling system")) residual *= 0.96; // -4% on EPgl
+  if (ch.includes("Smart controls")) residual *= 0.96; // -4% via zoning/regulation
   if (ch.includes("Other energy interventions")) residual *= 0.98;
-  if (ch.includes("Complete energy upgrade")) residual = 0.42;
+  if (ch.includes("Complete energy upgrade")) residual = 0.42; // 58% total (NZEB-ready)
   if (ch.includes("Electrical upgrade")) residual *= 0.99;
   if (ch.includes("Finishes refresh")) residual *= 0.99;
+  /* Realistic floor: cannot go below 0.30 (70% reduction) without NZEB intervention */
   residual = Math.max(0.30, residual);
   const af = b * residual;
   const sp = Math.round((1 - residual) * 1000) / 10;
@@ -1064,11 +1200,11 @@ function calcEnergy(cls, ch, a) {
   };
 }
 function calcSave(a, eB, eA) {
-  const epDelta = Math.max(0, (ENERGY_MID[eB] || 230) - (ENERGY_MID[eA] || 230));
-  const deliveredPerSqm = epDelta / 1.6;
-  const blendedPrice = 0.155;
+  const epDelta = Math.max(0, (ENERGY_MID[eB] || 230) - (ENERGY_MID[eA] || 230)); // kWh/m²·yr PRIMARY
+  const deliveredPerSqm = epDelta / 1.6; // primary→delivered
+  const blendedPrice = 0.155; // €/kWh delivered (70% gas + 30% ele blend)
   const rawYear = deliveredPerSqm * a * blendedPrice;
-  const capped = Math.min(rawYear, a * 40);
+  const capped = Math.min(rawYear, a * 40); // realistic ceiling ~€40/m²·yr for deep retrofit
   return {
     yr: Math.round(capped),
     mo: Math.round(capped / 12)
@@ -1127,6 +1263,14 @@ function calcSched(a, ch) {
     tw: w
   };
 }
+
+/* ══════════════════════════════════════════════════════════════
+   LOMBARDY CENED+2 ENERGY ENGINE (DDUO 2456/2017 + DM 26/6/2015)
+   Pre/post-renovation EPgl,nren, class, consumption by vector,
+   annual cost, CO2, and 30-year NPV with tax deductions
+   ══════════════════════════════════════════════════════════════ */
+
+/* Degree-days by Lombardy city (DPR 412/93) */
 const LOMBARDY_GG = {
   milano: 2404,
   milan: 2404,
@@ -1143,6 +1287,8 @@ const LOMBARDY_GG = {
   sondrio: 3084,
   varese: 2652
 };
+
+/* Typical EPgl,nren by build era (Lombardy zone E, residential) */
 const EPnren_BY_ERA = {
   "<1976": {
     min: 250,
@@ -1176,6 +1322,8 @@ const EPnren_BY_ERA = {
   }
 };
 const ERA_FROM_YEAR = y => !y ? "1976-1991" : y < 1976 ? "<1976" : y < 1991 ? "1976-1991" : y < 2005 ? "1991-2005" : y < 2015 ? "2005-2015" : ">2015";
+
+/* Primary energy non-renewable conversion factors (DM 26/6/2015 Tab.1) */
 const F_PNREN = {
   gas: 1.05,
   gpl: 1.05,
@@ -1184,6 +1332,8 @@ const F_PNREN = {
   elettricita: 1.95,
   teleriscaldamento: 1.50
 };
+
+/* CO2 emission factors kgCO2/kWh */
 const F_CO2 = {
   gas: 0.202,
   gpl: 0.227,
@@ -1192,6 +1342,8 @@ const F_CO2 = {
   elettricita: 0.257,
   teleriscaldamento: 0.200
 };
+
+/* ARERA Q2 2026 default tariffs */
 const TARIFFS = {
   ele: 0.3018,
   gas: 1.2105,
@@ -1200,8 +1352,12 @@ const TARIFFS = {
   fixed_ele: 45,
   fixed_gas: 70
 };
-const PCI_GAS = 9.45;
-const PCI_PELLET = 4.8;
+
+/* PCI (lower heating value) */
+const PCI_GAS = 9.45; // kWh/Smc
+const PCI_PELLET = 4.8; // kWh/kg
+
+/* Determine class from EPgl,nren / EPgl,nren,rif ratio (DDUO 2456/2017 Tab.4) */
 function classFromRatio(r) {
   if (r <= 0.40) return "A4";
   if (r <= 0.60) return "A3";
@@ -1214,9 +1370,13 @@ function classFromRatio(r) {
   if (r <= 3.50) return "F";
   return "G";
 }
+
+/* Reference EP for the standard building (zone E Lombardy) */
 function EPnren_rif(GG, S_su_V) {
-  return (45 + 25 * S_su_V) * (GG / 2100) + 14;
+  return (45 + 25 * S_su_V) * (GG / 2100) + 14; // kWh/m²·anno
 }
+
+/* Estimate pre-renovation EPgl,nren from user inputs or APE */
 function estimateEPnrenPre(d) {
   if (d.eCls && d.eCls !== "Unknown" && d.annualEnergy) {
     const a = parseFloat(d.area) || 85;
@@ -1225,8 +1385,11 @@ function estimateEPnrenPre(d) {
   const era = d.buildingEra || ERA_FROM_YEAR(parseInt(d.listingExtracted?.buildingYear));
   return EPnren_BY_ERA[era]?.def || 220;
 }
+
+/* Apply interventions multiplicatively to the heating-load fraction */
 function applyInterventions(EP_pre, interventions) {
   let EP = EP_pre;
+  /* Envelope-related reductions on heating demand (about 60% of EP) */
   const heatingShare = 0.60;
   const acsShare = 0.20;
   const coolingShare = 0.10;
@@ -1237,17 +1400,18 @@ function applyInterventions(EP_pre, interventions) {
   if (interventions.includes("Opaque envelope")) {
     H *= 0.62;
     C *= 0.85;
-  }
+  } // cappotto 35% / 15%
   if (interventions.includes("Transparent envelope")) {
     H *= 0.90;
     C *= 0.93;
-  }
+  } // serramenti 10% / 7%
   if (interventions.includes("Ventilation system")) {
     H *= 0.90;
-  }
+  } // VMC 10%
+  /* Plant changes */
   if (interventions.includes("Heating system")) {
     H *= 0.78;
-  }
+  } // caldaia condens. 22%
   if (interventions.includes("Complete energy upgrade")) {
     H *= 0.45;
     C *= 0.70;
@@ -1258,7 +1422,7 @@ function applyInterventions(EP_pre, interventions) {
   }
   if (interventions.includes("Renewable sources")) {
     W *= 0.40;
-  }
+  } // 60% ACS from solar/PV
   if (interventions.includes("Smart controls")) {
     H *= 0.95;
     C *= 0.95;
@@ -1269,6 +1433,8 @@ function applyInterventions(EP_pre, interventions) {
   }
   return Math.max(15, H + W + C + baseElec);
 }
+
+/* Decompose EP into gas + electricity consumption */
 function decomposeConsumption(EP, area, heatingVector, hasHeatPump) {
   const total_kWh = EP * area;
   const heating_kWh = total_kWh * 0.60;
@@ -1276,6 +1442,7 @@ function decomposeConsumption(EP, area, heatingVector, hasHeatPump) {
   const cooling_kWh = total_kWh * 0.10;
   const base_elec = total_kWh * 0.10;
   if (hasHeatPump) {
+    /* All H+W on electricity via SCOP=3.8 */
     const elec_total = (heating_kWh + acs_kWh) / 3.8 + cooling_kWh / 3.5 + base_elec + 2700;
     return {
       gas_Smc: 0,
@@ -1291,6 +1458,7 @@ function decomposeConsumption(EP, area, heatingVector, hasHeatPump) {
       pellet_kg: Math.round(pellet_kWh / (0.85 * PCI_PELLET))
     };
   }
+  /* Default: gas heating + electric cooling + base */
   const eta_H = 0.85;
   const gas_kWh = (heating_kWh + acs_kWh) / eta_H;
   const elec_kWh = cooling_kWh / 3.5 + base_elec + 2700;
@@ -1300,18 +1468,27 @@ function decomposeConsumption(EP, area, heatingVector, hasHeatPump) {
     pellet_kg: 0
   };
 }
+
+/* Cost from consumption */
 function annualCost(c) {
   return Math.round(c.gas_Smc * TARIFFS.gas + c.elec_kWh * TARIFFS.ele + c.pellet_kg * TARIFFS.pellet + (c.gas_Smc > 0 ? TARIFFS.fixed_gas : 0) + TARIFFS.fixed_ele);
 }
+
+/* CO2 from consumption */
 function annualCO2(c) {
   const gas_kWh = c.gas_Smc * PCI_GAS;
   return Math.round(gas_kWh * F_CO2.gas + c.elec_kWh * F_CO2.elettricita + c.pellet_kg * PCI_PELLET * F_CO2.pellet);
 }
+
+/* PV annual production (Lombardy ~1100 kWh/kWp) with autoconsumo factor */
 function pvProduction(kWp, hasBattery) {
   const factor = hasBattery ? 0.70 : 0.32;
-  return Math.round(kWp * 1100 * factor);
+  return Math.round(kWp * 1100 * factor); // kWh self-consumed
 }
+
+/* 30-year NPV with discount rate, energy escalation, tax deductions */
 function calcEnergyNPV(investment, taxDeductionRate, annualSaving, years = 30, discount = 0.04, energyEscalation = 0.03) {
+  /* Tax deduction recovered in 10 years (Ecobonus/Bonus Casa) */
   const annualDeduction = investment * taxDeductionRate / 10;
   let npv = -investment;
   const cashflow = [];
@@ -1333,6 +1510,8 @@ function calcEnergyNPV(investment, taxDeductionRate, annualSaving, years = 30, d
     paybackYears: investment > 0 && annualSaving > 0 ? +(investment * (1 - taxDeductionRate) / annualSaving).toFixed(1) : null
   };
 }
+
+/* Master function — runs the full pre/post + NPV pipeline */
 function runFullEnergyCalc(d, sol) {
   const area = parseFloat(d.area) || 85;
   const cityKey = (d.city || "").toLowerCase().trim();
@@ -1346,6 +1525,8 @@ function runFullEnergyCalc(d, sol) {
   const hasPdC_post = sol.ch.includes("Heating system") || sol.ch.includes("Complete energy upgrade");
   const cons_pre = decomposeConsumption(EP_pre, area, heatingVector, hasPdC_pre);
   let cons_post = decomposeConsumption(EP_post, area, heatingVector, hasPdC_post);
+
+  /* PV self-consumption subtracts from electricity */
   if (sol.ch.includes("Renewable sources") || sol.ch.includes("Complete energy upgrade")) {
     const kWp = 3,
       hasBattery = sol.ch.includes("Complete energy upgrade");
@@ -1359,9 +1540,12 @@ function runFullEnergyCalc(d, sol) {
   const cls_pre = classFromRatio(EP_pre / EPrif);
   const cls_post = classFromRatio(EP_post / EPrif);
   const saving_year = cost_pre - cost_post;
+
+  /* Investment subset for energy-only interventions */
   const energyInterv = ["Opaque envelope", "Transparent envelope", "Heating system", "Cooling system", "Renewable sources", "Ventilation system", "Complete energy upgrade", "Smart controls", "Other energy interventions"];
   const investmentEnergy = Math.round((sol.co.heating || 0) + (sol.co.cooling || 0) + (sol.co.windows || 0) + (sol.co.insulation_int || 0) + (sol.co.solar || 0) + (sol.co.ventilation || 0) + (sol.co.smart || 0) + (sol.co.led || 0));
-  const taxRate = 0.50;
+  const taxRate = 0.50; // Ecobonus primary residence 2026
+
   const npvResult = calcEnergyNPV(investmentEnergy, taxRate, saving_year, 30, 0.04, 0.03);
   const rapportoPre = EP_pre / EPrif;
   const rapportoPost = EP_post / EPrif;
@@ -1403,6 +1587,7 @@ function runFullEnergyCalc(d, sol) {
 function calcVal(a, ci, bd, ch, eB, eA, currentStatus) {
   const cityKey = (ci || "").toLowerCase().trim();
   let ref = CITY_PRICES[cityKey] || LOMBARDY_AVG;
+  /* Status-based discount on current value */
   const statusDiscount = {
     "Da ristrutturare": .82,
     "Buono / Abitabile": .92,
@@ -1412,6 +1597,7 @@ function calcVal(a, ci, bd, ch, eB, eA, currentStatus) {
   };
   const disc = statusDiscount[currentStatus] || .88;
   const pB = ref * disc;
+  /* Renovation uplift */
   let rP = 0;
   if (ch.includes("Finishes refresh")) rP += .04;
   if (ch.includes("Kitchen upgrade")) rP += .03;
@@ -1424,8 +1610,9 @@ function calcVal(a, ci, bd, ch, eB, eA, currentStatus) {
   const cG = Math.max(0, (ENERGY_RANK[eA] || 0) - (ENERGY_RANK[eB] || 0));
   const up = Math.min(.18, rP + Math.min(.09, cG * .015));
   const pA = pB * (1 + up);
+  /* Tax benefit calculation (2026 rates) */
   const taxableItems = ch.filter(c => INTERVENTIONS[c]?.tax50);
-  const taxBenefitRate = .36;
+  const taxBenefitRate = .36; /* 2026: 36% primary, 30% secondary — use 36% as default */
   const taxBenefitMax = 96000;
   const totalTaxable = Math.min(taxBenefitMax, Math.round(Object.entries(calcCosts(a, ch, "Contemporary", bd, 3)).filter(([k]) => !["total", "professional_fees"].includes(k)).reduce((s, [_, v]) => s + v, 0)));
   const taxBenefit = Math.round(totalTaxable * taxBenefitRate);
@@ -1441,6 +1628,8 @@ function calcVal(a, ci, bd, ch, eB, eA, currentStatus) {
 }
 const fmt = n => n == null ? "—" : "€" + n.toLocaleString("it-IT");
 const fmtK = n => n >= 1e3 ? "€" + (n / 1e3).toFixed(0) + "k" : "€" + n;
+
+/* 3-SOLUTION GENERATOR */
 const T_E = ["Finishes refresh", "Storage boost", "Ceiling renovation", "Wall treatments", "Other energy interventions"];
 const T_C = ["Kitchen upgrade", "Bathroom upgrade", "Electrical upgrade", "Plumbing upgrade", "Smart controls"];
 const T_P = ["Internal layout optimization", "Heating system", "Transparent envelope", "Opaque envelope", "Cooling system", "Renewable sources", "Complete energy upgrade", "Home office / flex room", "Ventilation system", "Bathroom addition"];
@@ -1483,6 +1672,12 @@ function genSols(d) {
   };
   return [mk("Essential", ess, .85, "Standard-grade: laminate, painted MDF, basic ceramic, standard fixtures"), mk("Balanced", bal, 1, "Mid-range " + d.style + ": " + (STYLES[d.style]?.mat || "quality finishes")), mk("Premium", pre, 1.25, "Premium " + d.style + ": high-end " + (STYLES[d.style]?.mat || "luxury finishes") + ", top fixtures, custom joinery")];
 }
+
+/* ══════════════════════════════════════════════════════════════
+   ITALY + LOMBARDY COMPLIANCE — HARD CONSTRAINTS
+   Compressed reference passed into every render prompt.
+   Full text lives in <script id="compliance-rules-md">.
+   ══════════════════════════════════════════════════════════════ */
 const COMPLIANCE_RULES = typeof document !== "undefined" && document.getElementById("compliance-rules-json") ? JSON.parse(document.getElementById("compliance-rules-json").textContent) : {};
 const COMPLIANCE_BRIEF = `
 ████ ITALY + LOMBARDY BUILDING CODE — HARD CONSTRAINTS (DM 5/7/1975 · DM 236/1989 · L.R. 12/2005 · DPR 380/2001 · NTC 2018 · D.Lgs 192/2005 · D.Lgs 42/2004) ████
@@ -1529,6 +1724,8 @@ function renderPrompt(d, sol, room) {
   const ep = d.extractedPlan;
   const roomKey = ["living", "kitchen", "bedroom", "bathroom", "corridor"].includes(room) ? room : null;
   const ex = roomKey ? roomData[roomKey]?.extractedData : null;
+
+  /* Precise dimensions from extracted data or manual entry */
   const dims = type => {
     const r = roomData[type];
     const exR = r?.extractedData;
@@ -1538,22 +1735,30 @@ function renderPrompt(d, sol, room) {
     if (w && l) return ` SURVEYED ROOM DIMENSIONS (authoritative): ${l.toFixed(1)}m long × ${w.toFixed(1)}m wide × ${ch.toFixed(1)}m ceiling. These are real measured dimensions — the render must match them exactly. Room area = ${(w * l).toFixed(1)}m².`;
     return ` Apartment total: ${parseFloat(d.area) || 85}m². Use realistic Italian apartment proportions for a ${room} room.`;
   };
+
+  /* Window constraints from extracted data */
   const winStr = type => {
     const exR = roomData[type]?.extractedData;
     if (!exR?.windows?.length) return "Windows: maintain existing positions exactly as in original photos/plan.";
     return "WINDOWS — extracted from your photos (positions are LOCKED):\n" + exR.windows.map((w, i) => `  Window ${i + 1}: ${w.wall} wall · ${w.positionOnWall} · ~${w.approximateWidthM || 1.2}m wide × ${w.approximateHeightM || 1.4}m tall · sill ${w.sillHeightM || 0.9}m from floor`).join("\n") + "\nNo new windows. No removed windows. No resized openings.";
   };
+
+  /* Door constraints */
   const doorStr = type => {
     const exR = roomData[type]?.extractedData;
     if (!exR?.doors?.length) return "Doors: maintain existing positions exactly as in original photos/plan.";
     return "DOORS — extracted (positions are LOCKED):\n" + exR.doors.map((door, i) => `  Door ${i + 1}: ${door.wall} wall · ${door.positionOnWall} · ${door.widthM || 0.9}m wide · swings ${door.swingDirection}`).join("\n");
   };
+
+  /* Immovable features */
   const immStr = type => {
     const exR = roomData[type]?.extractedData;
     const all = [...(exR?.immovableFeatures || []), ...(exR?.fixedArchitecturalElements || [])];
     if (!all.length) return "";
     return "IMMOVABLE ELEMENTS (surveyed from photos — must appear at exact positions):\n" + all.map(f => "  • " + f).join("\n");
   };
+
+  /* Plan-level extracted data */
   const planStr = ep ? `EXTRACTED FLOOR PLAN (authoritative spatial data):
   Total area: ${ep.totalArea || parseFloat(d.area) || 85}m²
   Shape: ${ep.overallShape || "see plan"}
@@ -1562,7 +1767,11 @@ function renderPrompt(d, sol, room) {
   Kitchen: ${ep.rooms?.kitchen?.positionInApartment || "as existing"} — FROZEN
   Load-bearing walls: ${(ep.loadBearingWalls || ["as surveyed"]).join(" · ")}
 ${Object.entries(ep.rooms || {}).filter(([, r]) => r.presentInPlan).map(([k, r]) => `  ${k}: ${r.widthM || "?"}×${r.lengthM || "?"}m · ${r.windowCount || 0} window(s) · walls N=${r.wallN || "?"} S=${r.wallS || "?"} E=${r.wallE || "?"} W=${r.wallW || "?"}`).join("\n")}` : `Apartment footprint FIXED at ${parseFloat(d.area) || 85}m² — all external walls unchanged.`;
+
+  /* Compile all area sources — listing > plan > manual */
   const totalAreaM2 = parseFloat(d.listingExtracted?.area || ep?.totalArea || d.area) || 85;
+
+  /* Build room area inventory */
   const roomAreas = Object.entries(roomData).filter(([, r]) => r?.length && r?.width).map(([k, r]) => ({
     key: k,
     area: (parseFloat(r.length) * parseFloat(r.width)).toFixed(1)
@@ -1597,6 +1806,8 @@ ALL OTHER SPACES ARE COMPLETELY FROZEN:
   const suffix = customStyle + fengshui + palette;
   const hasPhotos = ex || Object.values(roomData).some(r => (r.photos || []).length > 0);
   const photoNote = hasPhotos ? " THIS IS THE CLIENT'S ACTUAL ROOM — the render must look like the same physical space with only finishes and furniture replaced. Match the camera angle, room proportions, and all architectural features exactly." : " Render a realistic renovation of the existing space.";
+
+  /* Per-room client requirements */
   const roomReq = roomKey ? roomData[roomKey]?.requirements || "" : "";
   const reqBlock = roomReq ? `\nCLIENT'S SPECIFIC INSTRUCTIONS FOR THIS ROOM (follow exactly):\n"${roomReq}"\nThese instructions override style defaults but must NOT conflict with the spatial constraints above.` : "";
   const constraints = `
@@ -1666,6 +1877,15 @@ DRAW: thick outer perimeter (immovable) · structural walls (immovable) · thin 
   };
   return v[room] || v.living;
 }
+
+/* IKEA PRODUCT CATALOG — search URLs (always work even when products refresh) */
+/* ═══════════════════════════════════════════════════════════
+   POST-RENOVATION FURNISHING & PROCUREMENT MODEL
+   Italy/Lombardy provider catalogue (IKEA, Mondo Conv, Maisons,
+   Westwing, Scavolini, Febal, Veneta, Leroy Merlin, Tecnomat,
+   Unieuro, MediaWorld, Euronics, Poltronesofà, Natuzzi, Kasanova, Coin)
+   Selects items by room + style + budget; outputs BOM with links
+   ═══════════════════════════════════════════════════════════ */
 const PROVIDERS = {
   IKEA_IT: {
     name: "IKEA Italia",
@@ -1781,6 +2001,8 @@ const PROVIDERS = {
   }
 };
 const mkSearchUrl = (providerId, q) => PROVIDERS[providerId].search + encodeURIComponent(q);
+
+/* Procurement catalog by room — each item has provider, dims, material, colour, tier, cost */
 const PROCUREMENT_CATALOG = {
   entrance: [{
     cat: "shoe_cabinet",
@@ -2618,6 +2840,8 @@ const PROCUREMENT_CATALOG = {
     tier: "Essential"
   }]
 };
+
+/* Map renovation style to compatible providers */
 const STYLE_TO_PROVIDERS = {
   Japandi: {
     prefer: ["IKEA_IT", "MAISONS_DU_MONDE", "WESTWING", "SCAVOLINI"]
@@ -2644,23 +2868,31 @@ const STYLE_TO_PROVIDERS = {
     prefer: ["MAISONS_DU_MONDE", "WESTWING", "IKEA_IT"]
   }
 };
+
+/* Generate BOM (bill of materials) for a solution tier */
 function generateBOM(sol, d) {
-  const tier = sol.nm;
+  const tier = sol.nm; // Essential / Balanced / Premium
   const style = d.style || "Japandi";
   const preferredProviders = STYLE_TO_PROVIDERS[style]?.prefer || [];
   const area = parseFloat(d.area) || 85;
   const rooms = parseInt(d.rooms) || 3;
+
+  /* Pick one item per category per room */
   const selectedByRoom = {};
   Object.entries(PROCUREMENT_CATALOG).forEach(([roomKey, items]) => {
     selectedByRoom[roomKey] = [];
+    /* Group by category */
     const byCat = {};
     items.forEach(it => {
       if (!byCat[it.cat]) byCat[it.cat] = [];
       byCat[it.cat].push(it);
     });
+    /* For each category, pick best matching tier + provider preference */
     Object.entries(byCat).forEach(([cat, options]) => {
+      /* Filter to those matching tier */
       let candidates = options.filter(o => o.tier === tier);
       if (candidates.length === 0) {
+        /* Fallback: pick closest tier */
         const tierOrder = ["Essential", "Balanced", "Premium"];
         const targetIdx = tierOrder.indexOf(tier);
         for (let delta = 1; delta < 3 && candidates.length === 0; delta++) {
@@ -2669,6 +2901,7 @@ function generateBOM(sol, d) {
         }
       }
       if (candidates.length === 0) return;
+      /* Sort by provider preference */
       candidates.sort((a, b) => {
         const aPref = preferredProviders.indexOf(a.provider);
         const bPref = preferredProviders.indexOf(b.provider);
@@ -2678,8 +2911,9 @@ function generateBOM(sol, d) {
         return aPref - bPref;
       });
       const pick = candidates[0];
+      /* Quantity heuristics */
       let qty = 1;
-      if (cat === "bedside" || cat === "dining_chairs") qty = 1;
+      if (cat === "bedside" || cat === "dining_chairs") qty = 1; // already pack of 4 or pair
       if (cat === "bedroom_single" && rooms >= 4) qty = rooms - 2;
       selectedByRoom[roomKey].push({
         ...pick,
@@ -2687,6 +2921,8 @@ function generateBOM(sol, d) {
       });
     });
   });
+
+  /* Compute totals */
   let grandTotal = 0;
   const providerTotals = {};
   const byRoomTotals = {};
@@ -2722,14 +2958,17 @@ function generateBOM(sol, d) {
     style
   };
 }
+
+/* Calculate Feng Shui score (0-100) based on selected principles and interventions */
 function calcFengShuiScore(fengshui, changes, roomDetails) {
   if (!fengshui || fengshui.length === 0) return {
     score: 50,
     label: "Neutral",
     detail: "No feng shui preferences selected"
   };
-  let score = 30;
+  let score = 30; /* Base score */
   const details = [];
+  /* Points per selected principle */
   score += fengshui.length * 8;
   if (fengshui.includes("Command position (bed/desk facing door)")) {
     details.push("Command position +10");
@@ -2751,6 +2990,7 @@ function calcFengShuiScore(fengshui, changes, roomDetails) {
     details.push("Plant energy +5");
     score += 5;
   }
+  /* Bonus for complementary interventions */
   if (changes.includes("Internal layout optimization")) {
     details.push("Layout optimization aligns with chi flow +5");
     score += 5;
@@ -2763,6 +3003,7 @@ function calcFengShuiScore(fengshui, changes, roomDetails) {
     details.push("Fresh finishes clear stagnant energy +4");
     score += 4;
   }
+  /* Room proportions bonus */
   const rd = roomDetails || {};
   if (rd.living?.length && rd.living?.width) {
     const ratio = Math.max(parseFloat(rd.living.length), parseFloat(rd.living.width)) / Math.min(parseFloat(rd.living.length), parseFloat(rd.living.width));
@@ -2779,6 +3020,12 @@ function calcFengShuiScore(fengshui, changes, roomDetails) {
     details
   };
 }
+
+/* ══════════════════════════════════════════════════════════════
+   SPATIAL INTELLIGENCE PIPELINE
+   ══════════════════════════════════════════════════════════════ */
+
+/* Convert File → base64 data URL */
 async function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -2787,6 +3034,8 @@ async function fileToBase64(file) {
     r.readAsDataURL(file);
   });
 }
+
+/* Shared Gemini vision call — returns parsed JSON or null */
 async function geminiVision(file, textPrompt, apiKey) {
   try {
     const b64 = await fileToBase64(file);
@@ -2823,15 +3072,22 @@ async function geminiVision(file, textPrompt, apiKey) {
     return null;
   }
 }
+
+/* Extract spatial data from floor plan image */
 async function analyzePlanImage(file, apiKey) {
   return geminiVision(file, `You are an architectural plan analyst. Study this floor plan and extract ALL spatial data. Return ONLY valid JSON, no markdown:
 {"totalArea":<m² number>,"overallShape":"<footprint description>","entranceDoor":{"wall":"<which wall>","positionFromLeft":<0-1 fraction>,"widthM":<number>},"externalWalls":[{"direction":"<N/S/E/W>","lengthM":<number>,"windows":[{"positionFromLeft":<0-1>,"widthM":<number>,"heightM":<number>}]}],"rooms":{"living":{"presentInPlan":<bool>,"widthM":<number>,"lengthM":<number>,"wallN":"<external/internal/none>","wallS":"<external/internal/none>","wallE":"<external/internal/none>","wallW":"<external/internal/none>","windowCount":<number>,"doorOpenings":<number>,"positionInApartment":"<e.g. front-left>"},"kitchen":{"presentInPlan":<bool>,"widthM":<number>,"lengthM":<number>,"wallN":"","wallS":"","wallE":"","wallW":"","windowCount":<number>,"doorOpenings":<number>,"positionInApartment":""},"bedroom":{"presentInPlan":<bool>,"widthM":<number>,"lengthM":<number>,"wallN":"","wallS":"","wallE":"","wallW":"","windowCount":<number>,"doorOpenings":<number>,"positionInApartment":""},"bathroom":{"presentInPlan":<bool>,"widthM":<number>,"lengthM":<number>,"wallN":"","wallS":"","wallE":"","wallW":"","windowCount":<number>,"doorOpenings":<number>,"positionInApartment":"","plumbingWall":"<wall with pipes>"},"corridor":{"presentInPlan":<bool>,"widthM":<number>,"lengthM":<number>,"windowCount":<number>,"doorOpenings":<number>}},"loadBearingWalls":["<describe each>"],"nonStructuralPartitions":["<describe each>"],"notes":"<observations>"}`, apiKey);
 }
+
+/* Extract spatial features from a room photo */
 async function analyzeRoomPhoto(file, roomType, apiKey) {
   return geminiVision(file, `You are an architectural space analyst. Examine this ${roomType} photo and extract all fixed spatial features. Return ONLY valid JSON, no markdown:
 {"roomType":"${roomType}","estimatedDimensions":{"widthM":<number>,"lengthM":<number>,"ceilingHeightM":<number>},"windows":[{"wall":"<left/right/back/front from camera>","approximateWidthM":<number>,"approximateHeightM":<number>,"sillHeightM":<number>,"positionOnWall":"<left/center/right>","count":<number>}],"doors":[{"wall":"<which wall>","widthM":<number>,"swingDirection":"<inward/outward>","positionOnWall":"<left/center/right>"}],"fixedArchitecturalElements":["<pillars, beams, steps, niches, risers etc>"],"cameraViewpoint":"<wide/corner/straight-on>","naturalLightDirection":"<from which side>","existingFloor":"<material>","existingWalls":"<finish>","existingCeiling":"<height and finish>","immovableFeatures":["<structural elements, pipes, risers that cannot move>"]}`, apiKey);
 }
+
+/* Generate IKEA furniture list for a solution tier */
 function getIkeaList(sol, d) {
+  /* Backwards-compat shim: returns flat BOM list */
   if (!d) return [];
   const bom = generateBOM(sol, d);
   const list = [];
@@ -2865,10 +3121,27 @@ const SM = [{
   gr: "linear-gradient(135deg,#D4A373,#FAEBD7)"
 }];
 const CLS = ["#1B3A2D", "#2D5F45", "#3E8259", "#5BA67A", "#87A98F", "#B5CDB8", "#C87941", "#D4A373", "#8B6F4E"];
+
+/* ══════════════════════════════════════════════════════════════
+   BACKGROUND SPATIAL REFINEMENT PIPELINE
+   Google AI Studio: Imagen 3 (generation) + Gemini 2.0 Flash (validation)
+   Generate → Validate → Refine until score ≥ 80 (max 3 rounds)
+   ══════════════════════════════════════════════════════════════ */
+
 const PASS_SCORE = 80;
 const MAX_ROUNDS = 3;
 const RETRY_ADDENDUM = ["", " SPATIAL VIOLATION DETECTED IN PREVIOUS ATTEMPT. MANDATORY CORRECTIONS: (1) Count the windows in the original description and show EXACTLY that many in EXACT positions. (2) Room dimensions must match EXACTLY — no stretching or compressing. (3) Bathroom position FROZEN — do not move it. (4) Entrance door FROZEN — same wall, same position. (5) Total area must equal original. Regenerate with these corrections strictly applied.", " FINAL ATTEMPT — STRICT SPATIAL COMPLIANCE REQUIRED. The previous renders failed validation. You MUST reproduce the EXACT room shell from the original description: same window count, same window positions on same walls, same room proportions, same ceiling height, same bathroom location, same entrance door. The ONLY differences from the original should be: surface finishes, furniture (IKEA), and the specific client requirements listed. Any spatial deviation = immediate rejection."];
+
+/* ══════════════════════════════════════════════════════════════
+   IMAGE-TO-IMAGE PIPELINE
+   Pass original room photo/plan as input → model edits only
+   furniture & finishes, keeping all spatial structure intact
+   ══════════════════════════════════════════════════════════════ */
+
+/* Generate via image-to-image edit if original photo available,
+   otherwise fall back to text-to-image with constraints */
 async function generateWithImagen(prompt, apiKey, originalPhotoFile) {
+  /* ── Image-to-image: pass original photo as reference ── */
   if (originalPhotoFile) {
     try {
       const b64 = await fileToBase64(originalPhotoFile);
@@ -2926,6 +3199,8 @@ The result must look like a photograph of the SAME ROOM after renovation — not
       console.warn("Image-to-image failed, falling back:", e);
     }
   }
+
+  /* ── Fallback: text-to-image with full constraints ── */
   const res = await fetch(geminiUrl('gemini-2.5-flash-image', apiKey), {
     method: "POST",
     headers: {
@@ -2957,6 +3232,8 @@ The result must look like a photograph of the SAME ROOM after renovation — not
     mode: "text-to-image"
   };
 }
+
+/* Validate render via Gemini 2.0 Flash vision — returns validation object */
 async function validateRender(base64OrUrl, roomType, spatialData, apiKey) {
   if (!apiKey || !base64OrUrl) return {
     overallScore: null,
@@ -2971,6 +3248,8 @@ Windows: ${JSON.stringify(spatialData.windows || [])}
 Doors: ${JSON.stringify(spatialData.doors || [])}
 Fixed elements: ${(spatialData.fixedArchitecturalElements || []).join(", ")}
 Immovable: ${(spatialData.immovableFeatures || []).join(", ")}` : "No extracted spatial data.";
+
+    /* Determine if input is base64 data or a URL */
     const isBase64 = base64OrUrl.startsWith("data:");
     const imgPart = isBase64 ? {
       inlineData: {
@@ -3033,7 +3312,16 @@ Return ONLY valid JSON (no markdown):
     };
   }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   FAST IMAGE-TO-IMAGE PIPELINE
+   - One render per uploaded photo (parallel)
+   - Single round when original photo provided (no retry loop needed)
+   - Multi-round only for text-to-image fallback
+   ══════════════════════════════════════════════════════════════ */
+
 async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onProgress, originalPhotoFile) {
+  /* ── Fast path: image-to-image needs only 1 round ── */
   if (originalPhotoFile) {
     onProgress({
       stage: "generating",
@@ -3048,6 +3336,8 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
       mode: "image-edit"
     };
   }
+
+  /* ── Slower path: text-to-image with up to MAX_ROUNDS ── */
   let bestDataUrl = null,
     bestScore = -1,
     bestValidation = null;
@@ -3091,6 +3381,8 @@ async function runRefinementPipeline(prompt, apiKey, spatialData, roomType, onPr
     mode: "text-to-image"
   };
 }
+
+/* ══════ RENDER TILE — shows only the final approved render ══════ */
 function AIRenderTile({
   prompt,
   style,
@@ -3101,7 +3393,7 @@ function AIRenderTile({
   originalPhotoFile,
   batchTrigger
 }) {
-  const [phase, setPhase] = useState("idle");
+  const [phase, setPhase] = useState("idle"); // idle | pipeline | done | error
   const [progress, setProgress] = useState({
     stage: "generating",
     round: 1,
@@ -3130,6 +3422,8 @@ function AIRenderTile({
       setPhase("error");
     }
   }, [prompt, apiKey, spatialData, room, originalPhotoFile]);
+
+  /* Auto-start when batch trigger fires (only if idle) */
   useEffect(() => {
     if (batchTrigger > 0 && phase === "idle") start();
   }, [batchTrigger]);
@@ -3143,40 +3437,42 @@ function AIRenderTile({
     validating: "🔍",
     refining: "🔧"
   };
+
+  /* Score badge colour */
   const sc = finalScore;
   const scoreClr = sc == null ? "#78716C" : sc >= 80 ? "#1B3A2D" : sc >= 60 ? "#C87941" : "#B91C1C";
   const scoreLabel = sc == null ? "" : sc >= 80 ? "✓ Verified" : sc >= 60 ? "~ Acceptable" : "⚠ Best attempt";
-  return React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       padding: 0,
       overflow: "hidden",
       border: "1px solid #E2DCD2"
     }
-  }, phase === "idle" && React.createElement("div", {
+  }, phase === "idle" && /*#__PURE__*/React.createElement("div", {
     className: "render-idle",
     onClick: start,
     style: {
       background: "linear-gradient(135deg," + (STYLES[style]?.pal || ["#F5F0E8"])[2] + "88," + (STYLES[style]?.pal || ["#E8DCC8"])[1] + "55)"
     }
-  }, React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 36,
       marginBottom: 6
     }
-  }, "\uD83C\uDFA8"), React.createElement("span", {
+  }, "\uD83C\uDFA8"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       fontWeight: 700,
       color: "#1B3A2D"
     }
-  }, "Generate Render"), React.createElement("span", {
+  }, "Generate Render"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 11,
       color: "#78716C",
       marginTop: 2
     }
-  }, room, " \xB7 ", solName), React.createElement("span", {
+  }, room, " \xB7 ", solName), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9,
       color: "#87A98F",
@@ -3185,7 +3481,7 @@ function AIRenderTile({
       background: "#D1E7DD",
       borderRadius: 10
     }
-  }, originalPhotoFile ? "🖼 Image-to-image · Spatial Refinement" : "Text-to-image · Spatial Refinement"), originalPhotoFile && React.createElement("span", {
+  }, originalPhotoFile ? "🖼 Image-to-image · Spatial Refinement" : "Text-to-image · Spatial Refinement"), originalPhotoFile && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9,
       color: "#1B3A2D",
@@ -3194,35 +3490,35 @@ function AIRenderTile({
       background: "#B5CDB8",
       borderRadius: 8
     }
-  }, "\u2713 Original photo attached \u2014 editing in place")), phase === "pipeline" && React.createElement("div", {
+  }, "\u2713 Original photo attached \u2014 editing in place")), phase === "pipeline" && /*#__PURE__*/React.createElement("div", {
     className: "render-loading",
     style: {
       flexDirection: "column",
       gap: 0,
       padding: 24
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 10,
       alignItems: "center",
       marginBottom: 18
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "spinner"
-  }), React.createElement("div", null, React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
       color: "#1B3A2D"
     }
-  }, stageIcon[progress.stage], " ", stageLabel[progress.stage]), React.createElement("div", {
+  }, stageIcon[progress.stage], " ", stageLabel[progress.stage]), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#78716C",
       marginTop: 2
     }
-  }, "Round ", progress.round, " of ", progress.total, " \xB7 ", room, " \xB7 ", solName))), React.createElement("div", {
+  }, "Round ", progress.round, " of ", progress.total, " \xB7 ", room, " \xB7 ", solName))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -3242,16 +3538,16 @@ function AIRenderTile({
   }].map((s, i) => {
     const active = progress.stage === s.k;
     const done = progress.stage === "validating" && s.k === "generating" || progress.stage === "refining" && s.k !== "refining";
-    return React.createElement(React.Fragment, {
+    return /*#__PURE__*/React.createElement(React.Fragment, {
       key: s.k
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         gap: 3
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 28,
         height: 28,
@@ -3263,17 +3559,17 @@ function AIRenderTile({
         fontSize: 12,
         transition: "all .3s"
       }
-    }, done ? "✓" : React.createElement("span", {
+    }, done ? "✓" : /*#__PURE__*/React.createElement("span", {
       style: {
         color: active ? "#fff" : "#B8AFA5"
       }
-    }, i + 1)), React.createElement("span", {
+    }, i + 1)), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9,
         color: active ? "#1B3A2D" : "#78716C",
         fontWeight: active ? 700 : 400
       }
-    }, s.l)), i < 2 && React.createElement("div", {
+    }, s.l)), i < 2 && /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         height: 2,
@@ -3283,18 +3579,18 @@ function AIRenderTile({
         transition: "background .3s"
       }
     }));
-  })), React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#87A98F",
       marginTop: 14,
       textAlign: "center"
     }
-  }, "Auto-refining for spatial fidelity \u2014 only the approved result will be shown")), phase === "done" && imgUrl && React.createElement("div", {
+  }, "Auto-refining for spatial fidelity \u2014 only the approved result will be shown")), phase === "done" && imgUrl && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative"
     }
-  }, React.createElement("img", {
+  }, /*#__PURE__*/React.createElement("img", {
     src: imgUrl,
     alt: style + " " + room + " — " + solName,
     className: "render-img",
@@ -3302,7 +3598,7 @@ function AIRenderTile({
       setPhase("error");
       setError("Image failed to load");
     }
-  }), sc != null && React.createElement("div", {
+  }), sc != null && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       top: 8,
@@ -3315,30 +3611,30 @@ function AIRenderTile({
       color: "#fff",
       backdropFilter: "blur(4px)"
     }
-  }, scoreLabel, " ", sc, "/100")), phase === "error" && React.createElement("div", {
+  }, scoreLabel, " ", sc, "/100")), phase === "error" && /*#__PURE__*/React.createElement("div", {
     className: "render-idle",
     onClick: start,
     style: {
       background: "#FEF2F2"
     }
-  }, React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 28
     }
-  }, "\u26A0\uFE0F"), React.createElement("span", {
+  }, "\u26A0\uFE0F"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: "#B91C1C",
       fontWeight: 600,
       marginTop: 4
     }
-  }, error), React.createElement("span", {
+  }, error), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#B91C1C",
       marginTop: 2
     }
-  }, "Click to retry")), React.createElement("div", {
+  }, "Click to retry")), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "8px 12px",
       borderTop: "1px solid #ECE8E1",
@@ -3347,22 +3643,22 @@ function AIRenderTile({
       alignItems: "center",
       justifyContent: "space-between"
     }
-  }, React.createElement("div", null, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 600
     }
-  }, room, " \u2014 ", solName), React.createElement("div", {
+  }, room, " \u2014 ", solName), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#78716C"
     }
-  }, style, phase === "done" ? " · spatially verified render" : "")), React.createElement("div", {
+  }, style, phase === "done" ? " · spatially verified render" : "")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 4
     }
-  }, phase === "done" && React.createElement("button", {
+  }, phase === "done" && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-g",
     style: {
       padding: "3px 8px",
@@ -3373,7 +3669,7 @@ function AIRenderTile({
       setImgUrl("");
       setFinalScore(null);
     }
-  }, "\uD83D\uDD04"), phase === "done" && imgUrl && React.createElement("a", {
+  }, "\uD83D\uDD04"), phase === "done" && imgUrl && /*#__PURE__*/React.createElement("a", {
     href: imgUrl,
     target: "_blank",
     rel: "noopener noreferrer",
@@ -3385,6 +3681,10 @@ function AIRenderTile({
     }
   }, "\uD83D\uDD17"))));
 }
+
+/* ══════ INPUT STEPS ══════ */
+
+/* STEP 1: Proprietà — with listing link, status, energy, floor */
 function S1({
   d,
   u,
@@ -3411,6 +3711,8 @@ function S1({
       dbg.push(s);
     };
     const SCHEMA = '{"address":"","city":"","cap":"","area":<m²>,"rooms":<n>,"bathrooms":<n>,"floor":"","ceiling":<m>,"pType":"<Apartment|Attico|Loft|Monolocale|Villa|Mansarda>","currentStatus":"<Da ristrutturare|Buono / Abitabile|Ristrutturato|Ottimo|Nuovo / In costruzione>","eCls":"<A4-G>","annualEnergy":<n>,"heatingType":"<Centralizzato|Autonomo|Pompa di calore|Nessuno>","price":<€>,"description":"","features":[],"buildingYear":<year>,"condominium":""}';
+
+    /* IMPORTANT: instruct extraction WITHOUT quoting — bypasses Gemini's RECITATION filter */
     const ANTI_RECITATION = 'IMPORTANT: Do NOT quote, copy or repeat any text from the source page verbatim. Extract NUMERIC values, single-word category enums, and paraphrased summaries only. For the description field, write a brief paraphrase in your own words (max 30 words). This is critical to avoid recitation filtering.';
     const extractFromSchema = o => {
       if (!o || typeof o !== 'object') return {};
@@ -3426,6 +3728,50 @@ function S1({
         out.cap = o.address.postalCode;
       }
       return out;
+    };
+
+    /* Shared plain-text miner for Italian real-estate copy — fills only missing keys */
+    const mineText = (txt, mined) => {
+      const grab = re => {
+        const mm = txt.match(re);
+        return mm ? mm[1] : null;
+      };
+      if (!mined.area) {
+        const a = grab(/(\d{2,4})\s*(?:m²|mq\b|metri\s*quadr)/i) || grab(/superficie[^\d]{0,14}(\d{2,4})/i);
+        if (a) mined.area = parseFloat(a);
+      }
+      if (!mined.rooms) {
+        const r0 = grab(/(\d{1,2})\s*(?:locali|vani\b)/i);
+        if (r0) mined.rooms = parseInt(r0);
+      }
+      if (!mined.bathrooms) {
+        const b0 = grab(/(\d{1,2})\s*bagn/i);
+        if (b0) mined.bathrooms = parseInt(b0);
+      }
+      if (!mined.eCls) {
+        const e0 = grab(/classe\s*energetica[:\s]*([A-G][1-4]?)\b/i) || grab(/\bAPE[:\s]*([A-G][1-4]?)\b/i) || grab(/\bclasse\s+([A-G][1-4]?)\b/i);
+        if (e0) mined.eCls = e0.toUpperCase();
+      }
+      if (!mined.price) {
+        const p0 = grab(/€\s*([\d.]{4,})/) || grab(/([\d.]{5,})\s*€/) || grab(/prezzo[^\d]{0,14}([\d.]{5,})/i);
+        if (p0) {
+          const n = parseInt(p0.replace(/[.\s]/g, ''));
+          if (n >= 10000) mined.price = n;
+        }
+      }
+      if (!mined.floor) {
+        const f0 = grab(/piano\s*([0-9]{1,2})/i) || grab(/([0-9]{1,2})°\s*piano/i);
+        if (f0) mined.floor = f0;
+      }
+      if (!mined.ceiling) {
+        const h0 = grab(/altezza[^\d]{0,10}([2-4][.,]\d{1,2})\s*m/i);
+        if (h0) mined.ceiling = parseFloat(h0.replace(',', '.'));
+      }
+      if (!mined.cap) {
+        const c0 = grab(/\b(\d{5})\b/);
+        if (c0) mined.cap = c0;
+      }
+      return mined;
     };
     const tryGemini = async (model, body, label, timeoutMs = 15000) => {
       if (!apiKey) {
@@ -3485,6 +3831,8 @@ function S1({
         return null;
       }
     };
+
+    /* === Attempt A: paraphrase-style URL inference (avoids RECITATION) === */
     const attemptPlain = async () => {
       const body = {
         contents: [{
@@ -3500,6 +3848,8 @@ function S1({
       };
       return tryGemini('gemini-2.5-flash', body, 'A:plain', 11000);
     };
+
+    /* === Attempt B: google_search with paraphrase instruction === */
     const attemptSearch = async () => {
       const body = {
         contents: [{
@@ -3535,6 +3885,8 @@ function S1({
       }
       return r;
     };
+
+    /* === Attempt C: url_context with paraphrase + retry === */
     const attemptUrlCtx = async () => {
       const body = {
         contents: [{
@@ -3570,6 +3922,8 @@ function S1({
       }
       return r;
     };
+
+    /* === Attempt D: gemini-2.0-flash search === */
     const attempt20 = async () => {
       const body = {
         contents: [{
@@ -3587,20 +3941,23 @@ function S1({
       };
       return tryGemini('gemini-2.0-flash', body, 'D:2.0search', 14000);
     };
+
+    /* === Attempt E: proxy scrape + text-mine === */
     const attemptScrape = async () => {
-      const proxies = [u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u), u => 'https://corsproxy.io/?' + encodeURIComponent(u), u => 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u)];
+      const proxies = [u => 'https://r.jina.ai/' + u, /* reader proxy — returns clean text, bypasses most anti-bot blocking */
+      u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u), u => 'https://corsproxy.io/?' + encodeURIComponent(u), u => 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u)];
       let html = '';
       for (const p of proxies) {
         try {
           const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 6000);
+          const t = setTimeout(() => ctrl.abort(), 9000);
           const r = await fetch(p(url), {
             signal: ctrl.signal
           });
           clearTimeout(t);
           if (r.ok) {
             const txt = await r.text();
-            if (txt && txt.length > 3000 && !/<title>[^<]*(403|404|denied)/i.test(txt)) {
+            if (txt && txt.length > 800 && !/<title>[^<]*(403|404|denied)/i.test(txt)) {
               html = txt;
               log('E:proxy ' + txt.length + 'ch');
               break;
@@ -3620,25 +3977,13 @@ function S1({
           });
         } catch (e) {}
       });
-      const rx = {
-        area: /(\d{2,4})\s*(?:m²|mq)/i,
-        rooms: /(\d{1,2})\s*(?:locali|stanze|vani)/i,
-        bathrooms: /(\d{1,2})\s*bagn/i,
-        eCls: /classe energetica[:\s]*([A-G][1-4]?)/i,
-        price: /€\s*([\d.,]{4,})/,
-        cap: /\b(\d{5})\b/
-      };
-      const m = k => (txt.match(rx[k]) || [])[1];
-      if (!mined.area && m('area')) mined.area = parseFloat(m('area'));
-      if (!mined.rooms && m('rooms')) mined.rooms = parseInt(m('rooms'));
-      if (!mined.bathrooms && m('bathrooms')) mined.bathrooms = parseInt(m('bathrooms'));
-      if (!mined.eCls && m('eCls')) mined.eCls = m('eCls').toUpperCase();
-      if (!mined.price && m('price')) mined.price = parseInt(m('price').replace(/[.,]/g, ''));
-      if (!mined.cap && m('cap')) mined.cap = m('cap');
+      mineText(txt, mined);
       const keys = Object.keys(mined).filter(k => mined[k]);
       log('E:mine ' + keys.length + 'k');
       return keys.length > 0 ? mined : null;
     };
+
+    /* === Attempt F: fetch via our Cloudflare Worker (reliable, server-side) === */
     const attemptWorkerScrape = async () => {
       if (!HAS_PROXY) return null;
       let html = '';
@@ -3663,6 +4008,8 @@ function S1({
         log('F:worker err ' + (e.name === 'AbortError' ? 'TIMEOUT' : e.message));
         return null;
       }
+
+      // 1) Mine JSON-LD and regex
       const mined = {};
       [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].forEach(m => {
         try {
@@ -3674,21 +4021,9 @@ function S1({
         } catch (e) {}
       });
       const txt = html.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      const rx = {
-        area: /(\d{2,4})\s*(?:m²|mq)/i,
-        rooms: /(\d{1,2})\s*(?:locali|stanze|vani)/i,
-        bathrooms: /(\d{1,2})\s*bagn/i,
-        eCls: /classe energetica[:\s]*([A-G][1-4]?)/i,
-        price: /€\s*([\d.,]{4,})/,
-        cap: /\b(\d{5})\b/
-      };
-      const mm = k => (txt.match(rx[k]) || [])[1];
-      if (!mined.area && mm('area')) mined.area = parseFloat(mm('area'));
-      if (!mined.rooms && mm('rooms')) mined.rooms = parseInt(mm('rooms'));
-      if (!mined.bathrooms && mm('bathrooms')) mined.bathrooms = parseInt(mm('bathrooms'));
-      if (!mined.eCls && mm('eCls')) mined.eCls = mm('eCls').toUpperCase();
-      if (!mined.price && mm('price')) mined.price = parseInt(mm('price').replace(/[.,]/g, ''));
-      if (!mined.cap && mm('cap')) mined.cap = mm('cap');
+      mineText(txt, mined);
+
+      // 2) Enrich with Gemini extraction on cleaned HTML
       const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ').slice(0, 50000);
       const body = {
         contents: [{
@@ -3712,6 +4047,8 @@ function S1({
       log('F:worker total ' + keys.length + 'k');
       return keys.length > 0 ? merged : null;
     };
+
+    /* === Attempt 0: deterministic URL slug parser — always returns something useful === */
     const urlSlug = (() => {
       const out = {};
       const slug = url.toLowerCase();
@@ -3749,7 +4086,48 @@ function S1({
       log('0:slug ' + k + 'k ' + Object.keys(out).join(','));
       return k > 0 ? out : null;
     })();
-    const results = await Promise.all([Promise.resolve(urlSlug), attemptWorkerScrape().catch(() => null), attemptPlain().catch(() => null), attemptSearch().catch(() => null), attemptUrlCtx().catch(() => null), attempt20().catch(() => null), attemptScrape().catch(() => null)]);
+
+    /* === Attempt G: reader proxy → clean page text → Gemini structured extract ===
+       Works without the Cloudflare Worker (direct-key mode): a reader proxy
+       fetches the listing as plain text — bypassing site anti-bot blocking —
+       then Gemini extracts fields from the text WE supply, so there is no live
+       page for the recitation filter to guard. */
+    const attemptReaderAI = async () => {
+      if (!apiKey) return null;
+      let text = '';
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 12000);
+        const r = await fetch('https://r.jina.ai/' + url, {
+          signal: ctrl.signal,
+          headers: {
+            'Accept': 'text/plain'
+          }
+        });
+        clearTimeout(t);
+        if (r.ok) {
+          text = await r.text();
+          log('G:reader ' + text.length + 'ch');
+        } else log('G:reader HTTP ' + r.status);
+      } catch (e) {
+        log('G:reader ' + (e.name === 'AbortError' ? 'TIMEOUT' : e.message));
+      }
+      if (!text || text.length < 200) return null;
+      const body = {
+        contents: [{
+          parts: [{
+            text: 'Below is the already-fetched readable text of an Italian real-estate listing page (annuncio immobiliare). Extract the property fields from it. ' + ANTI_RECITATION + '\n\n=== PAGE TEXT (truncated) ===\n' + text.slice(0, 14000) + '\n=== END PAGE TEXT ===\n\nReturn JSON only matching this schema (use null for anything not present):\n' + SCHEMA
+          }]
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1500,
+          responseMimeType: 'application/json'
+        }
+      };
+      return tryGemini('gemini-2.5-flash', body, 'G:reader-ai', 25000);
+    };
+    const results = await Promise.all([Promise.resolve(urlSlug), attemptWorkerScrape().catch(() => null), attemptReaderAI().catch(() => null), attemptPlain().catch(() => null), attemptSearch().catch(() => null), attemptUrlCtx().catch(() => null), attempt20().catch(() => null), attemptScrape().catch(() => null)]);
     log('done ' + results.map(x => x && x !== 'RETRY_PARAPHRASE' ? Object.keys(x).filter(k => x[k]).length : '-').join('/'));
     const parsed = {};
     results.filter(r => r && r !== 'RETRY_PARAPHRASE').forEach(r => {
@@ -3805,6 +4183,8 @@ function S1({
     setFetchDbg(dbg);
     setFetching(false);
   };
+
+  /* Schema.org extractor for JSON-LD blocks */
   const extractFromSchema = o => {
     if (!o || typeof o !== 'object') return {};
     const out = {};
@@ -3824,30 +4204,30 @@ function S1({
     return out;
   };
   const le = d.listingExtracted;
-  return React.createElement("div", null, React.createElement("h2", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 24,
       color: "#1B3A2D",
       marginBottom: 4
     }
-  }, "Propriet\xE0"), React.createElement("p", {
+  }, "Propriet\xE0"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#78716C",
       marginBottom: 14
     }
-  }, "Enter apartment details. Paste a listing URL to auto-extract dimensions, area, and room data \u2014 these become hard spatial constraints."), React.createElement("div", {
+  }, "Enter apartment details. Paste a listing URL to auto-extract dimensions, area, and room data \u2014 these become hard spatial constraints."), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "\uD83D\uDCCE Listing URL \u2014 AI Spatial Extraction"), React.createElement("div", {
+  }, "\uD83D\uDCCE Listing URL \u2014 AI Spatial Extraction"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
       marginBottom: 8
     }
-  }, React.createElement("input", {
+  }, /*#__PURE__*/React.createElement("input", {
     value: d.listingUrl || "",
     onChange: e => u({
       ...d,
@@ -3857,7 +4237,7 @@ function S1({
     style: {
       flex: 1
     }
-  }), React.createElement("button", {
+  }), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-g",
     onClick: fetchListing,
     disabled: fetching || !d.listingUrl || !apiKey,
@@ -3865,13 +4245,13 @@ function S1({
       whiteSpace: "nowrap",
       fontSize: 12
     }
-  }, fetching ? "Extracting..." : "📥 Extract")), !apiKey && d.listingUrl && React.createElement("div", {
+  }, fetching ? "Extracting..." : "📥 Extract")), !apiKey && d.listingUrl && /*#__PURE__*/React.createElement("div", {
     className: "note note-warn",
     style: {
       marginBottom: 8,
       fontSize: 11
     }
-  }, "\u26A0\uFE0F Enter your Google AI Studio key in the header to enable listing extraction."), fetching && React.createElement("div", {
+  }, "\u26A0\uFE0F Enter your Google AI Studio key in the header to enable listing extraction."), fetching && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -3882,31 +4262,31 @@ function S1({
       fontSize: 11,
       color: "#1B3A2D"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "spinner",
     style: {
       width: 18,
       height: 18,
       borderWidth: 2
     }
-  }), " Gemini is reading the listing and auto-filling all property fields\u2026"), fetchErr && !fetching && React.createElement("div", {
+  }), " Gemini is reading the listing and auto-filling all property fields\u2026"), fetchErr && !fetching && /*#__PURE__*/React.createElement("div", {
     className: "note note-warn",
     style: {
       marginTop: 8,
       fontSize: 11,
       lineHeight: 1.5
     }
-  }, "\u26A0\uFE0F ", fetchErr, fetchDbg.length > 0 && React.createElement("details", {
+  }, "\u26A0\uFE0F ", fetchErr, fetchDbg.length > 0 && /*#__PURE__*/React.createElement("details", {
     style: {
       marginTop: 6
     }
-  }, React.createElement("summary", {
+  }, /*#__PURE__*/React.createElement("summary", {
     style: {
       cursor: "pointer",
       fontWeight: 600,
       fontSize: 10.5
     }
-  }, "Show attempt log (", fetchDbg.length, " lines)"), React.createElement("pre", {
+  }, "Show attempt log (", fetchDbg.length, " lines)"), /*#__PURE__*/React.createElement("pre", {
     style: {
       marginTop: 6,
       padding: 8,
@@ -3920,7 +4300,7 @@ function S1({
       fontFamily: "ui-monospace,monospace",
       whiteSpace: "pre-wrap"
     }
-  }, fetchDbg.join("\n")))), le && React.createElement("div", {
+  }, fetchDbg.join("\n")))), le && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       padding: 14,
@@ -3928,36 +4308,36 @@ function S1({
       borderRadius: 10,
       border: "1px solid #B5CDB8"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 8,
       marginBottom: 10
     }
-  }, React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 18
     }
-  }, "\u2705"), React.createElement("div", null, React.createElement("div", {
+  }, "\u2705"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 700,
       color: "#1B3A2D"
     }
-  }, "Listing extracted \u2014 all fields auto-populated below"), React.createElement("div", {
+  }, "Listing extracted \u2014 all fields auto-populated below"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#78716C"
     }
-  }, "Fields highlighted in green were filled from the listing"))), React.createElement("div", {
+  }, "Fields highlighted in green were filled from the listing"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr 1fr",
       gap: 6,
       fontSize: 11
     }
-  }, [["📍 Address", le.address], ["🏙 City", le.city], ["📮 CAP", le.cap], ["📐 Area", le.area ? le.area + "m² — FIXED" : null], ["🛏 Rooms", le.rooms], ["🚿 Bathrooms", le.bathrooms], ["🏢 Floor", le.floor], ["↕ Ceiling", le.ceiling ? le.ceiling + "m" : null], ["🏠 Type", le.pType], ["🔧 Status", le.currentStatus], ["⚡ Energy class", le.eCls], ["🔥 Heating", le.heatingType], ["📊 Annual energy", le.annualEnergy ? le.annualEnergy + " kWh" : null], ["💰 Price", le.price ? "€" + le.price?.toLocaleString("it-IT") : null], ["💶 €/m²", le.pricePerSqm ? "€" + le.pricePerSqm : null], ["☀️ Exposure", le.exposure], ["🏗 Built", le.buildingYear], ["🏛 Condo fees", le.condominium]].filter(([, v]) => v).map(([k, v]) => React.createElement("div", {
+  }, [["📍 Address", le.address], ["🏙 City", le.city], ["📮 CAP", le.cap], ["📐 Area", le.area ? le.area + "m² — FIXED" : null], ["🛏 Rooms", le.rooms], ["🚿 Bathrooms", le.bathrooms], ["🏢 Floor", le.floor], ["↕ Ceiling", le.ceiling ? le.ceiling + "m" : null], ["🏠 Type", le.pType], ["🔧 Status", le.currentStatus], ["⚡ Energy class", le.eCls], ["🔥 Heating", le.heatingType], ["📊 Annual energy", le.annualEnergy ? le.annualEnergy + " kWh" : null], ["💰 Price", le.price ? "€" + le.price?.toLocaleString("it-IT") : null], ["💶 €/m²", le.pricePerSqm ? "€" + le.pricePerSqm : null], ["☀️ Exposure", le.exposure], ["🏗 Built", le.buildingYear], ["🏛 Condo fees", le.condominium]].filter(([, v]) => v).map(([k, v]) => /*#__PURE__*/React.createElement("div", {
     key: k,
     style: {
       padding: "5px 8px",
@@ -3965,35 +4345,35 @@ function S1({
       borderRadius: 6,
       borderLeft: "3px solid #1B3A2D"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 9,
       color: "#78716C",
       fontWeight: 600
     }
-  }, k), React.createElement("div", {
+  }, k), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 600,
       color: "#1B3A2D"
     }
-  }, v)))), le.features?.length > 0 && React.createElement("div", {
+  }, v)))), le.features?.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#78716C",
       marginBottom: 4
     }
-  }, "Features:"), React.createElement("div", {
+  }, "Features:"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
       gap: 3
     }
-  }, le.features.map((f, i) => React.createElement("span", {
+  }, le.features.map((f, i) => /*#__PURE__*/React.createElement("span", {
     key: i,
     style: {
       padding: "2px 8px",
@@ -4002,7 +4382,7 @@ function S1({
       fontSize: 10,
       color: "#1B3A2D"
     }
-  }, f)))), le.spatialNotes && React.createElement("div", {
+  }, f)))), le.spatialNotes && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       padding: "8px 10px",
@@ -4012,7 +4392,7 @@ function S1({
       color: "#7D5A00",
       borderLeft: "3px solid #FEE08B"
     }
-  }, "\uD83D\uDCD0 ", le.spatialNotes), le.description && React.createElement("div", {
+  }, "\uD83D\uDCD0 ", le.spatialNotes), le.description && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       padding: "8px 10px",
@@ -4024,11 +4404,11 @@ function S1({
       maxHeight: 80,
       overflow: "hidden"
     }
-  }, le.description?.slice(0, 300), le.description?.length > 300 ? "…" : ""))), React.createElement("div", {
+  }, le.description?.slice(0, 300), le.description?.length > 300 ? "…" : ""))), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "Property Details ", le && React.createElement("span", {
+  }, "Property Details ", le && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9,
       padding: "1px 7px",
@@ -4038,20 +4418,20 @@ function S1({
       fontWeight: 700,
       marginLeft: 6
     }
-  }, "\u2713 Auto-filled from listing")), React.createElement("div", {
+  }, "\u2713 Auto-filled from listing")), /*#__PURE__*/React.createElement("div", {
     className: "grid2"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       gridColumn: "1/3"
     }
-  }, React.createElement("label", {
+  }, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Address ", le?.address && React.createElement("span", {
+  }, "Address ", le?.address && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     value: d.address,
     onChange: e => u({
       ...d,
@@ -4062,14 +4442,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "City ", le?.city && React.createElement("span", {
+  }, "City ", le?.city && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     value: d.city,
     onChange: e => u({
       ...d,
@@ -4080,14 +4460,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "CAP ", le?.cap && React.createElement("span", {
+  }, "CAP ", le?.cap && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     value: d.cap || "",
     onChange: e => u({
       ...d,
@@ -4098,14 +4478,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Floor Area (m\xB2) ", le?.area && React.createElement("span", {
+  }, "Floor Area (m\xB2) ", le?.area && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: d.area,
     onChange: e => u({
@@ -4116,14 +4496,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Rooms ", le?.rooms && React.createElement("span", {
+  }, "Rooms ", le?.rooms && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: d.rooms,
     onChange: e => u({
@@ -4134,14 +4514,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Floor ", le?.floor && React.createElement("span", {
+  }, "Floor ", le?.floor && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.floor || "3",
     onChange: e => u({
       ...d,
@@ -4151,16 +4531,16 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, ["Ground", "Mezzanino", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10+", "Mansarda", "Attico"].map(o => React.createElement("option", {
+  }, ["Ground", "Mezzanino", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10+", "Mansarda", "Attico"].map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o)))), React.createElement("div", null, React.createElement("label", {
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Ceiling Height (m) ", le?.ceiling && React.createElement("span", {
+  }, "Ceiling Height (m) ", le?.ceiling && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     type: "number",
     step: "0.1",
     value: d.ceiling || "2.7",
@@ -4172,14 +4552,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Property Type ", le?.pType && React.createElement("span", {
+  }, "Property Type ", le?.pType && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.pType || "Apartment",
     onChange: e => u({
       ...d,
@@ -4189,13 +4569,13 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, ["Apartment", "Attico", "Loft", "Monolocale", "Villa", "Mansarda"].map(o => React.createElement("option", {
+  }, ["Apartment", "Attico", "Loft", "Monolocale", "Villa", "Mansarda"].map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o)))))), React.createElement("div", {
+  }, o)))))), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "Current Status & Energy ", le && React.createElement("span", {
+  }, "Current Status & Energy ", le && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9,
       padding: "1px 7px",
@@ -4205,16 +4585,16 @@ function S1({
       fontWeight: 700,
       marginLeft: 6
     }
-  }, "\u2713 Auto-filled from listing")), React.createElement("div", {
+  }, "\u2713 Auto-filled from listing")), /*#__PURE__*/React.createElement("div", {
     className: "grid2"
-  }, React.createElement("div", null, React.createElement("label", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Current Status ", le?.currentStatus && React.createElement("span", {
+  }, "Current Status ", le?.currentStatus && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.currentStatus || "Da ristrutturare",
     onChange: e => u({
       ...d,
@@ -4224,16 +4604,16 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, ["Da ristrutturare", "Buono / Abitabile", "Ristrutturato", "Ottimo", "Nuovo / In costruzione"].map(o => React.createElement("option", {
+  }, ["Da ristrutturare", "Buono / Abitabile", "Ristrutturato", "Ottimo", "Nuovo / In costruzione"].map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o)))), React.createElement("div", null, React.createElement("label", {
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Energy Class (APE) ", le?.eCls && le.eCls !== "Unknown" && React.createElement("span", {
+  }, "Energy Class (APE) ", le?.eCls && le.eCls !== "Unknown" && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.eCls,
     onChange: e => u({
       ...d,
@@ -4243,16 +4623,16 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, ["A4", "A3", "A2", "A1", "B", "C", "D", "E", "F", "G", "Unknown"].map(o => React.createElement("option", {
+  }, ["A4", "A3", "A2", "A1", "B", "C", "D", "E", "F", "G", "Unknown"].map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o)))), React.createElement("div", null, React.createElement("label", {
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Annual Energy (kWh) ", le?.annualEnergy && React.createElement("span", {
+  }, "Annual Energy (kWh) ", le?.annualEnergy && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("input", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: d.annualEnergy || "",
     onChange: e => u({
@@ -4264,14 +4644,14 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  })), React.createElement("div", null, React.createElement("label", {
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Heating Type ", le?.heatingType && React.createElement("span", {
+  }, "Heating Type ", le?.heatingType && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.heatingType || "Centralizzato",
     onChange: e => u({
       ...d,
@@ -4281,16 +4661,16 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, ["Centralizzato", "Autonomo", "Pompa di calore", "Nessuno"].map(o => React.createElement("option", {
+  }, ["Centralizzato", "Autonomo", "Pompa di calore", "Nessuno"].map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o)))), React.createElement("div", null, React.createElement("label", {
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Market Band ", le?.band && React.createElement("span", {
+  }, "Market Band ", le?.band && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.band,
     onChange: e => u({
       ...d,
@@ -4300,16 +4680,16 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, Object.keys(BANDS).map(o => React.createElement("option", {
+  }, Object.keys(BANDS).map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o)))), React.createElement("div", null, React.createElement("label", {
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Property Type ", le?.pType && React.createElement("span", {
+  }, "Property Type ", le?.pType && /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#1B3A2D",
       fontSize: 9
     }
-  }, "\u2713")), React.createElement("select", {
+  }, "\u2713")), /*#__PURE__*/React.createElement("select", {
     value: d.pType || "Apartment",
     onChange: e => u({
       ...d,
@@ -4319,11 +4699,11 @@ function S1({
       borderColor: "#1B3A2D",
       background: "#EDF3EE"
     } : {}
-  }, ["Apartment", "Attico", "Loft", "Monolocale", "Villa", "Mansarda"].map(o => React.createElement("option", {
+  }, ["Apartment", "Attico", "Loft", "Monolocale", "Villa", "Mansarda"].map(o => /*#__PURE__*/React.createElement("option", {
     key: o
-  }, o))))), React.createElement("div", {
+  }, o))))), /*#__PURE__*/React.createElement("div", {
     className: "note note-info"
-  }, "Market price reference: ", React.createElement("a", {
+  }, "Market price reference: ", /*#__PURE__*/React.createElement("a", {
     href: "https://www.immobiliare.it/mercato-immobiliare/lombardia/" + (d.city || "milano").toLowerCase() + "-provincia/",
     target: "_blank",
     rel: "noopener noreferrer",
@@ -4331,8 +4711,107 @@ function S1({
       color: "#1B3A2D",
       fontWeight: 600
     }
-  }, "immobiliare.it/", (d.city || "Milano").toLowerCase()), " \u2014 ", fmt(CITY_PRICES[(d.city || "").toLowerCase()] || LOMBARDY_AVG), "/m\xB2 avg (Mar 2026)")));
+  }, "immobiliare.it/", (d.city || "Milano").toLowerCase()), " \u2014 ", fmt(CITY_PRICES[(d.city || "").toLowerCase()] || LOMBARDY_AVG), "/m\xB2 avg (Mar 2026)")), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "section-title"
+  }, "\uD83D\uDCB6 Valuation & Renovation Preferences"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#78716C",
+      marginBottom: 10,
+      lineHeight: 1.5
+    }
+  }, "Your current value and preferences drive the ROI and the existing-vs-post-renovation comparison in the Market Analysis."), /*#__PURE__*/React.createElement("div", {
+    className: "grid2"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "lbl"
+  }, "Existing property value (\u20AC) ", le?.price && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#1B3A2D",
+      fontSize: 9
+    }
+  }, "from listing")), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    value: d.existingValue || "",
+    onChange: e => u({
+      ...d,
+      existingValue: e.target.value
+    }),
+    placeholder: le?.price ? String(le.price) : "e.g. 320000",
+    style: d.existingValue ? {
+      borderColor: "#1B3A2D",
+      background: "#EDF3EE"
+    } : {}
+  }), le?.price && !d.existingValue && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-s",
+    style: {
+      fontSize: 10,
+      padding: "3px 9px"
+    },
+    onClick: () => u({
+      ...d,
+      existingValue: String(le.price)
+    })
+  }, "Use listing price \xB7 ", fmt(le.price))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: "#78716C",
+      marginTop: 3
+    }
+  }, "Current worth or purchase price \u2014 the pre-renovation baseline.")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "lbl"
+  }, "Preferred renovation budget (\u20AC)"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    value: d.prefBudget || "",
+    onChange: e => u({
+      ...d,
+      prefBudget: e.target.value
+    }),
+    placeholder: "e.g. 60000",
+    style: d.prefBudget ? {
+      borderColor: "#1B3A2D",
+      background: "#EDF3EE"
+    } : {}
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: "#78716C",
+      marginTop: 3
+    }
+  }, "How much you want to spend \u2014 compared against the estimated cost.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      gridColumn: "1/3"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "lbl"
+  }, "Preferred timeline"), /*#__PURE__*/React.createElement("select", {
+    value: d.prefTimeline || "",
+    onChange: e => u({
+      ...d,
+      prefTimeline: e.target.value
+    }),
+    style: d.prefTimeline ? {
+      borderColor: "#1B3A2D",
+      background: "#EDF3EE"
+    } : {}
+  }, ["", "As soon as possible", "Within 3 months", "3–6 months", "6–12 months", "Over 12 months", "Flexible"].map(o => /*#__PURE__*/React.createElement("option", {
+    key: o,
+    value: o
+  }, o || "— Select —"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: "#78716C",
+      marginTop: 3
+    }
+  }, "When you would like the works completed \u2014 flagged against the scenario's typical duration.")))));
 }
+
+/* STEP 2: Planimetria — with AI spatial extraction */
 function S2({
   d,
   u,
@@ -4397,6 +4876,7 @@ function S2({
     setPlanAnalyzing(true);
     const extracted = await analyzePlanImage(imgFile, apiKey);
     if (extracted) {
+      /* Auto-fill room dimensions from extracted plan data */
       const nr = {
         ...rd
       };
@@ -4452,6 +4932,7 @@ function S2({
         photos: newPhotos,
         extractedData: extracted
       };
+      /* Auto-fill dimensions if not set */
       if (extracted.estimatedDimensions?.lengthM && !nr[roomKey].length) nr[roomKey].length = String(extracted.estimatedDimensions.lengthM);
       if (extracted.estimatedDimensions?.widthM && !nr[roomKey].width) nr[roomKey].width = String(extracted.estimatedDimensions.widthM);
       u({
@@ -4465,24 +4946,24 @@ function S2({
     }));
   };
   const ep = d.extractedPlan;
-  return React.createElement("div", null, React.createElement("h2", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 24,
       color: "#1B3A2D",
       marginBottom: 4
     }
-  }, "Planimetria & Rilevamento Spaziale"), React.createElement("p", {
+  }, "Planimetria & Rilevamento Spaziale"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#78716C",
       marginBottom: 14
     }
-  }, "Upload the floor plan and room photos. AI will extract all spatial dimensions and fixed elements \u2014 these become hard constraints for all renders."), React.createElement("div", {
+  }, "Upload the floor plan and room photos. AI will extract all spatial dimensions and fixed elements \u2014 these become hard constraints for all renders."), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "\uD83D\uDCD0 Floor Plan \u2014 AI Spatial Extraction"), React.createElement("div", {
+  }, "\uD83D\uDCD0 Floor Plan \u2014 AI Spatial Extraction"), /*#__PURE__*/React.createElement("div", {
     onClick: () => ref.current?.click(),
     style: {
       border: "2px dashed #E2DCD2",
@@ -4493,43 +4974,43 @@ function S2({
       background: "#FAFAF8",
       position: "relative"
     }
-  }, planAnalyzing ? React.createElement("div", {
+  }, planAnalyzing ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
       gap: 8
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "spinner"
-  }), React.createElement("span", {
+  }), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: "#1B3A2D",
       fontWeight: 600
     }
-  }, "Extracting spatial data from plan\u2026"), React.createElement("span", {
+  }, "Extracting spatial data from plan\u2026"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#78716C"
     }
-  }, "Claude Vision is reading room dimensions, walls, windows, doors")) : React.createElement(React.Fragment, null, React.createElement("span", {
+  }, "Claude Vision is reading room dimensions, walls, windows, doors")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 28
     }
-  }, "\uD83D\uDCD0"), React.createElement("div", {
+  }, "\uD83D\uDCD0"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#78716C",
       marginTop: 4
     }
-  }, "Upload floor plan (PNG, JPG) \u2014 AI will extract all dimensions automatically"), React.createElement("div", {
+  }, "Upload floor plan (PNG, JPG) \u2014 AI will extract all dimensions automatically"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#87A98F",
       marginTop: 3
     }
-  }, "Powered by Claude Vision")), React.createElement("input", {
+  }, "Powered by Claude Vision")), /*#__PURE__*/React.createElement("input", {
     ref: ref,
     type: "file",
     accept: ".png,.jpg,.jpeg,.webp",
@@ -4537,14 +5018,14 @@ function S2({
       display: "none"
     },
     onChange: e => handlePlanUpload(e.target.files)
-  })), d.plans.length > 0 && React.createElement("div", {
+  })), d.plans.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 6,
       display: "flex",
       flexWrap: "wrap",
       gap: 4
     }
-  }, d.plans.map((f, i) => React.createElement("span", {
+  }, d.plans.map((f, i) => /*#__PURE__*/React.createElement("span", {
     key: i,
     style: {
       padding: "3px 10px",
@@ -4553,7 +5034,7 @@ function S2({
       fontSize: 11,
       color: "#1B3A2D"
     }
-  }, typeof f === "string" ? f : f.name, " ", React.createElement("span", {
+  }, typeof f === "string" ? f : f.name, " ", /*#__PURE__*/React.createElement("span", {
     onClick: () => u({
       ...d,
       plans: d.plans.filter((_, j) => j !== i)
@@ -4562,7 +5043,7 @@ function S2({
       cursor: "pointer",
       fontWeight: 700
     }
-  }, "\xD7")))), ep && React.createElement("div", {
+  }, "\xD7")))), ep && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 14,
       padding: 14,
@@ -4570,44 +5051,44 @@ function S2({
       borderRadius: 9,
       border: "1px solid #B5CDB8"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
       color: "#1B3A2D",
       marginBottom: 8
     }
-  }, "\u2705 Plan Analysis Complete \u2014 Spatial Constraints Locked"), React.createElement("div", {
+  }, "\u2705 Plan Analysis Complete \u2014 Spatial Constraints Locked"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
       gap: 6,
       fontSize: 11
     }
-  }, ep.totalArea && React.createElement("div", null, React.createElement("span", {
+  }, ep.totalArea && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#78716C"
     }
-  }, "Total area:"), " ", React.createElement("strong", null, ep.totalArea, "m\xB2")), ep.overallShape && React.createElement("div", null, React.createElement("span", {
+  }, "Total area:"), " ", /*#__PURE__*/React.createElement("strong", null, ep.totalArea, "m\xB2")), ep.overallShape && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#78716C"
     }
-  }, "Shape:"), " ", React.createElement("strong", null, ep.overallShape)), ep.entranceDoor && React.createElement("div", null, React.createElement("span", {
+  }, "Shape:"), " ", /*#__PURE__*/React.createElement("strong", null, ep.overallShape)), ep.entranceDoor && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#78716C"
     }
-  }, "Entrance:"), " ", React.createElement("strong", null, ep.entranceDoor.wall, " wall \u2014 FIXED")), ep.rooms?.bathroom?.positionInApartment && React.createElement("div", null, React.createElement("span", {
+  }, "Entrance:"), " ", /*#__PURE__*/React.createElement("strong", null, ep.entranceDoor.wall, " wall \u2014 FIXED")), ep.rooms?.bathroom?.positionInApartment && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#78716C"
     }
-  }, "Bathroom:"), " ", React.createElement("strong", null, ep.rooms.bathroom.positionInApartment, " \u2014 FIXED"))), ep.rooms && React.createElement("div", {
+  }, "Bathroom:"), " ", /*#__PURE__*/React.createElement("strong", null, ep.rooms.bathroom.positionInApartment, " \u2014 FIXED"))), ep.rooms && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       display: "flex",
       flexWrap: "wrap",
       gap: 4
     }
-  }, Object.entries(ep.rooms).filter(([, r]) => r.presentInPlan).map(([k, r]) => React.createElement("span", {
+  }, Object.entries(ep.rooms).filter(([, r]) => r.presentInPlan).map(([k, r]) => /*#__PURE__*/React.createElement("span", {
     key: k,
     style: {
       padding: "3px 9px",
@@ -4616,7 +5097,7 @@ function S2({
       fontSize: 10,
       color: "#1B3A2D"
     }
-  }, k, ": ", r.widthM || "?", "\xD7", r.lengthM || "?", "m \xB7 ", r.windowCount || 0, " win"))), ep.loadBearingWalls?.length > 0 && React.createElement("div", {
+  }, k, ": ", r.widthM || "?", "\xD7", r.lengthM || "?", "m \xB7 ", r.windowCount || 0, " win"))), ep.loadBearingWalls?.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 6,
       fontSize: 10,
@@ -4632,16 +5113,16 @@ function S2({
     const photoRef = React.createRef();
     const analyzing = roomAnalyzing[rm.key];
     const ex = r.extractedData;
-    return React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       key: rm.key,
       className: "room-section"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "room-section-title"
-    }, React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 18
       }
-    }, rm.icon), rm.label, ex && React.createElement("span", {
+    }, rm.icon), rm.label, ex && /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9,
         padding: "2px 7px",
@@ -4651,39 +5132,39 @@ function S2({
         fontWeight: 700,
         marginLeft: 4
       }
-    }, "\u2713 AI Extracted")), React.createElement("div", {
+    }, "\u2713 AI Extracted")), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr 1fr",
         gap: 8,
         marginBottom: 8
       }
-    }, React.createElement("div", null, React.createElement("label", {
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
       className: "lbl"
-    }, "Length (m)"), React.createElement("input", {
+    }, "Length (m)"), /*#__PURE__*/React.createElement("input", {
       type: "number",
       step: "0.1",
       value: r.length,
       onChange: e => updateRoom(rm.key, "length", e.target.value),
       placeholder: "4.5"
-    })), React.createElement("div", null, React.createElement("label", {
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
       className: "lbl"
-    }, "Width (m)"), React.createElement("input", {
+    }, "Width (m)"), /*#__PURE__*/React.createElement("input", {
       type: "number",
       step: "0.1",
       value: r.width,
       onChange: e => updateRoom(rm.key, "width", e.target.value),
       placeholder: "3.2"
-    })), React.createElement("div", null, React.createElement("label", {
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
       className: "lbl"
-    }, "Area (m\xB2)"), React.createElement("input", {
+    }, "Area (m\xB2)"), /*#__PURE__*/React.createElement("input", {
       type: "text",
       value: r.length && r.width ? (parseFloat(r.length) * parseFloat(r.width)).toFixed(1) + "m²" : "—",
       readOnly: true,
       style: {
         background: "#F6F4EF"
       }
-    }))), ex && React.createElement("div", {
+    }))), ex && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 8,
         padding: 10,
@@ -4691,40 +5172,40 @@ function S2({
         borderRadius: 7,
         fontSize: 10.5
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontWeight: 700,
         color: "#1B3A2D",
         marginBottom: 4
       }
-    }, "\uD83D\uDD12 Locked spatial features (from your photo):"), React.createElement("div", {
+    }, "\uD83D\uDD12 Locked spatial features (from your photo):"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
         gap: 4
       }
-    }, ex.windows?.length > 0 && React.createElement("span", {
+    }, ex.windows?.length > 0 && /*#__PURE__*/React.createElement("span", {
       style: {
         padding: "2px 8px",
         background: "#D1E7DD",
         borderRadius: 8,
         color: "#1B3A2D"
       }
-    }, "\uD83E\uDE9F ", ex.windows.length, " window", ex.windows.length > 1 ? "s" : "", " \u2014 positions fixed"), ex.doors?.length > 0 && React.createElement("span", {
+    }, "\uD83E\uDE9F ", ex.windows.length, " window", ex.windows.length > 1 ? "s" : "", " \u2014 positions fixed"), ex.doors?.length > 0 && /*#__PURE__*/React.createElement("span", {
       style: {
         padding: "2px 8px",
         background: "#D1E7DD",
         borderRadius: 8,
         color: "#1B3A2D"
       }
-    }, "\uD83D\uDEAA ", ex.doors.length, " door", ex.doors.length > 1 ? "s" : "", " \u2014 positions fixed"), ex.estimatedDimensions?.ceilingHeightM && React.createElement("span", {
+    }, "\uD83D\uDEAA ", ex.doors.length, " door", ex.doors.length > 1 ? "s" : "", " \u2014 positions fixed"), ex.estimatedDimensions?.ceilingHeightM && /*#__PURE__*/React.createElement("span", {
       style: {
         padding: "2px 8px",
         background: "#D1E7DD",
         borderRadius: 8,
         color: "#1B3A2D"
       }
-    }, "\u2195 ", ex.estimatedDimensions.ceilingHeightM, "m ceiling \u2014 fixed"), (ex.immovableFeatures || []).slice(0, 3).map((f, i) => React.createElement("span", {
+    }, "\u2195 ", ex.estimatedDimensions.ceilingHeightM, "m ceiling \u2014 fixed"), (ex.immovableFeatures || []).slice(0, 3).map((f, i) => /*#__PURE__*/React.createElement("span", {
       key: i,
       style: {
         padding: "2px 8px",
@@ -4732,12 +5213,12 @@ function S2({
         borderRadius: 8,
         color: "#7D5A00"
       }
-    }, "\u26A0\uFE0F ", f))), ex.naturalLightDirection && React.createElement("div", {
+    }, "\u26A0\uFE0F ", f))), ex.naturalLightDirection && /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 4,
         color: "#78716C"
       }
-    }, "\u2600\uFE0F Natural light from ", ex.naturalLightDirection)), React.createElement("div", {
+    }, "\u2600\uFE0F Natural light from ", ex.naturalLightDirection)), /*#__PURE__*/React.createElement("div", {
       onClick: () => photoRef.current?.click(),
       style: {
         border: "1px dashed #E2DCD2",
@@ -4749,32 +5230,32 @@ function S2({
         fontSize: 11,
         color: "#78716C"
       }
-    }, analyzing ? React.createElement("div", {
+    }, analyzing ? /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         gap: 6
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "spinner",
       style: {
         width: 24,
         height: 24,
         borderWidth: 3
       }
-    }), React.createElement("span", {
+    }), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 11,
         color: "#1B3A2D",
         fontWeight: 600
       }
-    }, "Analysing ", rm.label, " photo\u2026")) : React.createElement(React.Fragment, null, "\uD83D\uDCF7 Upload ", rm.label, " photo \u2014 AI extracts windows, doors, ceiling height", React.createElement("br", null), React.createElement("span", {
+    }, "Analysing ", rm.label, " photo\u2026")) : /*#__PURE__*/React.createElement(React.Fragment, null, "\uD83D\uDCF7 Upload ", rm.label, " photo \u2014 AI extracts windows, doors, ceiling height", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9,
         color: "#87A98F"
       }
-    }, "Claude Vision \xB7 spatial constraints auto-locked")), React.createElement("input", {
+    }, "Claude Vision \xB7 spatial constraints auto-locked")), /*#__PURE__*/React.createElement("input", {
       ref: photoRef,
       type: "file",
       accept: ".png,.jpg,.jpeg,.webp",
@@ -4783,14 +5264,14 @@ function S2({
         display: "none"
       },
       onChange: e => handleRoomPhotos(rm.key, e.target.files)
-    })), (r.photos || []).length > 0 && React.createElement("div", {
+    })), (r.photos || []).length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 4,
         display: "flex",
         flexWrap: "wrap",
         gap: 3
       }
-    }, r.photos.map((f, i) => React.createElement("span", {
+    }, r.photos.map((f, i) => /*#__PURE__*/React.createElement("span", {
       key: i,
       style: {
         padding: "2px 8px",
@@ -4799,7 +5280,7 @@ function S2({
         fontSize: 10,
         color: "#1B3A2D"
       }
-    }, typeof f === "string" ? f : f.name, " ", React.createElement("span", {
+    }, typeof f === "string" ? f : f.name, " ", /*#__PURE__*/React.createElement("span", {
       onClick: () => {
         const np = [...r.photos];
         np.splice(i, 1);
@@ -4809,11 +5290,11 @@ function S2({
         cursor: "pointer",
         fontWeight: 700
       }
-    }, "\xD7")))), React.createElement("div", {
+    }, "\xD7")))), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 10
       }
-    }, React.createElement("label", {
+    }, /*#__PURE__*/React.createElement("label", {
       className: "lbl",
       style: {
         marginBottom: 5,
@@ -4821,11 +5302,11 @@ function S2({
         alignItems: "center",
         gap: 5
       }
-    }, React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 14
       }
-    }, "\u270F\uFE0F"), " Your requirements for this ", rm.label, React.createElement("span", {
+    }, "\u270F\uFE0F"), " Your requirements for this ", rm.label, /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9,
         padding: "1px 6px",
@@ -4834,7 +5315,7 @@ function S2({
         color: "#7D5A00",
         fontWeight: 700
       }
-    }, "Injected directly into render prompt")), React.createElement("textarea", {
+    }, "Injected directly into render prompt")), /*#__PURE__*/React.createElement("textarea", {
       value: r.requirements || "",
       onChange: e => updateRoom(rm.key, "requirements", e.target.value),
       placeholder: rm.key === "living" ? "e.g. I want to open the kitchen to the living area, keep the sofa against the north wall, bright and airy feel with large rug..." : rm.key === "kitchen" ? "e.g. Open kitchen integrated with living room, white METOD cabinets with oak countertop, island if space allows..." : rm.key === "bedroom" ? "e.g. Merge with the small studio room on the right, PAX wardrobe along the full west wall, minimalist Japandi bed..." : rm.key === "bathroom" ? "e.g. Keep all plumbing in place, large format white tiles, walk-in shower replacing bathtub, GODMORGON vanity..." : "Describe your specific requirements for this space...",
@@ -4846,43 +5327,45 @@ function S2({
         borderColor: "#C87941",
         borderWidth: 1.5
       }
-    }), r.requirements && React.createElement("div", {
+    }), r.requirements && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#C87941",
         marginTop: 3
       }
     }, "\u2713 These instructions will be passed verbatim to the AI render engine for this room")));
-  }), React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
     className: "note note-info"
   }, "\u2139\uFE0F Dimensions extracted by AI are pre-filled above. You can manually adjust any value. All extracted constraints are passed verbatim into every render prompt."));
 }
+
+/* STEP 3: Interventi — expanded with 5+ per category, tax & conformity tags */
 function S3({
   d,
   u
 }) {
   const cats = ["Structure", "Rooms", "Finishes", "Systems", "Energy Upgrade"];
-  return React.createElement("div", null, React.createElement("h2", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 24,
       color: "#1B3A2D",
       marginBottom: 4
     }
-  }, "Interventi"), React.createElement("p", {
+  }, "Interventi"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#78716C",
       marginBottom: 14
     }
-  }, "Select renovation interventions. Tags show tax benefits (Bonus 36-50%) and plan conformity impact."), cats.map(ct => React.createElement("div", {
+  }, "Select renovation interventions. Tags show tax benefits (Bonus 36-50%) and plan conformity impact."), cats.map(ct => /*#__PURE__*/React.createElement("div", {
     className: "card",
     key: ct
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
   }, ct === "Energy Upgrade" ? "⚡ " + ct : ct), Object.entries(INTERVENTIONS).filter(([_, o]) => o.cat === ct).map(([k, o]) => {
     const on = d.changes.includes(k);
-    return React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       key: k,
       onClick: () => u({
         ...d,
@@ -4899,7 +5382,7 @@ function S3({
         cursor: "pointer",
         marginBottom: 5
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 20,
         height: 20,
@@ -4911,64 +5394,64 @@ function S3({
         justifyContent: "center",
         flexShrink: 0
       }
-    }, on && React.createElement("span", {
+    }, on && /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#fff",
         fontSize: 13
       }
-    }, "\u2713")), React.createElement("span", {
+    }, "\u2713")), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 18,
         flexShrink: 0
       }
-    }, o.ic), React.createElement("div", {
+    }, o.ic), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12.5,
         fontWeight: on ? 600 : 400
       }
-    }, k), React.createElement("div", {
+    }, k), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10.5,
         color: "#78716C"
       }
-    }, o.l)), React.createElement("div", {
+    }, o.l)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 3,
         flexWrap: "wrap",
         justifyContent: "flex-end"
       }
-    }, o.en && React.createElement("span", {
+    }, o.en && /*#__PURE__*/React.createElement("span", {
       className: "tag tag-energy"
-    }, "Energy"), o.pm !== "free" && React.createElement("span", {
+    }, "Energy"), o.pm !== "free" && /*#__PURE__*/React.createElement("span", {
       className: "tag tag-cila"
-    }, "CILA"), o.tax50 && React.createElement("span", {
+    }, "CILA"), o.tax50 && /*#__PURE__*/React.createElement("span", {
       className: "tag tag-tax"
-    }, "Bonus 36-50%"), o.nonConf && React.createElement("span", {
+    }, "Bonus 36-50%"), o.nonConf && /*#__PURE__*/React.createElement("span", {
       className: "tag tag-nc"
     }, "Plan change")));
-  }))), React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "note note-info"
-  }, "\u2139\uFE0F ", React.createElement("strong", null, "Tax benefits 2026:"), " 50% deduction for primary residence (36% for second homes), max \u20AC96k spend, recovered over 10 annual installments. ", React.createElement("strong", null, "Plan change"), " items require updated catastale (DOCFA) within 30 days."), React.createElement("div", {
+  }, "\u2139\uFE0F ", /*#__PURE__*/React.createElement("strong", null, "Tax benefits 2026:"), " 50% deduction for primary residence (36% for second homes), max \u20AC96k spend, recovered over 10 annual installments. ", /*#__PURE__*/React.createElement("strong", null, "Plan change"), " items require updated catastale (DOCFA) within 30 days."), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h4", {
+  }, /*#__PURE__*/React.createElement("h4", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 15,
       color: "#1B3A2D",
       marginBottom: 6
     }
-  }, "Energy Efficiency Tool"), React.createElement("p", {
+  }, "Energy Efficiency Tool"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#78716C",
       marginBottom: 8
     }
-  }, "For detailed energy calculations based on your selected interventions, use the linked tool:"), React.createElement("a", {
+  }, "For detailed energy calculations based on your selected interventions, use the linked tool:"), /*#__PURE__*/React.createElement("a", {
     href: "https://energy-efficiency-tool-project-management.streamlit.app/",
     target: "_blank",
     rel: "noopener noreferrer",
@@ -4980,28 +5463,30 @@ function S3({
     }
   }, "\uD83D\uDD17 Open Energy Efficiency Calculator")));
 }
+
+/* STEP 4: Stile — with custom description, feng shui, color palette */
 function S4({
   d,
   u
 }) {
-  return React.createElement("div", null, React.createElement("h2", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 24,
       color: "#1B3A2D",
       marginBottom: 4
     }
-  }, "Stile, Atmosfera & Preferenze"), React.createElement("p", {
+  }, "Stile, Atmosfera & Preferenze"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#78716C",
       marginBottom: 14
     }
-  }, "Choose a base style, then personalize with your own vision, feng shui principles, and preferred colors."), React.createElement("div", {
+  }, "Choose a base style, then personalize with your own vision, feng shui principles, and preferred colors."), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "Design Style"), React.createElement("div", {
+  }, "Design Style"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(auto-fill,minmax(145px,1fr))",
@@ -5009,7 +5494,7 @@ function S4({
     }
   }, Object.entries(STYLES).map(([n, th]) => {
     const on = d.style === n;
-    return React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       key: n,
       onClick: () => u({
         ...d,
@@ -5023,27 +5508,27 @@ function S4({
         cursor: "pointer",
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 13.5,
         fontWeight: 700,
         color: on ? "#1B3A2D" : "#1C1917"
       }
-    }, n), React.createElement("div", {
+    }, n), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9.5,
         color: "#78716C",
         marginTop: 3
       }
-    }, th.desc), React.createElement("div", {
+    }, th.desc), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 3,
         justifyContent: "center",
         marginTop: 6
       }
-    }, th.pal.map((c, i) => React.createElement("div", {
+    }, th.pal.map((c, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
       style: {
         width: 14,
@@ -5053,11 +5538,11 @@ function S4({
         border: "1px solid #E2DCD233"
       }
     }))));
-  }))), React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "Your Personal Style Vision"), React.createElement("textarea", {
+  }, "Your Personal Style Vision"), /*#__PURE__*/React.createElement("textarea", {
     value: d.customStyle || "",
     onChange: e => u({
       ...d,
@@ -5069,17 +5554,17 @@ function S4({
       resize: "vertical",
       lineHeight: 1.6
     }
-  }), React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#78716C",
       marginTop: 4
     }
-  }, "This description will directly influence the AI render prompts for a personalized result.")), React.createElement("div", {
+  }, "This description will directly influence the AI render prompts for a personalized result.")), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "\uD83E\uDDD8 Feng Shui Preferences"), React.createElement("div", {
+  }, "\uD83E\uDDD8 Feng Shui Preferences"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
@@ -5087,7 +5572,7 @@ function S4({
     }
   }, FENG_SHUI_OPTIONS.map(opt => {
     const on = (d.fengshui || []).includes(opt);
-    return React.createElement("button", {
+    return /*#__PURE__*/React.createElement("button", {
       key: opt,
       onClick: () => u({
         ...d,
@@ -5105,11 +5590,11 @@ function S4({
         color: on ? "#1B3A2D" : "#1C1917"
       }
     }, opt);
-  }))), React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "section-title"
-  }, "\uD83C\uDFA8 Preferred Color Palette"), React.createElement("div", {
+  }, "\uD83C\uDFA8 Preferred Color Palette"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))",
@@ -5117,7 +5602,7 @@ function S4({
     }
   }, PALETTE_OPTIONS.map(p => {
     const on = d.preferredPalette?.name === p.name;
-    return React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       key: p.name,
       onClick: () => u({
         ...d,
@@ -5130,19 +5615,19 @@ function S4({
         background: on ? "#D1E7DD" : "#fff",
         cursor: "pointer"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         fontWeight: on ? 700 : 500,
         marginBottom: 6,
         color: on ? "#1B3A2D" : "#1C1917"
       }
-    }, p.name), React.createElement("div", {
+    }, p.name), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 4
       }
-    }, p.colors.map((c, i) => React.createElement("div", {
+    }, p.colors.map((c, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
       className: "color-swatch" + (on ? " on" : ""),
       style: {
@@ -5153,6 +5638,8 @@ function S4({
     }))));
   }))));
 }
+
+/* ══════ SOLUTION RENDER CARD ══════ */
 function SolRenderCard({
   x,
   solIdx,
@@ -5206,41 +5693,41 @@ function SolRenderCard({
     spatialData: null
   });
   const imgToImg = tiles.filter(t => t.photoFile).length;
-  return React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       borderColor: solIdx === 1 ? m.color + "60" : "#E2DCD2",
       borderWidth: solIdx === 1 ? 2 : 1,
       marginBottom: 12
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 8,
       marginBottom: 12
     }
-  }, React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 17
     }
-  }, m.em), React.createElement("div", {
+  }, m.em), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
       fontWeight: 700,
       color: m.color
     }
-  }, x.nm, " \u2014 ", fmt(x.co.total)), React.createElement("div", {
+  }, x.nm, " \u2014 ", fmt(x.co.total)), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10.5,
       color: "#78716C"
     }
-  }, tiles.length, " renders \xB7 ", imgToImg > 0 ? imgToImg + " image-to-image" : "text-to-image only")), apiKey && React.createElement("button", {
+  }, tiles.length, " renders \xB7 ", imgToImg > 0 ? imgToImg + " image-to-image" : "text-to-image only")), apiKey && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-p",
     style: {
       fontSize: 10,
@@ -5248,13 +5735,13 @@ function SolRenderCard({
       whiteSpace: "nowrap"
     },
     onClick: () => setBatchTrigger(t => t + 1)
-  }, "\u26A1 Generate All")), React.createElement("div", {
+  }, "\u26A1 Generate All")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
       gap: 8
     }
-  }, tiles.map((t, ti) => React.createElement(AIRenderTile, {
+  }, tiles.map((t, ti) => /*#__PURE__*/React.createElement(AIRenderTile, {
     key: x.nm + "-" + t.roomKey + "-" + ti,
     prompt: renderPrompt(d, x, t.roomKey),
     style: d.style,
@@ -5264,7 +5751,7 @@ function SolRenderCard({
     spatialData: t.spatialData,
     originalPhotoFile: t.photoFile,
     batchTrigger: batchTrigger
-  }))), React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       padding: 7,
@@ -5273,8 +5760,10 @@ function SolRenderCard({
       fontSize: 10.5,
       color: "#78716C"
     }
-  }, React.createElement("strong", null, "Materials:"), " ", x.mg));
+  }, /*#__PURE__*/React.createElement("strong", null, "Materials:"), " ", x.mg));
 }
+
+/* ══════ MARKET FETCH BUTTON ══════ */
 function MarketFetchBtn({
   d,
   s,
@@ -5326,7 +5815,7 @@ function MarketFetchBtn({
       setState("error");
     }
   };
-  return React.createElement("div", null, React.createElement("button", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("button", {
     className: "btn",
     onClick: fetch2,
     disabled: state === "loading",
@@ -5337,43 +5826,43 @@ function MarketFetchBtn({
       fontSize: 12,
       padding: "8px 16px"
     }
-  }, state === "loading" ? "🔍 Fetching…" : "🌐 Fetch Live Market Data"), state === "loading" && React.createElement("div", {
+  }, state === "loading" ? "🔍 Fetching…" : "🌐 Fetch Live Market Data"), state === "loading" && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "rgba(255,255,255,.7)",
       marginTop: 4
     }
-  }, "Searching OMI + immobiliare.it\u2026"), err && React.createElement("div", {
+  }, "Searching OMI + immobiliare.it\u2026"), err && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#FECACA",
       marginTop: 4
     }
-  }, err), state === "done" && md && React.createElement("div", {
+  }, err), state === "done" && md && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 12,
       display: "grid",
       gridTemplateColumns: "1fr 1fr 1fr",
       gap: 6
     }
-  }, [["OMI Range", md.omiMin && md.omiMax ? fmt(md.omiMin * area) + "–" + fmt(md.omiMax * area) : "—"], ["Market Avg/m²", md.marketAvgSqm ? fmt(md.marketAvgSqm) : "—"], ["Trend", md.marketTrend + " " + (md.marketTrendPct ? (md.marketTrendPct > 0 ? "+" : "") + md.marketTrendPct + "%" : "")], ["Renovated/m²", md.comparableRenovated ? fmt(md.comparableRenovated) : "—"], ["Energy premium", md.energyPremium ? fmt(md.energyPremium * area) : "—"], ["Demand", md.demandScore ? md.demandScore + "/10" : "—"]].map(([l, v]) => React.createElement("div", {
+  }, [["OMI Range", md.omiMin && md.omiMax ? fmt(md.omiMin * area) + "–" + fmt(md.omiMax * area) : "—"], ["Market Avg/m²", md.marketAvgSqm ? fmt(md.marketAvgSqm) : "—"], ["Trend", md.marketTrend + " " + (md.marketTrendPct ? (md.marketTrendPct > 0 ? "+" : "") + md.marketTrendPct + "%" : "")], ["Renovated/m²", md.comparableRenovated ? fmt(md.comparableRenovated) : "—"], ["Energy premium", md.energyPremium ? fmt(md.energyPremium * area) : "—"], ["Demand", md.demandScore ? md.demandScore + "/10" : "—"]].map(([l, v]) => /*#__PURE__*/React.createElement("div", {
     key: l,
     style: {
       padding: "6px 8px",
       background: "rgba(255,255,255,.12)",
       borderRadius: 6
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 9,
       opacity: .7
     }
-  }, l), React.createElement("div", {
+  }, l), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700
     }
-  }, v))), md.notes && React.createElement("div", {
+  }, v))), md.notes && /*#__PURE__*/React.createElement("div", {
     style: {
       gridColumn: "1/4",
       fontSize: 10,
@@ -5382,6 +5871,8 @@ function MarketFetchBtn({
     }
   }, "\uD83D\uDCDD ", md.notes)));
 }
+
+/* ══════ RESULTS DASHBOARD ══════ */
 function Results({
   d,
   apiKey
@@ -5436,7 +5927,7 @@ function Results({
     l: "Compliance",
     i: "🏛"
   }];
-  const SP = () => React.createElement("div", {
+  const SP = () => /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -5445,7 +5936,7 @@ function Results({
   }, sols.map((x, i) => {
     const m = SM[i],
       on = si === i;
-    return React.createElement("button", {
+    return /*#__PURE__*/React.createElement("button", {
       key: x.nm,
       onClick: () => setSi(i),
       style: {
@@ -5458,25 +5949,25 @@ function Results({
         textAlign: "left",
         fontFamily: "inherit"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
         gap: 5,
         marginBottom: 3
       }
-    }, React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 15
       }
-    }, m.em), React.createElement("span", {
+    }, m.em), /*#__PURE__*/React.createElement("span", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 14,
         fontWeight: 700,
         color: on ? "#fff" : "#1C1917"
       }
-    }, x.nm), i === 1 && React.createElement("span", {
+    }, x.nm), i === 1 && /*#__PURE__*/React.createElement("span", {
       style: {
         padding: "1px 5px",
         borderRadius: 7,
@@ -5485,27 +5976,27 @@ function Results({
         fontWeight: 700,
         color: on ? "#fff" : "#1B3A2D"
       }
-    }, "REC")), React.createElement("div", {
+    }, "REC")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         fontWeight: 700,
         color: on ? "rgba(255,255,255,.95)" : "#1C1917"
       }
-    }, fmt(x.co.total)), React.createElement("div", {
+    }, fmt(x.co.total)), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: on ? "rgba(255,255,255,.7)" : "#78716C"
       }
     }, x.ch.length, " items \xB7 ", x.sc.tw, "wk \xB7 ", x.en.bC, "\u2192", x.en.aC));
   }));
-  return React.createElement("div", null, React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 12,
       marginBottom: 18
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       width: 48,
       height: 48,
@@ -5517,19 +6008,19 @@ function Results({
       fontSize: 22,
       color: "#fff"
     }
-  }, "\uD83C\uDFDB\uFE0F"), React.createElement("div", null, React.createElement("h2", {
+  }, "\uD83C\uDFDB\uFE0F"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 22,
       fontWeight: 700,
       color: "#1B3A2D"
     }
-  }, "3 Renovation Solutions"), React.createElement("p", {
+  }, "3 Renovation Solutions"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11.5,
       color: "#78716C"
     }
-  }, d.address || "Apt", ", ", d.city || "Lombardy", " \xB7 ", area, "m\xB2 \xB7 Floor ", d.floor || "—", " \xB7 ", d.style))), React.createElement("div", {
+  }, d.address || "Apt", ", ", d.city || "Lombardy", " \xB7 ", area, "m\xB2 \xB7 Floor ", d.floor || "—", " \xB7 ", d.style))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 4,
@@ -5538,7 +6029,7 @@ function Results({
       paddingBottom: 10,
       borderBottom: "1px solid #E2DCD2"
     }
-  }, tabs.map(t => React.createElement("button", {
+  }, tabs.map(t => /*#__PURE__*/React.createElement("button", {
     key: t.id,
     onClick: () => setTab(t.id),
     style: {
@@ -5552,30 +6043,30 @@ function Results({
       cursor: "pointer",
       fontFamily: "inherit"
     }
-  }, t.i, " ", t.l))), tab === "compare" && React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+  }, t.i, " ", t.l))), tab === "compare" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
       color: "#1B3A2D",
       marginBottom: 10
     }
-  }, "Comparison"), React.createElement("div", {
+  }, "Comparison"), /*#__PURE__*/React.createElement("div", {
     style: {
       overflowX: "auto"
     }
-  }, React.createElement("table", null, React.createElement("thead", null, React.createElement("tr", {
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
     style: {
       borderBottom: "2px solid #E2DCD2"
     }
-  }, React.createElement("th", {
+  }, /*#__PURE__*/React.createElement("th", {
     style: {
       color: "#78716C",
       fontSize: 9.5,
       textTransform: "uppercase"
     }
-  }, "Metric"), sols.map((x, i) => React.createElement("th", {
+  }, "Metric"), sols.map((x, i) => /*#__PURE__*/React.createElement("th", {
     key: x.nm,
     style: {
       textAlign: "center",
@@ -5583,62 +6074,62 @@ function Results({
       fontSize: 9.5,
       textTransform: "uppercase"
     }
-  }, SM[i].em, " ", x.nm)))), React.createElement("tbody", null, [["Cost", i => fmt(sols[i].co.total)], ["Items", i => sols[i].ch.length], ["Timeline", i => sols[i].sc.tw + "wk"], ["Energy", i => sols[i].en.bC + "→" + sols[i].en.aC], ["Save/mo", i => fmt(sols[i].sv.mo)], ["Uplift", i => "+" + sols[i].vl.up + "%"], ["Value After", i => fmt(sols[i].vl.vA)], ["Tax Benefit", i => fmt(sols[i].vl.taxBenefit)], ["Energy NPV 30y", i => fmt(runFullEnergyCalc(d, sols[i]).economy.npv_30y)], ["Feng Shui", i => {
+  }, SM[i].em, " ", x.nm)))), /*#__PURE__*/React.createElement("tbody", null, [["Cost", i => fmt(sols[i].co.total)], ["Items", i => sols[i].ch.length], ["Timeline", i => sols[i].sc.tw + "wk"], ["Energy", i => sols[i].en.bC + "→" + sols[i].en.aC], ["Save/mo", i => fmt(sols[i].sv.mo)], ["Uplift", i => "+" + sols[i].vl.up + "%"], ["Value After", i => fmt(sols[i].vl.vA)], ["Tax Benefit", i => fmt(sols[i].vl.taxBenefit)], ["Energy NPV 30y", i => fmt(runFullEnergyCalc(d, sols[i]).economy.npv_30y)], ["Feng Shui", i => {
     const fs = calcFengShuiScore(d.fengshui, sols[i].ch, d.roomDetails);
     return fs.score + "/100 (" + fs.label + ")";
-  }], ["ROI", i => Math.round((sols[i].vl.vA - sols[i].vl.vB - sols[i].co.total) / sols[i].co.total * 100) + "%"]].map(([m, fn], ri) => React.createElement("tr", {
+  }], ["ROI", i => Math.round((sols[i].vl.vA - sols[i].vl.vB - sols[i].co.total) / sols[i].co.total * 100) + "%"]].map(([m, fn], ri) => /*#__PURE__*/React.createElement("tr", {
     key: m,
     style: {
       borderBottom: "1px solid #ECE8E1",
       background: ri % 2 ? "#F6F4EF" : "#fff"
     }
-  }, React.createElement("td", {
+  }, /*#__PURE__*/React.createElement("td", {
     style: {
       fontWeight: 600
     }
-  }, m), [0, 1, 2].map(i => React.createElement("td", {
+  }, m), [0, 1, 2].map(i => /*#__PURE__*/React.createElement("td", {
     key: i,
     style: {
       textAlign: "center",
       fontWeight: si === i ? 700 : 400,
       color: si === i ? SM[i].color : "#1C1917"
     }
-  }, fn(i)))))))))), tab === "renders" && React.createElement("div", null, React.createElement(SP, null), !apiKey && React.createElement("div", {
+  }, fn(i)))))))))), tab === "renders" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), !apiKey && /*#__PURE__*/React.createElement("div", {
     className: "note note-warn",
     style: {
       marginBottom: 12
     }
-  }, "\u26A0\uFE0F ", React.createElement("strong", null, "Nano Banana API key not set."), " Enter your key in the header bar to generate photorealistic renders with spatial refinement."), sols.map((x, solIdx) => React.createElement(SolRenderCard, {
+  }, "\u26A0\uFE0F ", /*#__PURE__*/React.createElement("strong", null, "Nano Banana API key not set."), " Enter your key in the header bar to generate photorealistic renders with spatial refinement."), sols.map((x, solIdx) => /*#__PURE__*/React.createElement(SolRenderCard, {
     key: x.nm,
     x: x,
     solIdx: solIdx,
     d: d,
     apiKey: apiKey
-  })), React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     className: "note note-info"
-  }, "\u2139\uFE0F Upload multiple photos per room in Step 2 \u2014 one render per photo. Image-to-image edits preserve original walls, windows and doors automatically.")), tab === "detail" && React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+  }, "\u2139\uFE0F Upload multiple photos per room in Step 2 \u2014 one render per photo. Image-to-image edits preserve original walls, windows and doors automatically.")), tab === "detail" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
       color: "#1B3A2D",
       marginBottom: 8
     }
-  }, s.nm, " \u2014 Detail"), React.createElement("p", {
+  }, s.nm, " \u2014 Detail"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12.5,
       lineHeight: 1.55,
       marginBottom: 10
     }
-  }, d.style, " at ", React.createElement("strong", null, s.nm.toLowerCase()), " tier. ", s.mg), React.createElement("div", {
+  }, d.style, " at ", /*#__PURE__*/React.createElement("strong", null, s.nm.toLowerCase()), " tier. ", s.mg), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
       gap: 4,
       marginBottom: 12
     }
-  }, s.ch.map(c => React.createElement("span", {
+  }, s.ch.map(c => /*#__PURE__*/React.createElement("span", {
     key: c,
     style: {
       padding: "4px 10px",
@@ -5647,18 +6138,18 @@ function Results({
       fontSize: 10.5,
       color: "#1B3A2D"
     }
-  }, INTERVENTIONS[c]?.ic, " ", c, INTERVENTIONS[c]?.tax50 ? " 💰" : ""))), React.createElement("div", {
+  }, INTERVENTIONS[c]?.ic, " ", c, INTERVENTIONS[c]?.tax50 ? " 💰" : ""))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
       gap: 8
     }
-  }, [["Cost", fmt(s.co.total), true], ["Timeline", s.sc.tw + "wk", false], ["Energy", s.en.bC + "→" + s.en.aC, false], ["Save/mo", fmt(s.sv.mo), true], ["Value After", fmt(s.vl.vA), false], ["Tax Benefit/yr", fmt(s.vl.taxBenefitAnnual), true]].map(([lb, vl, hl]) => React.createElement("div", {
+  }, [["Cost", fmt(s.co.total), true], ["Timeline", s.sc.tw + "wk", false], ["Energy", s.en.bC + "→" + s.en.aC, false], ["Save/mo", fmt(s.sv.mo), true], ["Value After", fmt(s.vl.vA), false], ["Tax Benefit/yr", fmt(s.vl.taxBenefitAnnual), true]].map(([lb, vl, hl]) => /*#__PURE__*/React.createElement("div", {
     key: lb,
     className: "stat " + (hl ? "stat-hl" : "stat-normal")
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "lbl"
-  }, lb), React.createElement("div", {
+  }, lb), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 18,
@@ -5692,89 +6183,89 @@ function Results({
     const needleTip = polarToXY(needleAngle, 44);
     const needleBase1 = polarToXY(needleAngle + 90, 7);
     const needleBase2 = polarToXY(needleAngle - 90, 7);
-    return React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#F5F0E8,#EDF3EE)"
       }
-    }, React.createElement("h4", {
+    }, /*#__PURE__*/React.createElement("h4", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 17,
         color: "#1B3A2D",
         marginBottom: 12
       }
-    }, "\uD83E\uDDD8 Feng Shui Score"), React.createElement("div", {
+    }, "\uD83E\uDDD8 Feng Shui Score"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 20,
         alignItems: "flex-start",
         flexWrap: "wrap"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         flexShrink: 0
       }
-    }, React.createElement("svg", {
+    }, /*#__PURE__*/React.createElement("svg", {
       width: "140",
       height: "100",
       viewBox: "0 0 140 100"
-    }, React.createElement("path", {
+    }, /*#__PURE__*/React.createElement("path", {
       d: describeArc(-210, 30, arcR),
       fill: "none",
       stroke: "#E2DCD2",
       strokeWidth: "10",
       strokeLinecap: "round"
-    }), fs.score > 0 && React.createElement("path", {
+    }), fs.score > 0 && /*#__PURE__*/React.createElement("path", {
       d: describeArc(-210, -210 + filledAngle, arcR),
       fill: "none",
       stroke: scoreColor,
       strokeWidth: "10",
       strokeLinecap: "round"
-    }), React.createElement("path", {
+    }), /*#__PURE__*/React.createElement("path", {
       d: describeArc(-210, -162, arcR),
       fill: "none",
       stroke: "#B91C1C",
       strokeWidth: "10",
       strokeLinecap: "round",
       opacity: "0.15"
-    }), React.createElement("path", {
+    }), /*#__PURE__*/React.createElement("path", {
       d: describeArc(-162, -114, arcR),
       fill: "none",
       stroke: "#C87941",
       strokeWidth: "10",
       strokeLinecap: "round",
       opacity: "0.15"
-    }), React.createElement("path", {
+    }), /*#__PURE__*/React.createElement("path", {
       d: describeArc(-114, -66, arcR),
       fill: "none",
       stroke: "#8CC63F",
       strokeWidth: "10",
       strokeLinecap: "round",
       opacity: "0.15"
-    }), React.createElement("path", {
+    }), /*#__PURE__*/React.createElement("path", {
       d: describeArc(-66, 30, arcR),
       fill: "none",
       stroke: "#1B3A2D",
       strokeWidth: "10",
       strokeLinecap: "round",
       opacity: "0.15"
-    }), fs.score > 0 && React.createElement("path", {
+    }), fs.score > 0 && /*#__PURE__*/React.createElement("path", {
       d: describeArc(-210, -210 + filledAngle, arcR),
       fill: "none",
       stroke: scoreColor,
       strokeWidth: "10",
       strokeLinecap: "round"
-    }), React.createElement("polygon", {
+    }), /*#__PURE__*/React.createElement("polygon", {
       points: `${needleTip.x},${needleTip.y} ${needleBase1.x},${needleBase1.y} ${needleBase2.x},${needleBase2.y}`,
       fill: scoreColor,
       opacity: "0.9"
-    }), React.createElement("circle", {
+    }), /*#__PURE__*/React.createElement("circle", {
       cx: arcCx,
       cy: arcCy,
       r: "5",
       fill: scoreColor
-    }), React.createElement("text", {
+    }), /*#__PURE__*/React.createElement("text", {
       x: arcCx,
       y: arcCy + 22,
       textAnchor: "middle",
@@ -5782,18 +6273,18 @@ function Results({
       fontWeight: "700",
       fontFamily: "Cormorant Garamond,Georgia,serif",
       fill: scoreColor
-    }, fs.score), React.createElement("text", {
+    }, fs.score), /*#__PURE__*/React.createElement("text", {
       x: arcCx,
       y: arcCy + 33,
       textAnchor: "middle",
       fontSize: "8",
       fill: "#78716C"
-    }, "/ 100")), React.createElement("div", {
+    }, "/ 100")), /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: "center",
         marginTop: -6
       }
-    }, React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
         display: "inline-block",
         padding: "3px 12px",
@@ -5803,16 +6294,16 @@ function Results({
         fontSize: 11,
         fontWeight: 700
       }
-    }, fs.label))), React.createElement("div", {
+    }, fs.label))), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         minWidth: 180
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 8
       }
-    }, [["Needs attention", 25, "#B91C1C"], ["Moderate", 50, "#C87941"], ["Good", 75, "#8CC63F"], ["Excellent", 100, "#1B3A2D"]].map(([lbl, max, clr]) => React.createElement("div", {
+    }, [["Needs attention", 25, "#B91C1C"], ["Moderate", 50, "#C87941"], ["Good", 75, "#8CC63F"], ["Excellent", 100, "#1B3A2D"]].map(([lbl, max, clr]) => /*#__PURE__*/React.createElement("div", {
       key: lbl,
       style: {
         display: "flex",
@@ -5820,7 +6311,7 @@ function Results({
         gap: 7,
         marginBottom: 4
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 10,
         height: 10,
@@ -5828,20 +6319,20 @@ function Results({
         background: clr,
         flexShrink: 0
       }
-    }), React.createElement("div", {
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#78716C",
         width: 90
       }
-    }, lbl), React.createElement("div", {
+    }, lbl), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         height: 4,
         background: "#ECE8E1",
         borderRadius: 2
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: fs.score <= max && fs.score > max - 25 ? "100%" : "0%",
         height: "100%",
@@ -5849,23 +6340,23 @@ function Results({
         borderRadius: 2,
         transition: "width .3s"
       }
-    }))))), d.fengshui?.length > 0 && React.createElement("div", {
+    }))))), d.fengshui?.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#78716C",
         marginBottom: 6
       }
-    }, React.createElement("strong", {
+    }, /*#__PURE__*/React.createElement("strong", {
       style: {
         color: "#1B3A2D"
       }
-    }, "Active principles:"), " ", d.fengshui.length), fs.details.length > 0 && React.createElement("div", {
+    }, "Active principles:"), " ", d.fengshui.length), fs.details.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
         gap: 3
       }
-    }, fs.details.slice(0, 4).map((dt, i) => React.createElement("div", {
+    }, fs.details.slice(0, 4).map((dt, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
       style: {
         fontSize: 10.5,
@@ -5874,48 +6365,48 @@ function Results({
         borderRadius: 5,
         color: "#1B3A2D"
       }
-    }, "\u2713 ", dt))), d.fengshui?.length === 0 && React.createElement("div", {
+    }, "\u2713 ", dt))), d.fengshui?.length === 0 && /*#__PURE__*/React.createElement("div", {
       className: "note note-warn",
       style: {
         fontSize: 10.5,
         padding: "8px 10px"
       }
     }, "Select feng shui principles in Step 4 to activate this score."))));
-  })()), tab === "costs" && React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+  })()), tab === "costs" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
       color: "#1B3A2D",
       marginBottom: 10
     }
-  }, s.nm, " \u2014 Construction & Professional Costs"), React.createElement("table", null, React.createElement("tbody", null, Object.entries(s.co).filter(([k]) => k !== "total").map(([k, v]) => v > 0 && React.createElement("tr", {
+  }, s.nm, " \u2014 Construction & Professional Costs"), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("tbody", null, Object.entries(s.co).filter(([k]) => k !== "total").map(([k, v]) => v > 0 && /*#__PURE__*/React.createElement("tr", {
     key: k,
     style: {
       borderBottom: "1px solid #ECE8E1"
     }
-  }, React.createElement("td", {
+  }, /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "7px 10px"
     }
-  }, k === "professional_fees" ? "Professional fees (design + permits + contingency)" : k.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase())), React.createElement("td", {
+  }, k === "professional_fees" ? "Professional fees (design + permits + contingency)" : k.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase())), /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "7px 10px",
       textAlign: "right"
     }
-  }, fmt(v)))), React.createElement("tr", {
+  }, fmt(v)))), /*#__PURE__*/React.createElement("tr", {
     style: {
       borderTop: "3px solid " + SM[si].color
     }
-  }, React.createElement("td", {
+  }, /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "9px 10px",
       fontWeight: 700,
       color: SM[si].color,
       fontSize: 14
     }
-  }, "Construction Total"), React.createElement("td", {
+  }, "Construction Total"), /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "9px 10px",
       textAlign: "right",
@@ -5923,16 +6414,16 @@ function Results({
       color: SM[si].color,
       fontSize: 14
     }
-  }, fmt(s.co.total)))))), React.createElement("div", {
+  }, fmt(s.co.total)))))), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
       color: "#1B3A2D",
       marginBottom: 10
     }
-  }, "\uD83C\uDFE0 IKEA Furniture & Finishes \u2014 ", s.nm, " Tier"), React.createElement("p", {
+  }, "\uD83C\uDFE0 IKEA Furniture & Finishes \u2014 ", s.nm, " Tier"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11,
       color: "#78716C",
@@ -5946,12 +6437,12 @@ function Results({
       byRoom[it.room].push(it);
     });
     const totalFurn = items.reduce((s, it) => s + it.price, 0);
-    return React.createElement("div", null, Object.entries(byRoom).map(([room, its]) => React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", null, Object.entries(byRoom).map(([room, its]) => /*#__PURE__*/React.createElement("div", {
       key: room,
       style: {
         marginBottom: 12
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         fontWeight: 700,
@@ -5959,17 +6450,17 @@ function Results({
         textTransform: "uppercase",
         marginBottom: 4
       }
-    }, room), React.createElement("table", null, React.createElement("tbody", null, its.map((it, i) => React.createElement("tr", {
+    }, room), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("tbody", null, its.map((it, i) => /*#__PURE__*/React.createElement("tr", {
       key: it.name,
       style: {
         borderBottom: "1px solid #ECE8E1",
         background: i % 2 ? "#FAFAF8" : "#fff"
       }
-    }, React.createElement("td", {
+    }, /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 10px"
       }
-    }, React.createElement("a", {
+    }, /*#__PURE__*/React.createElement("a", {
       href: it.url,
       target: "_blank",
       rel: "noopener noreferrer",
@@ -5979,19 +6470,19 @@ function Results({
         fontWeight: 500,
         fontSize: 12
       }
-    }, it.name, " ", React.createElement("span", {
+    }, it.name, " ", /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9,
         color: "#78716C"
       }
-    }, "\uD83D\uDD17"))), React.createElement("td", {
+    }, "\uD83D\uDD17"))), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 10px",
         textAlign: "right",
         fontSize: 12,
         fontWeight: 600
       }
-    }, fmt(it.price)))))))), React.createElement("div", {
+    }, fmt(it.price)))))))), /*#__PURE__*/React.createElement("div", {
       style: {
         borderTop: "3px solid #1B3A2D",
         padding: "10px",
@@ -6001,7 +6492,7 @@ function Results({
         fontSize: 14,
         color: "#1B3A2D"
       }
-    }, React.createElement("span", null, "Furniture Subtotal"), React.createElement("span", null, fmt(totalFurn))), React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("span", null, "Furniture Subtotal"), /*#__PURE__*/React.createElement("span", null, fmt(totalFurn))), /*#__PURE__*/React.createElement("div", {
       style: {
         borderTop: "2px solid #C87941",
         padding: "10px",
@@ -6012,33 +6503,33 @@ function Results({
         color: "#C87941",
         marginTop: 4
       }
-    }, React.createElement("span", null, "Grand Total (Construction + Furniture)"), React.createElement("span", null, fmt(s.co.total + totalFurn))));
-  })()), React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("span", null, "Grand Total (Construction + Furniture)"), /*#__PURE__*/React.createElement("span", null, fmt(s.co.total + totalFurn))));
+  })()), /*#__PURE__*/React.createElement("div", {
     className: "note note-ok"
-  }, "\uD83D\uDCB0 Tax benefit (36% over 10yr): ", React.createElement("strong", null, fmt(s.vl.taxBenefit)), " = ", fmt(s.vl.taxBenefitAnnual), "/yr. Net cost after tax: ", React.createElement("strong", null, fmt(s.co.total - s.vl.taxBenefit)), ". Furniture bonus (50%, max \u20AC5k): up to ", React.createElement("strong", null, "\u20AC2,500"), " additional deduction.")), tab === "energy" && React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+  }, "\uD83D\uDCB0 Tax benefit (36% over 10yr): ", /*#__PURE__*/React.createElement("strong", null, fmt(s.vl.taxBenefit)), " = ", fmt(s.vl.taxBenefitAnnual), "/yr. Net cost after tax: ", /*#__PURE__*/React.createElement("strong", null, fmt(s.co.total - s.vl.taxBenefit)), ". Furniture bonus (50%, max \u20AC5k): up to ", /*#__PURE__*/React.createElement("strong", null, "\u20AC2,500"), " additional deduction.")), tab === "energy" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
       color: "#1B3A2D",
       marginBottom: 10
     }
-  }, s.nm, " \u2014 Energy"), React.createElement("div", {
+  }, s.nm, " \u2014 Energy"), /*#__PURE__*/React.createElement("div", {
     className: "grid2",
     style: {
       margin: "14px 0"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: 18,
       background: "#FFF5F5",
       borderRadius: 11
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "lbl"
-  }, "Before"), React.createElement("div", {
+  }, "Before"), /*#__PURE__*/React.createElement("div", {
     style: {
       width: 48,
       height: 48,
@@ -6053,26 +6544,26 @@ function Results({
       fontWeight: 800,
       margin: "6px 0"
     }
-  }, s.en.bC), React.createElement("div", {
+  }, s.en.bC), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 20,
       fontWeight: 700
     }
-  }, s.en.bS, " ", React.createElement("span", {
+  }, s.en.bS, " ", /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10
     }
-  }, "kWh/m\xB2\xB7y"))), React.createElement("div", {
+  }, "kWh/m\xB2\xB7y"))), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: 18,
       background: "#D1E7DD",
       borderRadius: 11
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "lbl"
-  }, "After"), React.createElement("div", {
+  }, "After"), /*#__PURE__*/React.createElement("div", {
     style: {
       width: 48,
       height: 48,
@@ -6087,41 +6578,41 @@ function Results({
       fontWeight: 800,
       margin: "6px 0"
     }
-  }, s.en.aC), React.createElement("div", {
+  }, s.en.aC), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 20,
       fontWeight: 700,
       color: "#1B3A2D"
     }
-  }, s.en.aS, " ", React.createElement("span", {
+  }, s.en.aS, " ", /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10
     }
-  }, "kWh/m\xB2\xB7y")))), React.createElement("div", {
+  }, "kWh/m\xB2\xB7y")))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
       gap: 8
     }
-  }, [["Reduction", "-" + s.en.sp + "%", true], ["Annual Save", fmt(s.sv.yr), false], ["Monthly Save", fmt(s.sv.mo), true]].map(([lb, vl, hl]) => React.createElement("div", {
+  }, [["Reduction", "-" + s.en.sp + "%", true], ["Annual Save", fmt(s.sv.yr), false], ["Monthly Save", fmt(s.sv.mo), true]].map(([lb, vl, hl]) => /*#__PURE__*/React.createElement("div", {
     key: lb,
     className: "stat " + (hl ? "stat-hl" : "stat-normal")
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "lbl"
-  }, lb), React.createElement("div", {
+  }, lb), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 18,
       fontWeight: 700,
       color: hl ? "#1B3A2D" : "#1C1917"
     }
-  }, vl)))), React.createElement("div", {
+  }, vl)))), /*#__PURE__*/React.createElement("div", {
     className: "note note-info",
     style: {
       marginTop: 12
     }
-  }, "For detailed energy simulation, use: ", React.createElement("a", {
+  }, "For detailed energy simulation, use: ", /*#__PURE__*/React.createElement("a", {
     href: "https://energy-efficiency-tool-project-management.streamlit.app/",
     target: "_blank",
     rel: "noopener noreferrer",
@@ -6135,7 +6626,7 @@ function Results({
       label,
       value,
       color
-    }) => React.createElement("div", {
+    }) => /*#__PURE__*/React.createElement("div", {
       style: {
         padding: "8px 10px",
         background: "#F6F4EF",
@@ -6143,13 +6634,13 @@ function Results({
         minWidth: 90,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9.5,
         color: "#78716C",
         marginBottom: 2
       }
-    }, label), React.createElement("div", {
+    }, label), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 16,
@@ -6167,32 +6658,32 @@ function Results({
       const mx = max || Math.max(preVal, postVal, 1) * 1.1;
       const pre = Math.round(preVal / mx * 100);
       const post = Math.round(postVal / mx * 100);
-      return React.createElement("div", {
+      return /*#__PURE__*/React.createElement("div", {
         style: {
           marginBottom: 12
         }
-      }, React.createElement("div", {
+      }, /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 11,
           fontWeight: 600,
           marginBottom: 4,
           color: "#1B3A2D"
         }
-      }, label), React.createElement("div", {
+      }, label), /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           alignItems: "center",
           gap: 8,
           marginBottom: 3
         }
-      }, React.createElement("div", {
+      }, /*#__PURE__*/React.createElement("div", {
         style: {
           width: 60,
           fontSize: 10,
           color: "#78716C",
           textAlign: "right"
         }
-      }, "Ante"), React.createElement("div", {
+      }, "Ante"), /*#__PURE__*/React.createElement("div", {
         style: {
           flex: 1,
           height: 20,
@@ -6200,7 +6691,7 @@ function Results({
           borderRadius: 5,
           overflow: "hidden"
         }
-      }, React.createElement("div", {
+      }, /*#__PURE__*/React.createElement("div", {
         style: {
           height: "100%",
           width: pre + "%",
@@ -6212,27 +6703,27 @@ function Results({
           minWidth: 30,
           transition: "width .5s"
         }
-      }, React.createElement("span", {
+      }, /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 9,
           color: "#fff",
           fontWeight: 700,
           whiteSpace: "nowrap"
         }
-      }, preVal.toLocaleString("it-IT"), " ", unit)))), React.createElement("div", {
+      }, preVal.toLocaleString("it-IT"), " ", unit)))), /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           alignItems: "center",
           gap: 8
         }
-      }, React.createElement("div", {
+      }, /*#__PURE__*/React.createElement("div", {
         style: {
           width: 60,
           fontSize: 10,
           color: "#78716C",
           textAlign: "right"
         }
-      }, "Post"), React.createElement("div", {
+      }, "Post"), /*#__PURE__*/React.createElement("div", {
         style: {
           flex: 1,
           height: 20,
@@ -6240,7 +6731,7 @@ function Results({
           borderRadius: 5,
           overflow: "hidden"
         }
-      }, React.createElement("div", {
+      }, /*#__PURE__*/React.createElement("div", {
         style: {
           height: "100%",
           width: post + "%",
@@ -6252,7 +6743,7 @@ function Results({
           minWidth: 30,
           transition: "width .5s"
         }
-      }, React.createElement("span", {
+      }, /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 9,
           color: "#fff",
@@ -6263,26 +6754,26 @@ function Results({
     };
     const cf = e.economy.cashflow;
     const cfMax = Math.max(...cf.map(p => Math.abs(p.cumNPV)), e.economy.investment_gross);
-    return React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#1B3A2D,#2D5F45)",
         color: "#fff",
         marginBottom: 12
       }
-    }, React.createElement("h3", {
+    }, /*#__PURE__*/React.createElement("h3", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700,
         marginBottom: 3
       }
-    }, "\uD83D\uDD0B Lombardy CENED+2 Energy Calculator \u2014 ", s.nm), React.createElement("p", {
+    }, "\uD83D\uDD0B Lombardy CENED+2 Energy Calculator \u2014 ", s.nm), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 11,
         opacity: .85
       }
-    }, "DDUO 2456/2017 \xB7 DM 26/6/2015 \xB7 UNI/TS 11300 \xB7 ARERA Q2 2026 \xB7 30-year NPV @ 4% discount, 3% energy escalation"), React.createElement("div", {
+    }, "DDUO 2456/2017 \xB7 DM 26/6/2015 \xB7 UNI/TS 11300 \xB7 ARERA Q2 2026 \xB7 30-year NPV @ 4% discount, 3% energy escalation"), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 10,
         display: "flex",
@@ -6291,31 +6782,31 @@ function Results({
         fontSize: 10.5,
         opacity: .9
       }
-    }, React.createElement("span", null, "\uD83D\uDCCD ", d.city || "Milano", " \xB7 GG ", e.GG), React.createElement("span", null, "\xB7"), React.createElement("span", null, "\uD83D\uDCD0 ", parseFloat(d.area) || 85, " m\xB2 \xB7 S/V 0.65"), React.createElement("span", null, "\xB7"), React.createElement("span", null, "\uD83C\uDFDB EP_rif ", e.EPrif, " kWh/m\xB2\xB7y (edificio standard)"))), React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCCD ", d.city || "Milano", " \xB7 GG ", e.GG), /*#__PURE__*/React.createElement("span", null, "\xB7"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCD0 ", parseFloat(d.area) || 85, " m\xB2 \xB7 S/V 0.65"), /*#__PURE__*/React.createElement("span", null, "\xB7"), /*#__PURE__*/React.createElement("span", null, "\uD83C\uDFDB EP_rif ", e.EPrif, " kWh/m\xB2\xB7y (edificio standard)"))), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
         gap: 12,
         marginBottom: 12
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "#FFF5F5"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
         marginBottom: 10
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title",
       style: {
         margin: 0
       }
-    }, "Ante operam"), React.createElement("div", {
+    }, "Ante operam"), /*#__PURE__*/React.createElement("div", {
       style: {
         width: 42,
         height: 42,
@@ -6329,50 +6820,50 @@ function Results({
         fontSize: 16,
         fontWeight: 800
       }
-    }, e.ante.classe)), React.createElement("div", {
+    }, e.ante.classe)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
         gap: 6
       }
-    }, React.createElement(Pill, {
+    }, /*#__PURE__*/React.createElement(Pill, {
       label: "EPgl,nren",
       value: e.ante.EPnren + " kWh/m²·y",
       color: "#B91C1C"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Ratio EP/EP_rif",
       value: "×" + e.ante.rapporto
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Gas annuo",
       value: e.ante.cons.gas_Smc.toLocaleString("it-IT") + " Smc"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Elettr. annua",
       value: e.ante.cons.elec_kWh.toLocaleString("it-IT") + " kWh"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Costo \u20AC/y",
       value: fmt(e.ante.cost),
       color: "#B91C1C"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "CO\u2082 kg/y",
       value: e.ante.co2.toLocaleString("it-IT")
-    }))), React.createElement("div", {
+    }))), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "#EDF3EE"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
         marginBottom: 10
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title",
       style: {
         margin: 0
       }
-    }, "Post operam"), React.createElement("div", {
+    }, "Post operam"), /*#__PURE__*/React.createElement("div", {
       style: {
         width: 42,
         height: 42,
@@ -6386,51 +6877,51 @@ function Results({
         fontSize: 16,
         fontWeight: 800
       }
-    }, e.post.classe)), React.createElement("div", {
+    }, e.post.classe)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
         gap: 6
       }
-    }, React.createElement(Pill, {
+    }, /*#__PURE__*/React.createElement(Pill, {
       label: "EPgl,nren",
       value: e.post.EPnren + " kWh/m²·y",
       color: "#1B3A2D"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Ratio EP/EP_rif",
       value: "×" + e.post.rapporto
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Gas annuo",
       value: e.post.cons.gas_Smc.toLocaleString("it-IT") + " Smc"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Elettr. annua",
       value: e.post.cons.elec_kWh.toLocaleString("it-IT") + " kWh"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Costo \u20AC/y",
       value: fmt(e.post.cost),
       color: "#1B3A2D"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "CO\u2082 kg/y",
       value: e.post.co2.toLocaleString("it-IT")
-    })))), React.createElement("div", {
+    })))), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#FAEBD7,#D1E7DD)"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
         gap: 14,
         flexWrap: "wrap"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
         gap: 6
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 42,
         height: 42,
@@ -6444,12 +6935,12 @@ function Results({
         fontSize: 16,
         fontWeight: 800
       }
-    }, e.ante.classe), React.createElement("span", {
+    }, e.ante.classe), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 18,
         color: "#1B3A2D"
       }
-    }, "\u2192"), React.createElement("div", {
+    }, "\u2192"), /*#__PURE__*/React.createElement("div", {
       style: {
         width: 42,
         height: 42,
@@ -6463,104 +6954,104 @@ function Results({
         fontSize: 16,
         fontWeight: 800
       }
-    }, e.post.classe)), React.createElement("div", {
+    }, e.post.classe)), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         minWidth: 120
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 18,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, e.delta.class_jumps, " class jump", e.delta.class_jumps !== 1 ? "s" : ""), React.createElement("div", {
+    }, e.delta.class_jumps, " class jump", e.delta.class_jumps !== 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#78716C"
       }
-    }, "\u2212", e.delta.saving_pct, "% primary energy \xB7 \u2212", e.delta.co2_kg_saved.toLocaleString("it-IT"), " kg CO\u2082/y")), React.createElement("div", {
+    }, "\u2212", e.delta.saving_pct, "% primary energy \xB7 \u2212", e.delta.co2_kg_saved.toLocaleString("it-IT"), " kg CO\u2082/y")), /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: "right"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#78716C"
       }
-    }, "Annual saving"), React.createElement("div", {
+    }, "Annual saving"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 22,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, fmt(e.delta.saving_year))))), React.createElement("div", {
+    }, fmt(e.delta.saving_year))))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "Consumption & cost comparison"), React.createElement(Bar, {
+    }, "Consumption & cost comparison"), /*#__PURE__*/React.createElement(Bar, {
       preVal: e.ante.cons.gas_Smc,
       postVal: e.post.cons.gas_Smc,
       label: "Gas naturale (Smc/anno)",
       unit: "Smc"
-    }), React.createElement(Bar, {
+    }), /*#__PURE__*/React.createElement(Bar, {
       preVal: e.ante.cons.elec_kWh,
       postVal: e.post.cons.elec_kWh,
       label: "Elettricit\xE0 (kWh/anno)",
       unit: "kWh"
-    }), React.createElement(Bar, {
+    }), /*#__PURE__*/React.createElement(Bar, {
       preVal: e.ante.cost,
       postVal: e.post.cost,
       label: "Costo energetico totale (\u20AC/anno)",
       unit: "\u20AC"
-    }), React.createElement(Bar, {
+    }), /*#__PURE__*/React.createElement(Bar, {
       preVal: e.ante.co2,
       postVal: e.post.co2,
       label: "Emissioni CO\u2082 (kg/anno)",
       unit: "kg"
-    })), React.createElement("div", {
+    })), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "\uD83D\uDCB0 Economic Analysis \u2014 Ecobonus 50%"), React.createElement("div", {
+    }, "\uD83D\uDCB0 Economic Analysis \u2014 Ecobonus 50%"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))",
         gap: 8,
         marginBottom: 14
       }
-    }, React.createElement(Pill, {
+    }, /*#__PURE__*/React.createElement(Pill, {
       label: "Investment gross",
       value: fmt(e.economy.investment_gross),
       color: "#C87941"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Tax deduction (50%)",
       value: fmt(e.economy.tax_deduction),
       color: "#2D5F45"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Net investment",
       value: fmt(e.economy.investment_net)
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Simple payback",
       value: e.economy.payback_years ? e.economy.payback_years + " yr" : "—"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "30y NPV @ 4%",
       value: fmt(e.economy.npv_30y),
       color: e.economy.npv_30y > 0 ? "#1B3A2D" : "#B91C1C"
-    }), React.createElement(Pill, {
+    }), /*#__PURE__*/React.createElement(Pill, {
       label: "Saving/yr (year 1)",
       value: fmt(e.delta.saving_year),
       color: "#1B3A2D"
-    })), React.createElement("div", {
+    })), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         fontWeight: 600,
         marginBottom: 6,
         color: "#1B3A2D"
       }
-    }, "30-year cumulative NPV (\u20AC)"), React.createElement("div", {
+    }, "30-year cumulative NPV (\u20AC)"), /*#__PURE__*/React.createElement("div", {
       style: {
         position: "relative",
         height: 160,
@@ -6569,12 +7060,12 @@ function Results({
         padding: "8px 4px",
         border: "1px solid #E2DCD2"
       }
-    }, React.createElement("svg", {
+    }, /*#__PURE__*/React.createElement("svg", {
       width: "100%",
       height: "100%",
       viewBox: "0 0 600 144",
       preserveAspectRatio: "none"
-    }, React.createElement("line", {
+    }, /*#__PURE__*/React.createElement("line", {
       x1: "0",
       y1: "72",
       x2: "600",
@@ -6587,7 +7078,7 @@ function Results({
       const h = Math.abs(p.cumNPV) / cfMax * 64;
       const positive = p.cumNPV >= 0;
       const y = positive ? 72 - h : 72;
-      return React.createElement("rect", {
+      return /*#__PURE__*/React.createElement("rect", {
         key: i,
         x: i * w + 1,
         y: y,
@@ -6596,14 +7087,14 @@ function Results({
         fill: positive ? "#1B3A2D" : "#B91C1C",
         opacity: "0.85"
       });
-    }), [0, 10, 20, 30].map(yr => React.createElement("text", {
+    }), [0, 10, 20, 30].map(yr => /*#__PURE__*/React.createElement("text", {
       key: yr,
       x: yr / 30 * 600,
       y: "138",
       fontSize: "9",
       fill: "#78716C",
       textAnchor: yr === 0 ? "start" : yr === 30 ? "end" : "middle"
-    }, yr === 0 ? "now" : "yr " + yr)))), React.createElement("div", {
+    }, yr === 0 ? "now" : "yr " + yr)))), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 6,
         fontSize: 10,
@@ -6611,69 +7102,69 @@ function Results({
         display: "flex",
         justifyContent: "space-between"
       }
-    }, React.createElement("span", null, "Year 1 cum NPV: ", fmt(cf[0].cumNPV)), React.createElement("span", null, "Year 10: ", fmt(cf[9].cumNPV)), React.createElement("span", null, "Year 20: ", fmt(cf[19].cumNPV)), React.createElement("span", null, "Year 30: ", fmt(cf[29].cumNPV))), React.createElement("details", {
+    }, /*#__PURE__*/React.createElement("span", null, "Year 1 cum NPV: ", fmt(cf[0].cumNPV)), /*#__PURE__*/React.createElement("span", null, "Year 10: ", fmt(cf[9].cumNPV)), /*#__PURE__*/React.createElement("span", null, "Year 20: ", fmt(cf[19].cumNPV)), /*#__PURE__*/React.createElement("span", null, "Year 30: ", fmt(cf[29].cumNPV))), /*#__PURE__*/React.createElement("details", {
       style: {
         marginTop: 10
       }
-    }, React.createElement("summary", {
+    }, /*#__PURE__*/React.createElement("summary", {
       style: {
         fontSize: 11,
         color: "#1B3A2D",
         fontWeight: 600,
         cursor: "pointer"
       }
-    }, "View year-by-year cashflow"), React.createElement("table", {
+    }, "View year-by-year cashflow"), /*#__PURE__*/React.createElement("table", {
       style: {
         marginTop: 6
       }
-    }, React.createElement("thead", null, React.createElement("tr", {
+    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
       style: {
         borderBottom: "2px solid #E2DCD2"
       }
-    }, React.createElement("th", {
+    }, /*#__PURE__*/React.createElement("th", {
       style: {
         fontSize: 9
       }
-    }, "Year"), React.createElement("th", {
-      style: {
-        textAlign: "right",
-        fontSize: 9
-      }
-    }, "Energy saving \u20AC"), React.createElement("th", {
+    }, "Year"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         fontSize: 9
       }
-    }, "Tax deduction \u20AC"), React.createElement("th", {
+    }, "Energy saving \u20AC"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         fontSize: 9
       }
-    }, "Cum NPV \u20AC"))), React.createElement("tbody", null, cf.map((p, i) => React.createElement("tr", {
+    }, "Tax deduction \u20AC"), /*#__PURE__*/React.createElement("th", {
+      style: {
+        textAlign: "right",
+        fontSize: 9
+      }
+    }, "Cum NPV \u20AC"))), /*#__PURE__*/React.createElement("tbody", null, cf.map((p, i) => /*#__PURE__*/React.createElement("tr", {
       key: i,
       style: {
         borderBottom: "1px solid #ECE8E1",
         background: i % 2 ? "#FAFAF8" : "#fff"
       }
-    }, React.createElement("td", {
+    }, /*#__PURE__*/React.createElement("td", {
       style: {
         fontSize: 10,
         padding: "4px 8px"
       }
-    }, p.year), React.createElement("td", {
+    }, p.year), /*#__PURE__*/React.createElement("td", {
       style: {
         fontSize: 10,
         padding: "4px 8px",
         textAlign: "right"
       }
-    }, fmt(p.saving)), React.createElement("td", {
+    }, fmt(p.saving)), /*#__PURE__*/React.createElement("td", {
       style: {
         fontSize: 10,
         padding: "4px 8px",
         textAlign: "right",
         color: "#2D5F45"
       }
-    }, p.deduction > 0 ? fmt(p.deduction) : "—"), React.createElement("td", {
+    }, p.deduction > 0 ? fmt(p.deduction) : "—"), /*#__PURE__*/React.createElement("td", {
       style: {
         fontSize: 10,
         padding: "4px 8px",
@@ -6681,16 +7172,16 @@ function Results({
         fontWeight: 600,
         color: p.cumNPV >= 0 ? "#1B3A2D" : "#B91C1C"
       }
-    }, fmt(p.cumNPV)))))))), React.createElement("div", {
+    }, fmt(p.cumNPV)))))))), /*#__PURE__*/React.createElement("div", {
       className: "note note-warn",
       style: {
         fontSize: 10.5,
         lineHeight: 1.55
       }
-    }, "\u26A0\uFE0F ", React.createElement("strong", null, "Stima ingegneristica"), " basata sul metodo CENED+2 semplificato (DDUO 2456/2017) e tariffe ARERA Q2 2026. Non sostituisce un APE redatto da Soggetto Certificatore. Per Ecobonus / Conto Termico \xE8 obbligatorio l'APE depositato nel CEER Lombardia. Tariffe energetiche soggette ad aggiornamento ARERA. NPV calcolato su 30 anni con tasso di sconto 4%, escalation energia 3%/anno, detrazione Ecobonus 50% (prima casa) recuperata in 10 quote."));
-  })(), tab === "schedule" && React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+    }, "\u26A0\uFE0F ", /*#__PURE__*/React.createElement("strong", null, "Stima ingegneristica"), " basata sul metodo CENED+2 semplificato (DDUO 2456/2017) e tariffe ARERA Q2 2026. Non sostituisce un APE redatto da Soggetto Certificatore. Per Ecobonus / Conto Termico \xE8 obbligatorio l'APE depositato nel CEER Lombardia. Tariffe energetiche soggette ad aggiornamento ARERA. NPV calcolato su 30 anni con tasso di sconto 4%, escalation energia 3%/anno, detrazione Ecobonus 50% (prima casa) recuperata in 10 quote."));
+  })(), tab === "schedule" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       fontSize: 17,
@@ -6700,7 +7191,7 @@ function Results({
   }, s.nm, " \u2014 Schedule (", s.sc.tw, "wk)"), s.sc.t.map((t, i) => {
     const pct = t.w / s.sc.tw * 100,
       left = t.s / s.sc.tw * 100;
-    return React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       key: t.n,
       style: {
         display: "flex",
@@ -6708,7 +7199,7 @@ function Results({
         marginBottom: 7,
         gap: 9
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 110,
         fontSize: 11,
@@ -6716,7 +7207,7 @@ function Results({
         textAlign: "right",
         flexShrink: 0
       }
-    }, t.n), React.createElement("div", {
+    }, t.n), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         position: "relative",
@@ -6724,7 +7215,7 @@ function Results({
         background: "#F6F4EF",
         borderRadius: 5
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
         left: left + "%",
@@ -6745,7 +7236,7 @@ function Results({
     const t = v.trace || [];
     const StepCard = ({
       step
-    }) => React.createElement("div", {
+    }) => /*#__PURE__*/React.createElement("div", {
       style: {
         padding: "10px 12px",
         background: "#FAFAF8",
@@ -6753,53 +7244,53 @@ function Results({
         borderRadius: 6,
         marginBottom: 6
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "baseline",
         gap: 10
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, "Step ", step.step, " \xB7 ", step.label), step.value != null && React.createElement("div", {
+    }, "Step ", step.step, " \xB7 ", step.label), step.value != null && /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 15,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, typeof step.value === "number" ? step.value > 1000 ? fmt(step.value) : step.value + " €/m²" : step.value)), step.note && React.createElement("div", {
+    }, typeof step.value === "number" ? step.value > 1000 ? fmt(step.value) : step.value + " €/m²" : step.value)), step.note && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10.5,
         color: "#78716C",
         marginTop: 3,
         lineHeight: 1.5
       }
-    }, step.note), step.total && React.createElement("div", {
+    }, step.note), step.total && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#1B3A2D",
         marginTop: 2
       }
-    }, React.createElement("strong", null, "Total: ", fmt(step.total))), step.OMI_min && React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("strong", null, "Total: ", fmt(step.total))), step.OMI_min && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#78716C",
         marginTop: 2
       }
-    }, "OMI range \u20AC/m\xB2: ", step.OMI_min.toLocaleString(), " \u2013 ", step.OMI_max.toLocaleString(), " \xB7 asking ref \u20AC", step.asking_ref.toLocaleString(), "/m\xB2 \xB7 rent \u20AC", step.rent_ref, "/m\xB2\xB7mo"), step.adders && React.createElement("div", {
+    }, "OMI range \u20AC/m\xB2: ", step.OMI_min.toLocaleString(), " \u2013 ", step.OMI_max.toLocaleString(), " \xB7 asking ref \u20AC", step.asking_ref.toLocaleString(), "/m\xB2 \xB7 rent \u20AC", step.rent_ref, "/m\xB2\xB7mo"), step.adders && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
         gap: 4,
         marginTop: 4
       }
-    }, Object.entries(step.adders).map(([k, v]) => React.createElement("span", {
+    }, Object.entries(step.adders).map(([k, v]) => /*#__PURE__*/React.createElement("span", {
       key: k,
       style: {
         fontSize: 9,
@@ -6808,7 +7299,7 @@ function Results({
         borderRadius: 6,
         color: "#7D5A00"
       }
-    }, k, ": \u20AC", Math.round(v).toLocaleString()))), step.gross_uplift != null && React.createElement("div", {
+    }, k, ": \u20AC", Math.round(v).toLocaleString()))), step.gross_uplift != null && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
@@ -6816,19 +7307,19 @@ function Results({
         marginTop: 5,
         fontSize: 10
       }
-    }, React.createElement("span", null, "Gross uplift: ", React.createElement("strong", null, fmt(step.gross_uplift))), React.createElement("span", null, "Net uplift: ", React.createElement("strong", {
+    }, /*#__PURE__*/React.createElement("span", null, "Gross uplift: ", /*#__PURE__*/React.createElement("strong", null, fmt(step.gross_uplift))), /*#__PURE__*/React.createElement("span", null, "Net uplift: ", /*#__PURE__*/React.createElement("strong", {
       style: {
         color: step.net_uplift > 0 ? "#1B3A2D" : "#B91C1C"
       }
-    }, fmt(step.net_uplift))), React.createElement("span", null, "Profit if resold: ", React.createElement("strong", {
+    }, fmt(step.net_uplift))), /*#__PURE__*/React.createElement("span", null, "Profit if resold: ", /*#__PURE__*/React.createElement("strong", {
       style: {
         color: step.profit_resold > 0 ? "#1B3A2D" : "#B91C1C"
       }
-    }, fmt(step.profit_resold))), React.createElement("span", null, "ROI: ", React.createElement("strong", {
+    }, fmt(step.profit_resold))), /*#__PURE__*/React.createElement("span", null, "ROI: ", /*#__PURE__*/React.createElement("strong", {
       style: {
         color: step.roi_pct > 0 ? "#1B3A2D" : "#B91C1C"
       }
-    }, step.roi_pct, "%"))), step.monthly != null && React.createElement("div", {
+    }, step.roi_pct, "%"))), step.monthly != null && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
@@ -6836,11 +7327,11 @@ function Results({
         marginTop: 5,
         fontSize: 10
       }
-    }, React.createElement("span", null, "Monthly rent: ", React.createElement("strong", null, fmt(step.monthly))), React.createElement("span", null, "Annual: ", React.createElement("strong", null, fmt(step.annual))), React.createElement("span", null, "Gross yield: ", React.createElement("strong", {
+    }, /*#__PURE__*/React.createElement("span", null, "Monthly rent: ", /*#__PURE__*/React.createElement("strong", null, fmt(step.monthly))), /*#__PURE__*/React.createElement("span", null, "Annual: ", /*#__PURE__*/React.createElement("strong", null, fmt(step.annual))), /*#__PURE__*/React.createElement("span", null, "Gross yield: ", /*#__PURE__*/React.createElement("strong", {
       style: {
         color: "#1B3A2D"
       }
-    }, step.gross_yield_pct, "%"))), step.ceilingHit && React.createElement("div", {
+    }, step.gross_yield_pct, "%"))), step.ceilingHit && /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 4,
         fontSize: 10,
@@ -6852,32 +7343,32 @@ function Results({
       }
     }, "\u26A0 Market ceiling reached (\u20AC", step.ceiling.toLocaleString(), "/m\xB2) \u2014 value capped"));
     const recColor = v.roi_pct >= 15 ? "#1B3A2D" : v.roi_pct >= 8 ? "#2D5F45" : v.roi_pct >= 0 ? "#C87941" : "#B91C1C";
-    return React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#1B3A2D,#2D5F45)",
         color: "#fff",
         marginBottom: 12
       }
-    }, React.createElement("h3", {
+    }, /*#__PURE__*/React.createElement("h3", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700,
         marginBottom: 3
       }
-    }, "\uD83C\uDFE0 Lombardy Valuation \u2014 ", s.nm), React.createElement("p", {
+    }, "\uD83C\uDFE0 Lombardy Valuation \u2014 ", s.nm), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 11,
         opacity: .85
       }
-    }, "\uD83D\uDCCD ", v.zone, " \xB7 ", parseFloat(d.area) || 85, " m\xB2 \xB7 Energy ", v.energy_pre, "\u2192", v.energy_post, " \xB7 Condition ", v.cond_pre, " \u2192 ", v.cond_post), React.createElement("p", {
+    }, "\uD83D\uDCCD ", v.zone, " \xB7 ", parseFloat(d.area) || 85, " m\xB2 \xB7 Energy ", v.energy_pre, "\u2192", v.energy_post, " \xB7 Condition ", v.cond_pre, " \u2192 ", v.cond_post), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 10,
         opacity: .7,
         marginTop: 2
       }
-    }, "OMI Agenzia Entrate \xB7 Immobiliare.it benchmarks (Apr 2026) \xB7 ADE declared transactions \xB7 Banca d'Italia energy premium calibration"), React.createElement("div", {
+    }, "OMI Agenzia Entrate \xB7 Immobiliare.it benchmarks (Apr 2026) \xB7 ADE declared transactions \xB7 Banca d'Italia energy premium calibration"), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 10,
         padding: "8px 12px",
@@ -6886,14 +7377,14 @@ function Results({
         fontSize: 12,
         fontWeight: 700
       }
-    }, "\uD83D\uDCCA ", v.recommendation, " \xB7 ROI ", v.roi_pct, "%")), React.createElement("div", {
+    }, "\uD83D\uDCCA ", v.recommendation, " \xB7 ROI ", v.roi_pct, "%")), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
         gap: 8,
         marginBottom: 12
       }
-    }, [["Pre-renovation value", fmt(v.vB), "#6B705C"], ["Renovation cost", fmt(v.reno_cost), "#C87941"], ["Post-renovation value", fmt(v.vA), "#1B3A2D"], ["Net uplift", fmt(v.net_uplift), v.net_uplift > 0 ? "#1B3A2D" : "#B91C1C"], ["Monthly rent potential", fmt(v.monthly_rent), "#2D5F45"], ["Gross yield", v.gross_yield_pct + "%", "#1B3A2D"]].map(([l, vl, c]) => React.createElement("div", {
+    }, [["Pre-renovation value", fmt(v.vB), "#6B705C"], ["Renovation cost", fmt(v.reno_cost), "#C87941"], ["Post-renovation value", fmt(v.vA), "#1B3A2D"], ["Net uplift", fmt(v.net_uplift), v.net_uplift > 0 ? "#1B3A2D" : "#B91C1C"], ["Monthly rent potential", fmt(v.monthly_rent), "#2D5F45"], ["Gross yield", v.gross_yield_pct + "%", "#1B3A2D"]].map(([l, vl, c]) => /*#__PURE__*/React.createElement("div", {
       key: l,
       className: "card",
       style: {
@@ -6901,68 +7392,68 @@ function Results({
         margin: 0,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: "#78716C"
       }
-    }, l), React.createElement("div", {
+    }, l), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 18,
         fontWeight: 700,
         color: c
       }
-    }, vl)))), React.createElement("div", {
+    }, vl)))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "\uD83D\uDCCB Calculation Trace \u2014 every step + coefficient"), React.createElement("p", {
+    }, "\uD83D\uDCCB Calculation Trace \u2014 every step + coefficient"), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 11,
         color: "#78716C",
         marginBottom: 8,
         lineHeight: 1.5
       }
-    }, "Each step references the same official sources (OMI quotations, Milan zone benchmarks, OMI condition states). All coefficients are visible and adjustable in the source."), t.map((step, i) => React.createElement(StepCard, {
+    }, "Each step references the same official sources (OMI quotations, Milan zone benchmarks, OMI condition states). All coefficients are visible and adjustable in the source."), t.map((step, i) => /*#__PURE__*/React.createElement(StepCard, {
       key: i,
       step: step
-    }))), React.createElement("div", {
+    }))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("h4", {
+    }, /*#__PURE__*/React.createElement("h4", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 14,
         color: "#1B3A2D",
         marginBottom: 8
       }
-    }, "\uD83D\uDCDA Data sources used"), React.createElement("div", {
+    }, "\uD83D\uDCDA Data sources used"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
         gap: 6,
         fontSize: 10.5
       }
-    }, [["OMI Quotazioni Immobiliari", "Agenzia delle Entrate · semiannual official quotations", "https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm"], ["ADE Declared transaction values", "Calibration layer for nearby sold properties", "https://www.agenziaentrate.gov.it/portale/web/guest/schede/fabbricatiterreni/oicv/dichiarati"], ["Immobiliare.it Market", "Milan zone asking + rent benchmarks (Apr 2026)", "https://www.immobiliare.it/mercato-immobiliare/lombardia/"], ["Banca d'Italia", "Energy label capitalization premium research", "https://www.bancaditalia.it"], ["Milan Open Data", "OMI Zones GeoJSON for spatial geolocation", ""]].map(([k, desc, url]) => React.createElement("div", {
+    }, [["OMI Quotazioni Immobiliari", "Agenzia delle Entrate · semiannual official quotations", "https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm"], ["ADE Declared transaction values", "Calibration layer for nearby sold properties", "https://www.agenziaentrate.gov.it/portale/web/guest/schede/fabbricatiterreni/oicv/dichiarati"], ["Immobiliare.it Market", "Milan zone asking + rent benchmarks (Apr 2026)", "https://www.immobiliare.it/mercato-immobiliare/lombardia/"], ["Banca d'Italia", "Energy label capitalization premium research", "https://www.bancaditalia.it"], ["Milan Open Data", "OMI Zones GeoJSON for spatial geolocation", ""]].map(([k, desc, url]) => /*#__PURE__*/React.createElement("div", {
       key: k,
       style: {
         padding: "7px 9px",
         background: "#F6F4EF",
         borderRadius: 6
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, k), React.createElement("div", {
+    }, k), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#78716C",
         marginTop: 1
       }
-    }, desc), url && React.createElement("a", {
+    }, desc), url && /*#__PURE__*/React.createElement("a", {
       href: url,
       target: "_blank",
       rel: "noopener noreferrer",
@@ -6970,7 +7461,7 @@ function Results({
         fontSize: 9.5,
         color: "#1B3A2D"
       }
-    }, url))))), React.createElement("div", {
+    }, url))))), /*#__PURE__*/React.createElement("div", {
       className: "note note-warn",
       style: {
         fontSize: 10.5,
@@ -6984,51 +7475,66 @@ function Results({
     const omiRef = CITY_PRICES[cityKey] || LOMBARDY_AVG;
     const currentVal = s.vl.vB;
     const postRenovVal = s.vl.vA;
+    /* user-entered inputs from page 1 */
+    const existingValueUser = parseFloat(d.existingValue) || null;
+    const budgetUser = parseFloat(d.prefBudget) || null;
+    const timeline = d.prefTimeline || null;
+    /* the baseline the client actually cares about: their stated value if given, else the model estimate */
+    const baseline = existingValueUser || currentVal;
+    const renoCost = s.co.total;
+    const upliftAbs = postRenovVal - baseline;
+    const upliftPct = baseline ? Math.round(upliftAbs / baseline * 100) : null;
+    /* typical on-site duration per scenario (weeks) — used to flag the preferred timeline */
+    const durWeeks = {
+      Essential: [4, 6],
+      Balanced: [8, 12],
+      Premium: [12, 20]
+    }[s.nm] || [8, 12];
     const listingDelta = listingPrice ? Math.round((listingPrice - currentVal) / currentVal * 100) : null;
-    const maxBar = Math.max(listingPrice || 0, currentVal, postRenovVal, omiRef * area) * 1.2 || 1;
+    const maxBar = Math.max(listingPrice || 0, currentVal, postRenovVal, omiRef * area, existingValueUser || 0) * 1.2 || 1;
     const Bar = ({
       val,
       color,
       label,
       note
-    }) => React.createElement("div", {
+    }) => /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 10
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         marginBottom: 3,
         fontSize: 11
       }
-    }, React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
         fontWeight: 600
       }
-    }, label), React.createElement("span", {
+    }, label), /*#__PURE__*/React.createElement("span", {
       style: {
         fontWeight: 700,
         color
       }
-    }, fmt(val), " ", React.createElement("span", {
+    }, fmt(val), " ", /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
         color: "#78716C"
       }
-    }, fmt(Math.round(val / area)), "/m\xB2"), " ", note && React.createElement("span", {
+    }, fmt(Math.round(val / area)), "/m\xB2"), " ", note && /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9,
         marginLeft: 4
       }
-    }, note))), React.createElement("div", {
+    }, note))), /*#__PURE__*/React.createElement("div", {
       style: {
         height: 26,
         background: "#F0EDE8",
         borderRadius: 6,
         overflow: "hidden"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         height: "100%",
         width: Math.max(2, Math.round(val / maxBar * 100)) + "%",
@@ -7037,14 +7543,14 @@ function Results({
         transition: "width .5s ease"
       }
     })));
-    return React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#1B3A2D,#2D5F45)",
         color: "#fff",
         marginBottom: 12
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -7052,48 +7558,86 @@ function Results({
         flexWrap: "wrap",
         gap: 10
       }
-    }, React.createElement("div", null, React.createElement("h3", {
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h3", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700,
         marginBottom: 3
       }
-    }, "Market Analysis \u2014 ", d.city || "Lombardy"), React.createElement("p", {
+    }, "Market Analysis \u2014 ", d.city || "Lombardy"), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 11,
         opacity: .8
       }
-    }, d.address || "Property", " \xB7 ", area, "m\xB2 \xB7 Energy ", d.eCls || "?", " \u2192 ", s.en.aC)), React.createElement(MarketFetchBtn, {
+    }, d.address || "Property", " \xB7 ", area, "m\xB2 \xB7 Energy ", d.eCls || "?", " \u2192 ", s.en.aC)), /*#__PURE__*/React.createElement(MarketFetchBtn, {
       d: d,
       s: s,
       area: area,
       apiKey: apiKey
-    }))), React.createElement("div", {
+    }))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "Value Comparison"), listingPrice && React.createElement(Bar, {
+    }, "Value Comparison \u2014 existing vs post-renovation"), listingPrice && /*#__PURE__*/React.createElement(Bar, {
       val: listingPrice,
       color: "#C87941",
       label: "Listing / Announcement Price",
       note: listingDelta != null ? listingDelta > 0 ? "▲ " + listingDelta + "% above market" : "▼ " + Math.abs(listingDelta) + "% below market" : null
-    }), React.createElement(Bar, {
+    }), /*#__PURE__*/React.createElement(Bar, {
       val: omiRef * area,
       color: "#B8AFA5",
       label: "OMI Reference (" + d.city + ") — " + fmt(omiRef) + "/m²",
       note: null
-    }), React.createElement(Bar, {
+    }), existingValueUser && /*#__PURE__*/React.createElement(Bar, {
+      val: existingValueUser,
+      color: "#8B6F4E",
+      label: "Your stated existing value",
+      note: "entered on page 1"
+    }), /*#__PURE__*/React.createElement(Bar, {
       val: currentVal,
       color: "#6B705C",
-      label: "Current Market Value — pre renovation",
+      label: "Current Market Value — pre renovation (model estimate)",
       note: null
-    }), React.createElement(Bar, {
+    }), /*#__PURE__*/React.createElement(Bar, {
       val: postRenovVal,
       color: "#1B3A2D",
       label: "Post-Renovation Value — " + s.nm + " scenario",
-      note: "+" + Math.round((postRenovVal - currentVal) / currentVal * 100) + "%"
-    }), listingPrice && React.createElement("div", {
+      note: upliftPct != null ? "+" + upliftPct + "% vs " + (existingValueUser ? "your value" : "estimate") : null
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 8,
+        background: "linear-gradient(135deg,#EDF3EE,#F5F0E8)",
+        border: "1px solid #B5CDB8"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 8,
+        fontSize: 12.5
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 600,
+        color: "#1B3A2D"
+      }
+    }, "Existing ", /*#__PURE__*/React.createElement("strong", null, fmt(baseline)), " \u2192 Post-renovation ", /*#__PURE__*/React.createElement("strong", null, fmt(postRenovVal))), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 700,
+        color: upliftAbs > 0 ? "#1B3A2D" : "#B91C1C"
+      }
+    }, upliftAbs > 0 ? "+" : "", fmt(upliftAbs), upliftPct != null ? " · " + (upliftPct > 0 ? "+" : "") + upliftPct + "%" : "")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9.5,
+        color: "#78716C",
+        marginTop: 4
+      }
+    }, "Baseline = ", existingValueUser ? "your stated existing value (page 1)" : "the model's pre-renovation estimate", ". Gain before deducting renovation cost of ", fmt(renoCost), ".")), listingPrice && /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 10,
         padding: 10,
@@ -7103,31 +7647,100 @@ function Results({
         fontSize: 11.5,
         lineHeight: 1.5
       }
-    }, listingDelta > 5 && React.createElement("span", {
+    }, listingDelta > 5 && /*#__PURE__*/React.createElement("span", {
       style: {
         fontWeight: 700,
         color: "#B91C1C"
       }
-    }, "\u26A0\uFE0F Listed ", listingDelta, "% above market \u2014 negotiation margin of ", fmt(listingPrice - currentVal), " exists"), listingDelta <= -5 && React.createElement("span", {
+    }, "\u26A0\uFE0F Listed ", listingDelta, "% above market \u2014 negotiation margin of ", fmt(listingPrice - currentVal), " exists"), listingDelta <= -5 && /*#__PURE__*/React.createElement("span", {
       style: {
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, "\u2705 Listed ", Math.abs(listingDelta), "% below market \u2014 potential upside of ", fmt(currentVal - listingPrice)), listingDelta > -5 && listingDelta <= 5 && React.createElement("span", {
+    }, "\u2705 Listed ", Math.abs(listingDelta), "% below market \u2014 potential upside of ", fmt(currentVal - listingPrice)), listingDelta > -5 && listingDelta <= 5 && /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#78716C"
       }
-    }, "\u2713 Listing price broadly in line with market estimate (", listingDelta > 0 ? "+" : "", listingDelta, "%)"))), React.createElement("div", {
+    }, "\u2713 Listing price broadly in line with market estimate (", listingDelta > 0 ? "+" : "", listingDelta, "%)"))), (budgetUser || timeline) && /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "KPIs \u2014 ", s.nm, " Scenario"), React.createElement("div", {
+    }, "Your Preferences vs ", s.nm, " Scenario"), budgetUser && (() => {
+      const diff = budgetUser - renoCost;
+      const over = diff < 0;
+      const pct = Math.round(Math.abs(diff) / renoCost * 100);
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          marginBottom: timeline ? 10 : 0,
+          padding: 11,
+          borderRadius: 8,
+          background: over ? "#FEF2F2" : "#D1E7DD",
+          border: "1px solid " + (over ? "#FECACA" : "#B5CDB8"),
+          fontSize: 11.5,
+          lineHeight: 1.5
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 6
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontWeight: 600
+        }
+      }, "\uD83D\uDCB6 Budget ", fmt(budgetUser), " vs estimated cost ", fmt(renoCost)), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontWeight: 700,
+          color: over ? "#B91C1C" : "#1B3A2D"
+        }
+      }, over ? "▲ " + pct + "% over" : "▼ " + pct + "% under")), /*#__PURE__*/React.createElement("div", {
+        style: {
+          marginTop: 4,
+          color: over ? "#B91C1C" : "#1B3A2D"
+        }
+      }, over ? "Estimated cost exceeds your budget by " + fmt(-diff) + ". Consider the Essential scenario or trimming interventions." : "Within budget — " + fmt(diff) + " of headroom for upgrades or contingency."));
+    })(), timeline && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: 11,
+        borderRadius: 8,
+        background: "#F6F4EF",
+        border: "1px solid #E2DCD2",
+        fontSize: 11.5,
+        lineHeight: 1.5
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 6
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 600
+      }
+    }, "\u23F1 Preferred timeline: ", timeline), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#78716C"
+      }
+    }, s.nm, " works typically ", durWeeks[0], "\u2013", durWeeks[1], " weeks on site")), (timeline === "As soon as possible" || timeline === "Within 3 months") && durWeeks[1] > 12 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 4,
+        color: "#B91C1C"
+      }
+    }, "\u26A0\uFE0F A ", s.nm, " renovation may not finish within 3 months \u2014 allow more time or reduce scope."))), /*#__PURE__*/React.createElement("div", {
+      className: "card"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "section-title"
+    }, "KPIs \u2014 ", s.nm, " Scenario"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr 1fr 1fr",
         gap: 8
       }
-    }, [["Renovation cost", fmt(s.co.total), "#C87941"], ["Value uplift", fmt(postRenovVal - currentVal), "#1B3A2D"], ["Net gain", fmt(postRenovVal - currentVal - s.co.total), postRenovVal - currentVal - s.co.total > 0 ? "#1B3A2D" : "#B91C1C"], ["Tax back/yr", fmt(s.vl.taxBenefitAnnual), "#2D5F45"], ["ROI", Math.round((postRenovVal - currentVal - s.co.total) / s.co.total * 100) + "%", "#1B3A2D"], ["Energy saving/yr", fmt(s.sv.yr), "#2D5F45"], ["Months payback", Math.round(s.co.total / (s.sv.mo || 1)) + " mo", "#78716C"], ["Market uplift rate", "+" + s.vl.up + "%", "#1B3A2D"]].map(([l, v, c]) => React.createElement("div", {
+    }, [["Renovation cost", fmt(s.co.total), "#C87941"], ["Value uplift", fmt(postRenovVal - currentVal), "#1B3A2D"], ["Net gain", fmt(postRenovVal - currentVal - s.co.total), postRenovVal - currentVal - s.co.total > 0 ? "#1B3A2D" : "#B91C1C"], ["Tax back/yr", fmt(s.vl.taxBenefitAnnual), "#2D5F45"], ["ROI", Math.round((postRenovVal - currentVal - s.co.total) / s.co.total * 100) + "%", "#1B3A2D"], ["Energy saving/yr", fmt(s.sv.yr), "#2D5F45"], ["Months payback", Math.round(s.co.total / (s.sv.mo || 1)) + " mo", "#78716C"], ["Market uplift rate", "+" + s.vl.up + "%", "#1B3A2D"]].map(([l, v, c]) => /*#__PURE__*/React.createElement("div", {
       key: l,
       style: {
         padding: "8px 10px",
@@ -7135,26 +7748,26 @@ function Results({
         borderRadius: 7,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: "#78716C",
         marginBottom: 3
       }
-    }, l), React.createElement("div", {
+    }, l), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 15,
         fontWeight: 700,
         color: c
       }
-    }, v))))), React.createElement("div", {
+    }, v))))), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 8,
         flexWrap: "wrap"
       }
-    }, React.createElement("a", {
+    }, /*#__PURE__*/React.createElement("a", {
       href: "https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/index.htm",
       target: "_blank",
       rel: "noopener noreferrer",
@@ -7164,7 +7777,7 @@ function Results({
         textDecoration: "none",
         padding: "7px 14px"
       }
-    }, "\uD83C\uDFDB OMI Agenzia Entrate \u2192"), React.createElement("a", {
+    }, "\uD83C\uDFDB OMI Agenzia Entrate \u2192"), /*#__PURE__*/React.createElement("a", {
       href: "https://www.immobiliare.it/mercato-immobiliare/lombardia/" + (d.city || "milano").toLowerCase().replace(/\s+/g, "-") + "/",
       target: "_blank",
       rel: "noopener noreferrer",
@@ -7186,190 +7799,190 @@ function Results({
       laundry: "🧺 Laundry",
       textiles_accessories: "🧶 Textiles & Accessories"
     };
-    return React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#1B3A2D,#2D5F45)",
         color: "#fff",
         marginBottom: 12
       }
-    }, React.createElement("h3", {
+    }, /*#__PURE__*/React.createElement("h3", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700,
         marginBottom: 3
       }
-    }, "\uD83D\uDECB Post-Renovation Furnishing \u2014 ", s.nm, " (", bom.style, ")"), React.createElement("p", {
+    }, "\uD83D\uDECB Post-Renovation Furnishing \u2014 ", s.nm, " (", bom.style, ")"), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 11,
         opacity: .85
       }
-    }, "Compatible items from 16 Italy/Lombardy providers \xB7 dimensions, material, colour, install notes per item \xB7 search-link to current product on provider site"), React.createElement("div", {
+    }, "Compatible items from 16 Italy/Lombardy providers \xB7 dimensions, material, colour, install notes per item \xB7 search-link to current product on provider site"), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 10,
         display: "grid",
         gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))",
         gap: 8
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         padding: "8px 10px",
         background: "rgba(255,255,255,.12)",
         borderRadius: 7,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         opacity: .7
       }
-    }, "Items"), React.createElement("div", {
+    }, "Items"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700
       }
-    }, Object.values(bom.selectedByRoom).reduce((s, arr) => s + arr.length, 0))), React.createElement("div", {
+    }, Object.values(bom.selectedByRoom).reduce((s, arr) => s + arr.length, 0))), /*#__PURE__*/React.createElement("div", {
       style: {
         padding: "8px 10px",
         background: "rgba(255,255,255,.12)",
         borderRadius: 7,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         opacity: .7
       }
-    }, "Providers"), React.createElement("div", {
+    }, "Providers"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700
       }
-    }, Object.keys(bom.providerTotals).length)), React.createElement("div", {
+    }, Object.keys(bom.providerTotals).length)), /*#__PURE__*/React.createElement("div", {
       style: {
         padding: "8px 10px",
         background: "rgba(255,255,255,.12)",
         borderRadius: 7,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         opacity: .7
       }
-    }, "Grand total"), React.createElement("div", {
+    }, "Grand total"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700
       }
-    }, fmt(bom.grandTotal))))), Object.entries(bom.selectedByRoom).map(([room, items]) => items.length === 0 ? null : React.createElement("div", {
+    }, fmt(bom.grandTotal))))), Object.entries(bom.selectedByRoom).map(([room, items]) => items.length === 0 ? null : /*#__PURE__*/React.createElement("div", {
       key: room,
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
         marginBottom: 8
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title",
       style: {
         margin: 0
       }
-    }, ROOM_LABELS[room] || room), React.createElement("div", {
+    }, ROOM_LABELS[room] || room), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 16,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, fmt(bom.byRoomTotals[room]))), React.createElement("table", {
+    }, fmt(bom.byRoomTotals[room]))), /*#__PURE__*/React.createElement("table", {
       style: {
         fontSize: 11
       }
-    }, React.createElement("thead", null, React.createElement("tr", {
+    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
       style: {
         borderBottom: "2px solid #E2DCD2"
       }
-    }, React.createElement("th", {
+    }, /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "left",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Item"), React.createElement("th", {
+    }, "Item"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "left",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Dimensions"), React.createElement("th", {
+    }, "Dimensions"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "left",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Material \xB7 Colour"), React.createElement("th", {
+    }, "Material \xB7 Colour"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "left",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Provider"), React.createElement("th", {
+    }, "Provider"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Qty"), React.createElement("th", {
+    }, "Qty"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Product"), React.createElement("th", {
+    }, "Product"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Deliv."), React.createElement("th", {
+    }, "Deliv."), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Install"), React.createElement("th", {
+    }, "Install"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "5px 7px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Total"))), React.createElement("tbody", null, items.map((it, i) => React.createElement("tr", {
+    }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, items.map((it, i) => /*#__PURE__*/React.createElement("tr", {
       key: i,
       style: {
         borderBottom: "1px solid #ECE8E1",
         background: i % 2 ? "#FAFAF8" : "#fff"
       }
-    }, React.createElement("td", {
+    }, /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px"
       }
-    }, React.createElement("a", {
+    }, /*#__PURE__*/React.createElement("a", {
       href: mkSearchUrl(it.provider, it.q),
       target: "_blank",
       rel: "noopener noreferrer",
@@ -7378,41 +7991,41 @@ function Results({
         textDecoration: "none",
         fontWeight: 600
       }
-    }, it.name, " ", React.createElement("span", {
+    }, it.name, " ", /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 9
       }
-    }, "\uD83D\uDD17")), React.createElement("div", {
+    }, "\uD83D\uDD17")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9.5,
         color: "#78716C",
         marginTop: 1
       }
-    }, it.cat.replace(/_/g, " "))), React.createElement("td", {
+    }, it.cat.replace(/_/g, " "))), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         fontSize: 10,
         color: "#78716C"
       }
-    }, it.w > 0 ? it.w + "×" + it.d + "×" + it.h + " cm" : "—"), React.createElement("td", {
+    }, it.w > 0 ? it.w + "×" + it.d + "×" + it.h + " cm" : "—"), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         fontSize: 10
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         color: "#1B3A2D"
       }
-    }, it.material), React.createElement("div", {
+    }, it.material), /*#__PURE__*/React.createElement("div", {
       style: {
         color: "#78716C"
       }
-    }, it.colour)), React.createElement("td", {
+    }, it.colour)), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         fontSize: 10
       }
-    }, React.createElement("a", {
+    }, /*#__PURE__*/React.createElement("a", {
       href: PROVIDERS[it.provider].base,
       target: "_blank",
       rel: "noopener noreferrer",
@@ -7421,33 +8034,33 @@ function Results({
         fontWeight: 600,
         textDecoration: "none"
       }
-    }, PROVIDERS[it.provider].name)), React.createElement("td", {
+    }, PROVIDERS[it.provider].name)), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         textAlign: "right",
         fontSize: 10
       }
-    }, it.qty), React.createElement("td", {
+    }, it.qty), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         textAlign: "right",
         fontSize: 10
       }
-    }, fmt(it.lineTotal)), React.createElement("td", {
+    }, fmt(it.lineTotal)), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         textAlign: "right",
         fontSize: 10,
         color: "#78716C"
       }
-    }, it.delivery > 0 ? fmt(it.delivery) : "—"), React.createElement("td", {
+    }, it.delivery > 0 ? fmt(it.delivery) : "—"), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         textAlign: "right",
         fontSize: 10,
         color: "#78716C"
       }
-    }, it.install > 0 ? fmt(it.install) : "—"), React.createElement("td", {
+    }, it.install > 0 ? fmt(it.install) : "—"), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "6px 7px",
         textAlign: "right",
@@ -7455,88 +8068,88 @@ function Results({
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, fmt(it.totalAllIn)))))))), React.createElement("div", {
+    }, fmt(it.totalAllIn)))))))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "\uD83D\uDCE6 Provider Summary"), React.createElement("table", {
+    }, "\uD83D\uDCE6 Provider Summary"), /*#__PURE__*/React.createElement("table", {
       style: {
         fontSize: 11.5
       }
-    }, React.createElement("thead", null, React.createElement("tr", {
+    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
       style: {
         borderBottom: "2px solid #E2DCD2"
       }
-    }, React.createElement("th", {
+    }, /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "left",
         padding: "6px 8px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Provider"), React.createElement("th", {
+    }, "Provider"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "left",
         padding: "6px 8px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Categories supplied"), React.createElement("th", {
+    }, "Categories supplied"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "6px 8px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Items"), React.createElement("th", {
+    }, "Items"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "6px 8px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Total all-in"), React.createElement("th", {
+    }, "Total all-in"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: "right",
         padding: "6px 8px",
         fontSize: 9,
         color: "#78716C"
       }
-    }, "Website"))), React.createElement("tbody", null, Object.entries(bom.providerTotals).sort((a, b) => b[1].total - a[1].total).map(([pid, info]) => React.createElement("tr", {
+    }, "Website"))), /*#__PURE__*/React.createElement("tbody", null, Object.entries(bom.providerTotals).sort((a, b) => b[1].total - a[1].total).map(([pid, info]) => /*#__PURE__*/React.createElement("tr", {
       key: pid,
       style: {
         borderBottom: "1px solid #ECE8E1"
       }
-    }, React.createElement("td", {
+    }, /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "7px 8px",
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, PROVIDERS[pid].name), React.createElement("td", {
+    }, PROVIDERS[pid].name), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "7px 8px",
         fontSize: 10,
         color: "#78716C"
       }
-    }, [...info.categories].slice(0, 5).join(", ")), React.createElement("td", {
+    }, [...info.categories].slice(0, 5).join(", ")), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "7px 8px",
         textAlign: "right"
       }
-    }, info.count), React.createElement("td", {
+    }, info.count), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "7px 8px",
         textAlign: "right",
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, fmt(info.total)), React.createElement("td", {
+    }, fmt(info.total)), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "7px 8px",
         textAlign: "right"
       }
-    }, React.createElement("a", {
+    }, /*#__PURE__*/React.createElement("a", {
       href: PROVIDERS[pid].base,
       target: "_blank",
       rel: "noopener noreferrer",
@@ -7545,12 +8158,12 @@ function Results({
         textDecoration: "none",
         fontSize: 10
       }
-    }, "visit \u2197"))))))), React.createElement("div", {
+    }, "visit \u2197"))))))), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#FAEBD7,#D1E7DD)"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
@@ -7558,27 +8171,27 @@ function Results({
         flexWrap: "wrap",
         gap: 10
       }
-    }, React.createElement("div", null, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 18,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, "Furnishing total (", s.nm, " tier)"), React.createElement("div", {
+    }, "Furnishing total (", s.nm, " tier)"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#78716C",
         marginTop: 2
       }
-    }, "Products + delivery + assembly/installation. Bonus Mobili 50% (max \u20AC5,000) may apply if purchased within 12 months of starting renovation.")), React.createElement("div", {
+    }, "Products + delivery + assembly/installation. Bonus Mobili 50% (max \u20AC5,000) may apply if purchased within 12 months of starting renovation.")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 30,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, fmt(bom.grandTotal)))), React.createElement("div", {
+    }, fmt(bom.grandTotal)))), /*#__PURE__*/React.createElement("div", {
       className: "note note-warn",
       style: {
         fontSize: 10.5,
@@ -7605,33 +8218,33 @@ function Results({
       warn: "#A16207",
       ok: "#1B3A2D"
     };
-    return React.createElement("div", null, React.createElement(SP, null), React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SP, null), /*#__PURE__*/React.createElement("div", {
       className: "card",
       style: {
         background: "linear-gradient(135deg,#1B3A2D,#2D5F45)",
         color: "#fff",
         marginBottom: 12
       }
-    }, React.createElement("h3", {
+    }, /*#__PURE__*/React.createElement("h3", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 20,
         fontWeight: 700,
         marginBottom: 4
       }
-    }, "\u2714\uFE0F Compliance Check \u2014 Italian Building Code"), React.createElement("p", {
+    }, "\u2714\uFE0F Compliance Check \u2014 Italian Building Code"), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 11,
         opacity: .85,
         marginBottom: 10
       }
-    }, "DM 5/7/1975 \xB7 DM 236/1989 \xB7 DPCM 5/12/1997 \xB7 Reg.Ed. Milano 2016 \xB7 DM Requisiti Minimi 2015 \xB7 NTC 2018"), React.createElement("div", {
+    }, "DM 5/7/1975 \xB7 DM 236/1989 \xB7 DPCM 5/12/1997 \xB7 Reg.Ed. Milano 2016 \xB7 DM Requisiti Minimi 2015 \xB7 NTC 2018"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 10,
         flexWrap: "wrap"
       }
-    }, [["Conformi", oks, "#1B3A2D"], ["Verifiche", warns, "#F59E0B"], ["Critiche", errs, "#DC2626"]].map(([l, n, c]) => React.createElement("div", {
+    }, [["Conformi", oks, "#1B3A2D"], ["Verifiche", warns, "#F59E0B"], ["Critiche", errs, "#DC2626"]].map(([l, n, c]) => /*#__PURE__*/React.createElement("div", {
       key: l,
       style: {
         flex: 1,
@@ -7641,22 +8254,22 @@ function Results({
         borderRadius: 8,
         textAlign: "center"
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 24,
         fontWeight: 700,
         color: c === "#1B3A2D" ? "#A8E6CF" : c
       }
-    }, n), React.createElement("div", {
+    }, n), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         opacity: .8
       }
-    }, l))))), React.createElement("div", {
+    }, l))))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "Verifica Automatica \u2014 Scenario ", s.nm), issues.map((it, i) => React.createElement("div", {
+    }, "Verifica Automatica \u2014 Scenario ", s.nm), issues.map((it, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
       style: {
         display: "flex",
@@ -7667,75 +8280,75 @@ function Results({
         borderRadius: 7,
         marginBottom: 6
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 14,
         color: cssCol[it.sev],
         fontWeight: 700,
         minWidth: 18
       }
-    }, cssIcon[it.sev]), React.createElement("div", {
+    }, cssIcon[it.sev]), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11.5,
         fontWeight: 600,
         color: "#1C1917"
       }
-    }, it.cat, " ", React.createElement("span", {
+    }, it.cat, " ", /*#__PURE__*/React.createElement("span", {
       style: {
         fontWeight: 400,
         color: "#78716C",
         fontSize: 10,
         marginLeft: 6
       }
-    }, "\xB7 ", it.code)), React.createElement("div", {
+    }, "\xB7 ", it.code)), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: cssCol[it.sev],
         marginTop: 2,
         lineHeight: 1.5
       }
-    }, it.msg))))), React.createElement("div", {
+    }, it.msg))))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       className: "section-title"
-    }, "Riferimenti Normativi \u2014 Dimensioni Minime"), React.createElement("div", {
+    }, "Riferimenti Normativi \u2014 Dimensioni Minime"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
         gap: 8,
         fontSize: 11
       }
-    }, [["Altezza locali principali", "≥ 2,70m (2,40m recupero)", "DM 5/7/1975 Art.1"], ["Altezza bagno/corridoio", "≥ 2,40m", "DM 5/7/1975 Art.1"], ["Soggiorno", "≥ 14m² (17m² con cucina)", "Reg.Ed. Art.97"], ["Camera doppia", "≥ 14m²", "DM 5/7/1975 Art.2"], ["Camera singola", "≥ 9m²", "DM 5/7/1975 Art.2"], ["Cucina", "≥ 5m²", "Reg.Ed. Art.97"], ["Bagno lato min", "≥ 1,20m", "Reg.Ed. Art.97"], ["Monolocale 1 pers.", "≥ 28m²", "DM 5/7/1975 Art.3"], ["Apribile finestra", "≥ 1/10 sup. locale", "Reg.Ed. Art.103"], ["Illuminante", "≥ 1/8 sup. locale", "Reg.Ed. Art.105"], ["Profondità locale", "≤ 2,5× h finestra", "Reg.Ed. Art.105"], ["Porta ingresso", "luce netta ≥ 80cm", "DM 236/1989"], ["Porte interne", "luce netta ≥ 75cm", "DM 236/1989"], ["Rotazione sedia rotelle", "Ø 150cm in bagno", "DM 236/1989"], ["Isolamento facciata", "D2m,nT ≥ 40dB", "DPCM 5/12/1997"], ["Pareti tra unità", "R'w ≥ 50dB", "DPCM 5/12/1997"]].map(([k, v, r]) => React.createElement("div", {
+    }, [["Altezza locali principali", "≥ 2,70m (2,40m recupero)", "DM 5/7/1975 Art.1"], ["Altezza bagno/corridoio", "≥ 2,40m", "DM 5/7/1975 Art.1"], ["Soggiorno", "≥ 14m² (17m² con cucina)", "Reg.Ed. Art.97"], ["Camera doppia", "≥ 14m²", "DM 5/7/1975 Art.2"], ["Camera singola", "≥ 9m²", "DM 5/7/1975 Art.2"], ["Cucina", "≥ 5m²", "Reg.Ed. Art.97"], ["Bagno lato min", "≥ 1,20m", "Reg.Ed. Art.97"], ["Monolocale 1 pers.", "≥ 28m²", "DM 5/7/1975 Art.3"], ["Apribile finestra", "≥ 1/10 sup. locale", "Reg.Ed. Art.103"], ["Illuminante", "≥ 1/8 sup. locale", "Reg.Ed. Art.105"], ["Profondità locale", "≤ 2,5× h finestra", "Reg.Ed. Art.105"], ["Porta ingresso", "luce netta ≥ 80cm", "DM 236/1989"], ["Porte interne", "luce netta ≥ 75cm", "DM 236/1989"], ["Rotazione sedia rotelle", "Ø 150cm in bagno", "DM 236/1989"], ["Isolamento facciata", "D2m,nT ≥ 40dB", "DPCM 5/12/1997"], ["Pareti tra unità", "R'w ≥ 50dB", "DPCM 5/12/1997"]].map(([k, v, r]) => /*#__PURE__*/React.createElement("div", {
       key: k,
       style: {
         padding: "8px 10px",
         background: "#F6F4EF",
         borderRadius: 6
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#78716C"
       }
-    }, k), React.createElement("div", {
+    }, k), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11.5,
         fontWeight: 700,
         color: "#1B3A2D"
       }
-    }, v), React.createElement("div", {
+    }, v), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: "#78716C",
         marginTop: 1
       }
-    }, r))))), React.createElement("div", {
+    }, r))))), /*#__PURE__*/React.createElement("div", {
       className: "card"
-    }, React.createElement("h3", {
+    }, /*#__PURE__*/React.createElement("h3", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 15,
@@ -7763,12 +8376,12 @@ function Results({
     }, {
       t: "7. Fiscale 2026",
       i: ["Bonus Ristrutturazione 50%/36%", "Ecobonus 50%/36%", "Bonus Mobili 50% (max €5k)", "Bonifico parlante", "IVA 10%", "Recovery 10 anni"]
-    }].map((x, xi) => React.createElement("div", {
+    }].map((x, xi) => /*#__PURE__*/React.createElement("div", {
       key: x.t,
       style: {
         marginBottom: 12
       }
-    }, React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontFamily: "'Cormorant Garamond'",
         fontSize: 13,
@@ -7776,7 +8389,7 @@ function Results({
         color: "#1B3A2D",
         marginBottom: 5
       }
-    }, x.t), x.i.map((it, ii) => React.createElement("div", {
+    }, x.t), x.i.map((it, ii) => /*#__PURE__*/React.createElement("div", {
       key: it,
       style: {
         display: "flex",
@@ -7786,19 +8399,21 @@ function Results({
         borderRadius: 5,
         marginBottom: 2
       }
-    }, React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#1B3A2D"
       }
-    }, "\u2610"), React.createElement("span", {
+    }, "\u2610"), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 11
       }
-    }, it))))), React.createElement("div", {
+    }, it))))), /*#__PURE__*/React.createElement("div", {
       className: "note note-warn"
-    }, "\u26A0\uFE0F ", React.createElement("strong", null, "Disclaimer:"), " Verifica indicativa basata su DM 5/7/1975, DM 236/1989, DPCM 5/12/1997, Reg.Ed. Milano. Convalida con geometra/architetto abilitato in Lombardia.")));
+    }, "\u26A0\uFE0F ", /*#__PURE__*/React.createElement("strong", null, "Disclaimer:"), " Verifica indicativa basata su DM 5/7/1975, DM 236/1989, DPCM 5/12/1997, Reg.Ed. Milano. Convalida con geometra/architetto abilitato in Lombardia.")));
   })());
 }
+
+/* ══════ MAIN APP ══════ */
 function App() {
   const [step, setStep] = useState(0);
   const [ld, setLd] = useState(false);
@@ -7819,6 +8434,9 @@ function App() {
     annualEnergy: "",
     pType: "Apartment",
     listingUrl: "",
+    existingValue: "",
+    prefBudget: "",
+    prefTimeline: "",
     plans: [],
     photos: [],
     roomDetails: {},
@@ -7852,7 +8470,7 @@ function App() {
       setStep(4);
     }, 1800);
   };
-  if (ld) return React.createElement("div", {
+  if (ld) return /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
       display: "flex",
@@ -7860,39 +8478,39 @@ function App() {
       justifyContent: "center",
       background: "#F6F4EF"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     className: "spinner",
     style: {
       margin: "0 auto 20px"
     }
-  }), React.createElement("h3", {
+  }), /*#__PURE__*/React.createElement("h3", {
     style: {
       fontFamily: "'Cormorant Garamond'",
       color: "#1B3A2D",
       fontSize: 20
     }
-  }, "Generating 3 Solutions"), React.createElement("p", {
+  }, "Generating 3 Solutions"), /*#__PURE__*/React.createElement("p", {
     style: {
       color: "#78716C",
       fontSize: 12
     }
   }, "Essential \xB7 Balanced \xB7 Premium")));
-  return React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
       background: "#F6F4EF"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       background: "linear-gradient(135deg,#1B3A2D,#2D5F45)",
       color: "#fff",
       padding: "12px 22px"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 1020,
       margin: "0 auto",
@@ -7902,13 +8520,13 @@ function App() {
       flexWrap: "wrap",
       gap: 8
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 10
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       width: 36,
       height: 36,
@@ -7919,23 +8537,23 @@ function App() {
       justifyContent: "center",
       fontSize: 18
     }
-  }, "\uD83C\uDFDB\uFE0F"), React.createElement("div", null, React.createElement("h1", {
+  }, "\uD83C\uDFDB\uFE0F"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
     style: {
       fontSize: 16,
       fontWeight: 700
     }
-  }, "Il Tuo Architetto"), React.createElement("p", {
+  }, "Il Tuo Architetto"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 9.5,
       opacity: .7
     }
-  }, "3-Solution AI Renovation \xB7 Photorealistic Renders \xB7 Compliance"))), !HAS_PROXY && React.createElement("div", {
+  }, "3-Solution AI Renovation \xB7 Photorealistic Renders \xB7 Compliance"))), !HAS_PROXY && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
       gap: 4
     }
-  }, React.createElement("label", {
+  }, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 9.5,
       fontWeight: 700,
@@ -7943,13 +8561,13 @@ function App() {
       textTransform: "uppercase",
       color: "#E8C9A0"
     }
-  }, "\uD83D\uDD11 Chiave API \xB7 Google AI Studio"), React.createElement("div", {
+  }, "\uD83D\uDD11 Chiave API \xB7 Google AI Studio"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 6
     }
-  }, React.createElement("input", {
+  }, /*#__PURE__*/React.createElement("input", {
     type: showKey ? "text" : "password",
     value: apiKey,
     onChange: e => setApiKey(e.target.value.trim()),
@@ -7965,7 +8583,7 @@ function App() {
       fontSize: 12.5,
       fontWeight: 500
     }
-  }), React.createElement("button", {
+  }), /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowKey(!showKey),
     title: "Mostra / Nascondi",
     style: {
@@ -7977,32 +8595,32 @@ function App() {
       cursor: "pointer",
       fontSize: 13
     }
-  }, showKey ? "🙈" : "👁️"), apiKey && React.createElement("span", {
+  }, showKey ? "🙈" : "👁️"), apiKey && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: "#8CC63F",
       fontWeight: 700
     }
-  }, "\u2713"))))), step < 4 && React.createElement("div", {
+  }, "\u2713"))))), step < 4 && /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 1020,
       margin: "0 auto",
       padding: "12px 22px 0"
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 3
     }
-  }, steps.map((x, i) => React.createElement("div", {
+  }, steps.map((x, i) => /*#__PURE__*/React.createElement("div", {
     key: x.n,
     style: {
       display: "flex",
       alignItems: "center",
       flex: 1
     }
-  }, React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       width: 30,
       height: 30,
@@ -8016,7 +8634,7 @@ function App() {
       fontSize: 11,
       flexShrink: 0
     }
-  }, x.i), React.createElement("span", {
+  }, x.i), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9.5,
       marginLeft: 5,
@@ -8026,7 +8644,7 @@ function App() {
       overflow: "hidden",
       textOverflow: "ellipsis"
     }
-  }, x.n), i < steps.length - 1 && React.createElement("div", {
+  }, x.n), i < steps.length - 1 && /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
       height: 2,
@@ -8034,56 +8652,56 @@ function App() {
       margin: "0 7px",
       minWidth: 8
     }
-  }))))), React.createElement("div", {
+  }))))), /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 1020,
       margin: "0 auto",
       padding: "16px 22px 56px"
     }
-  }, step === 0 && React.createElement(S1, {
+  }, step === 0 && /*#__PURE__*/React.createElement(S1, {
     d: d,
     u: setD,
     apiKey: apiKey
-  }), step === 1 && React.createElement(S2, {
+  }), step === 1 && /*#__PURE__*/React.createElement(S2, {
     d: d,
     u: setD,
     apiKey: apiKey
-  }), step === 2 && React.createElement(S3, {
+  }), step === 2 && /*#__PURE__*/React.createElement(S3, {
     d: d,
     u: setD
-  }), step === 3 && React.createElement(S4, {
+  }), step === 3 && /*#__PURE__*/React.createElement(S4, {
     d: d,
     u: setD
-  }), step === 4 && React.createElement(Results, {
+  }), step === 4 && /*#__PURE__*/React.createElement(Results, {
     d: d,
     apiKey: apiKey
-  }), step < 4 && React.createElement("div", {
+  }), step < 4 && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
       marginTop: 22
     }
-  }, React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
     className: "btn btn-g",
     onClick: () => setStep(Math.max(0, step - 1)),
     disabled: step === 0
-  }, "\u2190 Indietro"), step < 3 ? React.createElement("button", {
+  }, "\u2190 Indietro"), step < 3 ? /*#__PURE__*/React.createElement("button", {
     className: "btn btn-p",
     onClick: () => setStep(step + 1),
     disabled: !ok
-  }, "Continua \u2192") : React.createElement("button", {
+  }, "Continua \u2192") : /*#__PURE__*/React.createElement("button", {
     className: "btn btn-w",
     onClick: go
-  }, "Genera 3 Soluzioni \u2728")), step === 4 && React.createElement("div", {
+  }, "Genera 3 Soluzioni \u2728")), step === 4 && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
       marginTop: 22
     }
-  }, React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
     className: "btn btn-g",
     onClick: () => setStep(0)
-  }, "\u2190 Modifica"), React.createElement("button", {
+  }, "\u2190 Modifica"), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-s",
     onClick: () => window.print()
   }, "\uD83D\uDCC4 Stampa"))));
@@ -8091,7 +8709,7 @@ function App() {
 (function tryMount() {
   var el = document.getElementById("root");
   if (el) {
-    ReactDOM.render(React.createElement(App, null), el);
+    ReactDOM.render(/*#__PURE__*/React.createElement(App, null), el);
   } else {
     requestAnimationFrame(tryMount);
   }
