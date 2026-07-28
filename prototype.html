@@ -3037,6 +3037,9 @@ function S1({d,u,apiKey}){
 
     /* IMPORTANT: instruct extraction WITHOUT quoting — bypasses Gemini's RECITATION filter */
     const ANTI_RECITATION = 'IMPORTANT: Do NOT quote, copy or repeat any text from the source page verbatim. Extract NUMERIC values, single-word category enums, and paraphrased summaries only. For the description field, write a brief paraphrase in your own words (max 30 words). This is critical to avoid recitation filtering.';
+    /* Hard guard against fabricated listings — the model must NEVER invent a
+       plausible address/price/area from the URL slug or area knowledge. */
+    const ANTI_HALLUCINATION = 'ABSOLUTE RULE — NO GUESSING: Only report fields you can ACTUALLY read for THIS EXACT listing at the given URL. If you cannot open the page or positively identify this specific property, return EVERY field as null. NEVER invent, guess, infer, approximate, or fill any field (address, street, city, CAP, price, area, rooms, year, fees…) from the URL slug, the street/zone name, general knowledge of the area, or a similar/other listing. A null is REQUIRED when unsure — a wrong value is unacceptable.';
 
     const extractFromSchema = (o) => {
       if(!o || typeof o !== 'object') return {};
@@ -3085,14 +3088,16 @@ function S1({d,u,apiKey}){
       }catch(e){ log(label+' '+(e.name==='AbortError'?'TIMEOUT':e.message)); return null; }
     };
 
-    /* === Attempt A: paraphrase-style URL inference (avoids RECITATION) === */
-    const attemptPlain = async () => {
-      const body = {
-        contents:[{parts:[{text:'Analyze this Italian real-estate URL and infer property data from the URL slug + your geographic knowledge of the area. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nReturn JSON only matching this schema (use null for unknown). DO NOT copy text — paraphrase or estimate numerically:\n'+SCHEMA}]}],
-        generationConfig:visionCfg(4096,{responseMimeType:'application/json'})
-      };
-      return tryGemini(AI_MODELS.vision, body, 'A:plain', 20000);
-    };
+    /* Attempt A (URL-slug inference) was REMOVED: it fabricated a plausible but
+       WRONG address/price/area from the slug + area knowledge. We never guess.
+       The only thing safely derivable from the URL is the city, and only when it
+       literally appears in the slug — extracted locally (no model) below. */
+    const cityFromSlug = (()=>{
+      const m = url.toLowerCase().match(/\/(?:vendita|affitto|immobili?|annunci)[^?]*?\/(milano|roma|bologna|torino|firenze|napoli|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese)[\/-]/);
+      if(m) return m[1].charAt(0).toUpperCase()+m[1].slice(1);
+      const m2 = url.toLowerCase().match(/(milano|bergamo|brescia|como|cremona|lecco|lodi|mantova|monza|pavia|sondrio|varese)/);
+      return m2 ? m2[1].charAt(0).toUpperCase()+m2[1].slice(1) : null;
+    })();
 
     /* Known-good extraction models to try (in order) for the tool-based attempts.
        The auto-detected model can be a preview that doesn't support url_context /
@@ -3107,16 +3112,16 @@ function S1({d,u,apiKey}){
     const attemptSearch = async () => {
       for(const model of EXTRACT_MODELS){
         const body = {
-          contents:[{parts:[{text:'Search for this Italian property listing on the web and extract structured numerical/categorical fields. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nOutput JSON only:\n'+SCHEMA}]}],
+          contents:[{parts:[{text:'Search the web for THIS EXACT Italian property listing (same URL / reference number) and extract its real fields. '+ANTI_HALLUCINATION+' '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nOutput JSON only (all null if you cannot find this exact listing):\n'+SCHEMA}]}],
           tools:[{google_search:{}}],
           generationConfig:toolCfg(model,4096)
         };
         let r = await tryGemini(model, body, 'B:search['+model+']', 32000);
         if(r === 'RETRY_PARAPHRASE'){
           const body2 = {
-            contents:[{parts:[{text:'Find this listing online. Output STRICTLY numerical and categorical data only — never quote any text. '+ANTI_RECITATION+' Use the city name and zone but paraphrase everything else.\n\nURL: '+url+'\n\nJSON only:\n'+SCHEMA}]}],
+            contents:[{parts:[{text:'Find THIS EXACT listing online (same URL / reference number). Output STRICTLY the real numerical and categorical data only — never quote text. '+ANTI_HALLUCINATION+' '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON only (all null if not found):\n'+SCHEMA}]}],
             tools:[{google_search:{}}],
-            generationConfig:toolCfg(model,4096,0.3)
+            generationConfig:toolCfg(model,4096,0.2)
           };
           r = await tryGemini(model, body2, 'B2:search-para['+model+']', 32000);
         }
@@ -3130,16 +3135,16 @@ function S1({d,u,apiKey}){
     const attemptUrlCtx = async () => {
       for(const model of EXTRACT_MODELS){
         const body = {
-          contents:[{parts:[{text:'Open this URL and read the Italian real-estate listing (annuncio immobiliare). Extract every property field. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nReturn ONLY valid JSON matching this schema (use null for anything not present):\n'+SCHEMA}]}],
+          contents:[{parts:[{text:'Open this URL and read the Italian real-estate listing (annuncio immobiliare). Extract every property field FROM THE PAGE. '+ANTI_HALLUCINATION+' '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nReturn ONLY valid JSON matching this schema (null for anything not present ON THE PAGE):\n'+SCHEMA}]}],
           tools:[{url_context:{}},{google_search:{}}],
           generationConfig:toolCfg(model,6144)
         };
         let r = await tryGemini(model, body, 'C:urlctx['+model+']', 34000);
         if(r === 'RETRY_PARAPHRASE'){
           const body2 = {
-            contents:[{parts:[{text:'Open this page and output ONLY numbers and single-word categories: area (m²), rooms, bathrooms, floor, energy class (single letter A4–G), price (€), city, CAP, heating type, condition. No quotations from the page; paraphrase any descriptive text. '+ANTI_RECITATION+'\n\nURL: '+url+'\n\nJSON:\n'+SCHEMA}]}],
+            contents:[{parts:[{text:'Open this page and output ONLY numbers and single-word categories actually shown ON THIS PAGE: area (m²), rooms, bathrooms, floor, energy class (single letter A4–G), price (€), city, CAP, heating type, condition. '+ANTI_HALLUCINATION+' No quotations. \n\nURL: '+url+'\n\nJSON (null if the page cannot be read):\n'+SCHEMA}]}],
             tools:[{url_context:{}}],
-            generationConfig:toolCfg(model,6144,0.4)
+            generationConfig:toolCfg(model,6144,0.2)
           };
           r = await tryGemini(model, body2, 'C2:urlctx-para['+model+']', 34000);
         }
@@ -3151,7 +3156,7 @@ function S1({d,u,apiKey}){
     /* === Attempt D: gemini-2.0-flash search === */
     const attempt20 = async () => {
       const body = {
-        contents:[{parts:[{text:'Search for this Italian listing. Extract only numbers/categories. '+ANTI_RECITATION+'\nURL: '+url+'\nJSON:\n'+SCHEMA}]}],
+        contents:[{parts:[{text:'Search for THIS EXACT Italian listing (same URL / reference). Extract only the real numbers/categories. '+ANTI_HALLUCINATION+' '+ANTI_RECITATION+'\nURL: '+url+'\nJSON (all null if not found):\n'+SCHEMA}]}],
         tools:[{googleSearch:{}}],
         generationConfig:{temperature:0.1,maxOutputTokens:1500}
       };
@@ -3292,11 +3297,11 @@ function S1({d,u,apiKey}){
     const attemptSearchDescribe = async () => {
       for(const model of EXTRACT_MODELS){
         const desc = await geminiText(model, {
-          contents:[{parts:[{text:'Search the web for this Italian real-estate listing (annuncio immobiliare) and describe it in your OWN words — never copy sentences from the page. Include, if available: surface area in m², number of locali/rooms, bathrooms, floor, energy class (single letter A4–G), price in €, full street address, city, CAP, heating type, condition, property type, and the main features.\n\nURL: '+url}]}],
+          contents:[{parts:[{text:'Search the web for THIS EXACT Italian real-estate listing (same URL / reference number). If you actually find it, describe it in your OWN words — never copy sentences. Include only what the real listing states: surface area m², locali/rooms, bathrooms, floor, energy class (A4–G), price €, full street address, city, CAP, heating type, condition, property type, features. '+ANTI_HALLUCINATION+' If you cannot find this exact listing, reply with exactly: NOT_FOUND — and nothing else. Do NOT describe a similar or invented property.\n\nURL: '+url}]}],
           tools:[{google_search:{}}],
           generationConfig:toolCfg(model,8192,0.2)
         }, 'G:describe['+model+']', 34000);
-        if(desc && desc.length>40 && !/unable to|non sono riuscito|not find|no information/i.test(desc)){
+        if(desc && desc.length>40 && !/NOT_FOUND|unable to|non sono riuscito|not find|no information|couldn.t find/i.test(desc)){
           const r = await tryGemini(model, {
             contents:[{parts:[{text:'From this paraphrased description of an Italian property listing, output ONLY valid JSON matching the schema (use null for anything unknown). Convert Italian floor words (piano terra→Ground, primo→1, etc.) and normalise the energy class to a single code.\n'+SCHEMA+'\n\nDESCRIPTION:\n'+desc}]}],
             generationConfig:visionCfg(4096,{responseMimeType:'application/json'})
@@ -3307,19 +3312,33 @@ function S1({d,u,apiKey}){
       return null;
     };
 
-    const results = await Promise.all([
-      attemptPlain().catch(()=>null),
-      attemptSearch().catch(()=>null),
-      attemptSearchDescribe().catch(()=>null),
-      attemptUrlCtx().catch(()=>null),
-      attempt20().catch(()=>null),
-      attemptScrape().catch(()=>null),
+    /* Priority order = merge order: GROUNDED methods that read the REAL page
+       first (reader/scrape mine the actual page text; url_context reads it),
+       then web-search (least reliable). attemptPlain (URL-slug guessing) is gone.
+       First non-null value per field wins, so grounded evidence overrides search. */
+    const [rReader, rScrape, rUrlCtx, rDescribe, rSearch, r20] = await Promise.all([
       attemptReader().catch(()=>null),
+      attemptScrape().catch(()=>null),
+      attemptUrlCtx().catch(()=>null),
+      attemptSearchDescribe().catch(()=>null),
+      attemptSearch().catch(()=>null),
+      attempt20().catch(()=>null),
     ]);
-    log('done '+results.map(x=>x&&x!=='RETRY_PARAPHRASE'?Object.keys(x).filter(k=>x[k]).length:'-').join('/'));
+    const grounded = [rReader, rScrape, rUrlCtx];           // read the actual page
+    const searched = [rDescribe, rSearch, r20];             // web search (can be wrong)
+    const ordered = [...grounded, ...searched];
+    log('done reader/scrape/urlctx/describe/search/2.0 = '+ordered.map(x=>x&&x!=='RETRY_PARAPHRASE'?Object.keys(x).filter(k=>x[k]).length:'-').join('/'));
 
     const parsed = {};
-    results.filter(r=>r && r !== 'RETRY_PARAPHRASE').forEach(r=>{ for(const k in r){ if(r[k]!=null && r[k]!=='' && (parsed[k]==null || parsed[k]==='')) parsed[k]=r[k]; }});
+    ordered.filter(r=>r && r !== 'RETRY_PARAPHRASE').forEach(r=>{ for(const k in r){ if(r[k]!=null && r[k]!=='' && (parsed[k]==null || parsed[k]==='')) parsed[k]=r[k]; }});
+
+    /* If NOTHING was read from the actual page and search found nothing, do not
+       fabricate — leave the form empty (the city may still come from the slug). */
+    const anyGrounded = grounded.some(r=>r && r!=='RETRY_PARAPHRASE' && Object.keys(r).some(k=>r[k]!=null&&r[k]!==''));
+    if(!parsed.city && cityFromSlug) parsed.city = cityFromSlug;   // factual, from the URL only
+    if(Object.keys(parsed).filter(k=>parsed[k]!=null&&parsed[k]!=='' && k!=='city').length===0){
+      log(anyGrounded?'grounded but empty':'no data read from the page');
+    }
 
     applyParsed(parsed, (Date.now()-t0)/1000, 'URL');
   };
