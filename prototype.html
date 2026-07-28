@@ -316,6 +316,42 @@ CONFIDENCE 0–100 from comparable quantity/recency/proximity/similarity, source
 REQUIRED WARNINGS: automated estimate, not a certified appraisal; OMI values are broad zonal indications; portal prices are asking prices; actual transaction prices may differ; renovation costs need design + contractor quotes; energy-class improvement needs professional confirmation; rental income depends on vacancy/tenant/expenses/taxation/regulation; short-term use is subject to local/regional/national/condominium rules; legal/cadastral/planning/condominium compliance must be checked separately.
 </script>
 
+<script type="text/plain" id="rental-valuation-model-md">
+§12 RENTAL VALUATION & INCOME MODEL — grounding brief for the rent query.
+
+12.1 FUNDAMENTAL RULE: do NOT estimate rent as only "neighbourhood rent €/m² × area" — that is a benchmark only. The final achievable rent is a property-specific model adjusting for: micro-location, distance/travel-time to the relevant centre, transport proximity, floor, basement/semi-basement, lift, floor×lift interaction, apartment condition, building condition, balcony/terrace/garden, energy class, furnishing, layout efficiency, bedrooms/bathrooms, light, orientation, view, noise, parking, size, local demand/supply/vacancy, contract type. Estimate the rent a tenant will actually accept, not the current advertised ask.
+
+12.2 SEPARATE VARIABLES (never merge): portal_asking_rent, asking_rent_eur_m2_month, estimated_negotiated_rent, estimated_achievable_rent, verified_contracted_rent, effective_rent_after_vacancy, net_owner_income. Advertised rents run above signed rents → Achievable = Asking × (1 − negotiation/overpricing adjustment); the adjustment varies by comune/neighbourhood/type/strategy/condition/month/liquidity — not one fixed % across Lombardy. Where signed-contract evidence is missing, widen the range and state it is asking-based.
+
+12.3 HEDONIC MODEL: ln(R) = α(zone,time) + f1(area) + f2(distance/accessibility) + βfloor + βlift + βfloor×lift + βcondition + βbuilding + βbalcony + βterrace + βenergy + βfurnished + βlayout + βparking + βnoise + βview + ε. Keep individual effects explainable.
+
+12.4 MICRO-LOCATION: calibrate at the smallest reliable level (same building → street → micro-neighbourhood → OMI zone → adjacent zones → comune → similar comuni). Use travel-time & transport access, not straight-line distance; nonlinear centrality curve; for Milan use multiple employment centres (Centro, Porta Nuova, CityLife, Bicocca, campuses, hospitals, hubs).
+
+12.5–12.6 FLOOR × LIFT: distinguish basement/semi-basement/ground/mezzanine/1st/intermediate/upper/top/penthouse. Material discount for basements (light, humidity, privacy, demand). Ground floor: discount for privacy/noise/light, premium if private garden/independent entrance. Model lift as an INTERACTION with floor: no lift matters little at raised-ground/1st, penalty grows from 2nd–3rd up, 4th–5th no-lift = substantial discount + smaller tenant pool; high floor WITH lift = premium; no penthouse premium if access/common areas poor. Output floor adj, lift adj, combined adj.
+
+12.7 APARTMENT CONDITION (separate from building): to-renovate / poor-habitable / dated / good / renovated-standard / renovated-high / new. No full renovated premium for superficial painting when systems/bath/kitchen/windows remain dated.
+
+12.8 BUILDING CONDITION (independent): a renovated flat in a poor building ≠ same rent as in a renovated building. Show internal premium and building premium/discount separately.
+
+12.9 OUTDOOR: none / Juliet / small / usable / large balcony / terrace / roof terrace / private / shared garden — value by area, usability, orientation, privacy, view, floor, direct access. A service balcony ≠ a usable terrace.
+
+12.10 NONLINEAR SIZE: rent €/m² is not constant; small units rent higher €/m². Size bands (<30, 30–45, 45–65, 65–90, 90–120, >120 m²). Do NOT estimate a 120 m² flat by ×120 the €/m² of a 35 m² studio.
+
+12.11 LAYOUT & ROOMS: value legal bedrooms/bathrooms, separate vs open kitchen, circulation %, storage, privacy. No value for bedrooms failing legal habitability.
+
+12.12 OTHER: energy/operating cost, furnishing (old furniture is not a premium), light/orientation/view, noise, parking/storage, accessibility.
+
+12.13 COMPARABLES: similar in location/size/floor/lift/condition/building/outdoor/furnishing/energy/rooms/parking/contract; similarity-weighted medians. Exclude room rentals, tourist nightly, serviced, luxury, promo, auction, unclear-surface, duplicates.
+
+12.14 SUSTAINABILITY CHECK: because ads may be elevated, compare with signed rents, historical asks, income, rent-to-income, competing listings, days-on-market, vacancy. Produce BOTH current-advertised-rent range and estimated-sustainable-achievable-rent range; warn when advertised > sustainable.
+
+12.15 PRE vs POST: run the whole model twice; incremental rent = post − pre; separate uplift by finish, layout, added legal bedroom, added bathroom, energy, cooling, windows, furnishing, outdoor.
+
+12.16 FINAL: predicted property rent = base micro-location rent × combined property factor; achievable = asking × asking-to-contract; effective annual = achievable × 12 × (1 − vacancy − collection loss); NOI = effective + accessory − owner opex.
+
+12.17 OUTPUT: municipality & neighbourhood benchmark, OMI rent range, portal asking-rent range by source, adjusted comparable-rent range, predicted property asking rent, predicted achievable contracted rent, effective rent after vacancy, net owner income, lower/central/upper, confidence, and a transparent adjustment table. No false precision when evidence is thin.
+</script>
+
 <div id="root"></div>
 <script type="text/babel">
 const {useState, useRef, useMemo, useCallback, useEffect} = React;
@@ -586,6 +622,55 @@ const CONDITION_VALUE = {
   "Nuovo / In costruzione":1.40, "finely_renovated_new":1.40,
 };
 
+/* ══════════════════════════════════════════════════════════════
+   PROPERTY-SPECIFIC RENTAL MODEL (§12)
+   Never estimate rent as just "neighbourhood €/m² × area" — that is only a
+   benchmark. Adjust the benchmark for the property's own characteristics
+   (floor×lift interaction, condition, outdoor space, energy, parking, size),
+   then convert ASKING rent → ACHIEVABLE contracted rent. Returns the total
+   factor plus an explainable adjustment table.
+   ══════════════════════════════════════════════════════════════ */
+/* Nonlinear €/m² size curve (§12.10): smaller units rent higher per m². */
+function rentSizeFactor(area){
+  return area<30?1.15 : area<45?1.08 : area<65?1.02 : area<90?1.00 : area<120?0.95 : 0.90;
+}
+/* Property adjustment factor + explainable rows. statusOverride / eClsOverride
+   let us run the same model pre- and post-renovation (§12.15). */
+function rentPropertyFactor(d, statusOverride, eClsOverride){
+  const rows=[]; let f=1.0;
+  const status=statusOverride||d.currentStatus;
+  const eCls=eClsOverride||d.eCls;
+  const feats=((d.listingExtracted?.features||[]).join(" ")).toLowerCase();
+  const hasLift = d.elevator!==false;
+  const fl=String(d.floor||"3");
+  const floorNum = fl==="Ground"?0 : fl==="Mezzanino"?0.5 : fl==="Mansarda"?4 : fl==="Attico"?5 : (parseInt(fl)||3);
+  /* §12.5–12.6 floor × lift interaction */
+  let floorAdj=0, floorNote="";
+  if(fl==="Ground"){ floorAdj = feats.includes("giardin")||feats.includes("garden")?0.0:-0.05; floorNote=floorAdj<0?"ground floor (privacy/noise/light)":"garden level"; }
+  else if(hasLift){ floorAdj = (fl==="Attico")?0.06 : floorNum>=4?0.04 : 0.02; floorNote=`floor ${fl} + lift (light/view)`; }
+  else { floorAdj = floorNum<=1?-0.01 : Math.max(-0.15, -0.035*(floorNum-1)); floorNote=`floor ${fl}, no lift (walk-up penalty)`; }
+  f+=floorAdj; if(floorAdj) rows.push([floorNote, (floorAdj>=0?"+":"")+Math.round(floorAdj*100)+"%"]);
+  /* §12.7 apartment condition */
+  const condAdj={"Da ristrutturare":-0.10,"to_renovate":-0.10,"scadente":-0.12,"Buono / Abitabile":0.0,"normal":0.0,"habitable_old":-0.03,"good":0.04,"Ristrutturato":0.07,"renovated":0.07,"Ottimo":0.10,"finely_renovated":0.10,"Nuovo / In costruzione":0.12}[status] ?? 0;
+  f+=condAdj; if(condAdj) rows.push(["condition: "+status, (condAdj>=0?"+":"")+Math.round(condAdj*100)+"%"]);
+  /* §12.9 outdoor space */
+  let outAdj=0,outNote="";
+  if(feats.includes("terraz")){ outAdj=0.05; outNote="terrace"; }
+  else if(feats.includes("giardin")||feats.includes("garden")){ outAdj=0.04; outNote="garden"; }
+  else if(feats.includes("balcon")){ outAdj=0.02; outNote="balcony"; }
+  f+=outAdj; if(outAdj) rows.push([outNote, "+"+Math.round(outAdj*100)+"%"]);
+  /* §12.12 energy */
+  const enAdj={A4:0.06,A3:0.05,A2:0.05,A1:0.04,B:0.03,C:0.015,D:0,E:-0.02,F:-0.03,G:-0.04,Unknown:-0.01}[eCls] ?? 0;
+  f+=enAdj; if(enAdj) rows.push(["energy class "+eCls, (enAdj>=0?"+":"")+Math.round(enAdj*100)+"%"]);
+  /* §12.12 parking */
+  if(feats.includes("box")||feats.includes("garage")||feats.includes("posto auto")){ f+=0.03; rows.push(["parking","+3%"]); }
+  f=Math.max(0.6, Math.min(1.35, f));
+  return {factor:Math.round(f*1000)/1000, rows};
+}
+/* Asking → achievable-contracted-rent discount (§12.2, §12.14). Asking rents on
+   portals run above signed rents; keep them as separate variables. */
+const ASKING_TO_ACHIEVABLE = 0.93; // ~7% negotiation/overpricing haircut
+
 /* Master valuation function — returns full traceable breakdown.
    renoCostOverride (optional): the solution's ACTUAL construction total (budget-
    scaled in genSols). When present it replaces the model's tier estimate so that
@@ -727,24 +812,26 @@ function calcLombardyVal(d, sol, renoCostOverride){
   const capitalRoi = totalInvestment > 0 ? (profitIfResold / totalInvestment) * 100 : 0;
   trace.push({step:8, label:"Investment & ROI", note:`Buy €${(purchase/1000).toFixed(0)}k + 3% agency + 4% notary/tax + reno €${(renoCost/1000).toFixed(0)}k → renovation ROI = net uplift ÷ reno cost`, value:totalInvestment, gross_uplift:grossUplift, net_uplift:netUplift, profit_resold:profitIfResold, roi_pct:Math.round(renovationRoi*10)/10, capital_roi_pct:Math.round(capitalRoi*10)/10});
 
-  /* STEP 9: Rent income generation — gross & net (immobiliare.it rent €/m²/mo) */
-  const rentCoef = {"Essential":1.05, "Balanced":1.12, "Premium":1.20}[sol.nm] || 1.0;
-  const monthlyRent = Math.round(rentRef * area * rentCoef);
+  /* STEP 9: Property-specific rent (§12) — NOT just benchmark €/m² × area.
+     benchmark → property-adjusted asking → achievable contracted → net. Run
+     the model twice (pre-renovation vs post-renovation). */
+  const NOI_FACTOR = 0.70; // strip ~5% vacancy + ~8% mgmt + ~17% condo/IMU/maint
+  const sizeF = rentSizeFactor(area);
+  const benchmarkMonthly = Math.round(rentRef * area);              // §12.1 benchmark only
+  const padjPost = rentPropertyFactor(d, tier.postCond, targetECls); // post-reno property factor + rows
+  const padjPre  = rentPropertyFactor(d);                           // current property factor
+  const askingMonthlyPost = Math.round(rentRef * sizeF * area * padjPost.factor);
+  const askingMonthlyPre  = Math.round(rentRef * sizeF * area * padjPre.factor);
+  const monthlyRent   = Math.round(askingMonthlyPost * ASKING_TO_ACHIEVABLE); // achievable contracted (post)
+  const preMonthlyRent= Math.round(askingMonthlyPre  * ASKING_TO_ACHIEVABLE); // achievable contracted (pre)
   const annualRent = monthlyRent * 12;
-  /* Net operating income: strip vacancy ~5%, management ~8%, condo/maintenance/
-     IMU/insurance ~17% ≈ 30% of gross → NOI factor 0.70 */
-  const NOI_FACTOR = 0.70;
   const annualRentNet = Math.round(annualRent * NOI_FACTOR);
   const monthlyRentNet = Math.round(annualRentNet / 12);
-  const grossYield = totalInvestment>0 ? (annualRent/totalInvestment)*100 : 0;      // gross yield on capital
-  const netYield = totalInvestment>0 ? (annualRentNet/totalInvestment)*100 : 0;     // net yield on capital
-  trace.push({step:9, label:"Rent income generation", note:`immobiliare.it zone rent €${rentRef}/m²/mo × ${area}m² × ${rentCoef} condition coef · gross yield ${Math.round(grossYield*100)/100}% · net yield ${Math.round(netYield*100)/100}% (after ~30% vacancy/mgmt/condo/IMU)`, monthly:monthlyRent, annual:annualRent, monthly_net:monthlyRentNet, annual_net:annualRentNet, gross_yield_pct:Math.round(grossYield*100)/100, net_yield_pct:Math.round(netYield*100)/100});
-
-  /* STEP 9b: PRE-renovation achievable rent (current condition, lower coef) */
-  const preRentCoef = {"Da ristrutturare":0.82,"scadente":0.80,"to_renovate":0.82,"Buono / Abitabile":0.92,"normal":0.92,"habitable_old":0.88,"good":0.98,"Ristrutturato":1.00,"renovated":1.00,"Ottimo":1.03,"finely_renovated":1.05,"Nuovo / In costruzione":1.06}[d.currentStatus] ?? 0.9;
-  const preMonthlyRent = Math.round(rentRef * area * preRentCoef);
   const preAnnualRentNet = Math.round(preMonthlyRent*12*NOI_FACTOR);
   const rentUpliftMo = monthlyRent - preMonthlyRent;
+  const grossYield = totalInvestment>0 ? (annualRent/totalInvestment)*100 : 0;      // gross yield on capital
+  const netYield = totalInvestment>0 ? (annualRentNet/totalInvestment)*100 : 0;     // net yield on capital
+  trace.push({step:9, label:"Property-specific rent (§12)", note:`benchmark €${rentRef}/m²·mo × ${area}m² (€${benchmarkMonthly}) → size ×${sizeF} → property ×${padjPost.factor} = asking €${askingMonthlyPost}/mo → achievable €${monthlyRent}/mo (−${Math.round((1-ASKING_TO_ACHIEVABLE)*100)}% asking→contract). gross yield ${Math.round(grossYield*100)/100}% · net yield ${Math.round(netYield*100)/100}%`, benchmark:benchmarkMonthly, asking:askingMonthlyPost, monthly:monthlyRent, annual:annualRent, monthly_net:monthlyRentNet, gross_yield_pct:Math.round(grossYield*100)/100, net_yield_pct:Math.round(netYield*100)/100, adjustments:padjPost.rows});
 
   /* STEP 11: Confidence score + prediction band (avoid false precision — a
      modelled estimate is always a range, wider when evidence is thin). */
@@ -799,6 +886,9 @@ function calcLombardyVal(d, sol, renoCostOverride){
     monthly_rent: monthlyRent, annual_rent: annualRent,
     monthly_rent_net: monthlyRentNet, annual_rent_net: annualRentNet,
     pre_monthly_rent: preMonthlyRent, pre_annual_rent_net: preAnnualRentNet, rent_uplift_mo: rentUpliftMo,
+    rent_benchmark: benchmarkMonthly, rent_asking_post: askingMonthlyPost, rent_asking_pre: askingMonthlyPre,
+    rent_size_factor: sizeF, rent_factor_post: padjPost.factor, rent_factor_pre: padjPre.factor,
+    rent_adjustments: padjPost.rows, rent_asking_to_achievable: ASKING_TO_ACHIEVABLE,
     gross_yield_pct: Math.round(grossYield*100)/100, net_yield_pct: Math.round(netYield*100)/100,
     pre_value_range: rng(preRenovTotal), post_value_range: rng(postRenovTotal),
     confidence, confidence_label, scenarios,
@@ -4241,18 +4331,35 @@ function Results({d, apiKey}){
           {livePostVal&&<div className="note note-ok" style={{marginTop:8,fontSize:11}}>🌐 Live immobiliare.it/OMI renovated comparable {eur(liveSqm)}/m² → after ≈ <strong>{eur(livePostVal)}</strong>.</div>}
         </div>
 
-        {/* RENT now → after */}
+        {/* RENT — property-specific (§12): benchmark → asking → achievable */}
         <div className="card">
-          <div className="section-title">💶 Achievable rent (long-term)</div>
+          <div className="section-title">💶 Achievable rent (long-term) — property-specific</div>
           <NowAfter now={eur(v.pre_monthly_rent)+"/mo"} after={eur(liveRentMo||v.monthly_rent)+"/mo"} pct={rentUpPct} color="#2D5F45"/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginTop:10}}>
-            <KPI l="Gross rent / mo" val={eur(v.monthly_rent)} c="#2D5F45" sub={fmt(v.rent_ref)+"/m²·mo"}/>
+          {/* benchmark → asking → achievable chain (post-renovation) */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:10}}>
+            <KPI l="Benchmark (naïve)" val={eur(v.rent_benchmark)+"/mo"} c="#A8A29E" sub={fmt(v.rent_ref)+"/m²·mo × area"}/>
+            <KPI l="Property asking rent" val={eur(v.rent_asking_post)+"/mo"} c="#C87941" sub={"size ×"+v.rent_size_factor+" · prop ×"+v.rent_factor_post}/>
+            <KPI l="Achievable contracted" val={eur(v.monthly_rent)+"/mo"} c="#2D5F45" sub={"−"+Math.round((1-v.rent_asking_to_achievable)*100)+"% asking→contract"}/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginTop:8}}>
             <KPI l="Net rent / mo" val={eur(v.monthly_rent_net)} c="#2D5F45" sub="after ~30% costs"/>
+            <KPI l="Effective annual" val={eur(v.annual_rent_net)} c="#2D5F45" sub="NOI after vacancy"/>
             <KPI l="Gross yield" val={v.gross_yield_pct+"%"} c="#1B3A2D" sub="on total capital"/>
             <KPI l="Net yield" val={v.net_yield_pct+"%"} c="#1B3A2D" sub="vacancy/mgmt/IMU out"/>
           </div>
-          <div style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>Extra rent from the renovation: <strong style={{color:"#2D5F45"}}>{eur(v.rent_uplift_mo)}/mo</strong>. Gross annual {eur(v.annual_rent)} · net annual {eur(v.annual_rent_net)}. Long-term lease; canone concordato / student / short-term are separate regulated cases.</div>
-          {liveRentMo&&<div className="note note-ok" style={{marginTop:8,fontSize:11}}>🌐 Live immobiliare.it zone rent {eur(Math.round(liveRentSqm))}/m²·mo → after ≈ <strong>{eur(liveRentMo)}/mo</strong>.</div>}
+          {/* §12.17 adjustment table */}
+          {v.rent_adjustments&&v.rent_adjustments.length>0&&<div style={{marginTop:10}}>
+            <div style={{fontSize:9.5,color:"#78716C",textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>Rent adjustments applied (post-renovation)</div>
+            <div style={{overflowX:"auto"}}><table style={{fontSize:11}}><tbody>
+              <tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"4px 8px"}}>Neighbourhood benchmark €/m²·mo</td><td style={{padding:"4px 8px",textAlign:"right",fontWeight:600}}>{fmt(v.rent_ref)}</td></tr>
+              <tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"4px 8px"}}>Nonlinear size ({parseFloat(d.area)||85} m²)</td><td style={{padding:"4px 8px",textAlign:"right",fontWeight:600,color:v.rent_size_factor>=1?"#1B3A2D":"#B91C1C"}}>×{v.rent_size_factor}</td></tr>
+              {v.rent_adjustments.map(([l,e],i)=>(<tr key={i} style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"4px 8px"}}>{l}</td><td style={{padding:"4px 8px",textAlign:"right",fontWeight:600,color:String(e).startsWith("-")?"#B91C1C":"#1B3A2D"}}>{e}</td></tr>))}
+              <tr style={{borderBottom:"1px solid #ECE8E1"}}><td style={{padding:"4px 8px"}}>Combined property factor</td><td style={{padding:"4px 8px",textAlign:"right",fontWeight:700}}>×{v.rent_factor_post}</td></tr>
+              <tr><td style={{padding:"4px 8px",fontWeight:700,color:"#2D5F45"}}>Achievable contracted rent</td><td style={{padding:"4px 8px",textAlign:"right",fontWeight:700,color:"#2D5F45"}}>{eur(v.monthly_rent)}/mo</td></tr>
+            </tbody></table></div>
+          </div>}
+          <div style={{fontSize:10,color:"#A8A29E",marginTop:8,lineHeight:1.5}}>§12 property-specific model — not just €/m² × area. Extra rent from the renovation: <strong style={{color:"#2D5F45"}}>{eur(v.rent_uplift_mo)}/mo</strong> (pre {eur(v.pre_monthly_rent)} → post {eur(v.monthly_rent)}). Asking rent is the advertised level; achievable is the likely signed rent (−{Math.round((1-v.rent_asking_to_achievable)*100)}%). Long-term lease; canone concordato / student / short-term are separate regulated cases.</div>
+          {liveRentMo&&<div className="note note-ok" style={{marginTop:8,fontSize:11}}>🌐 Live immobiliare.it zone rent {eur(Math.round(liveRentSqm))}/m²·mo (asking) → property-adjusted achievable ≈ <strong>{eur(liveRentMo)}/mo</strong>.</div>}
         </div>
 
         {/* INVESTMENT & RETURN */}
