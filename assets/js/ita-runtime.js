@@ -150,11 +150,16 @@
   /* --- Quota UI: badge + blocked dialog ------------------------------- */
   var T = {
     it: {
-      left: function (n, m) { return n + " di " + m + " report rimanenti"; },
-      open: "Accesso libero (demo)",
+      title: "Report inclusi",
+      left: function (n, m) { return n + " di " + m + " rimanenti"; },
+      rule: "Dopo il terzo report il link si chiude.",
+      lastOne: "È il tuo ultimo report.",
+      noneLeft: "Nessun report rimasto.",
+      open: "Demo · accesso libero",
+      openRule: "Nessun limite attivo su questo link.",
       blockedTitle: "Report esauriti",
-      blockedBody: "Questo link consente " + "%MAX%" + " generazioni del report e le hai utilizzate tutte. " +
-                   "Per ottenere un nuovo accesso scrivi a info@iltuoarchitetto.it.",
+      blockedBody: "Questo link include %MAX% report e li hai usati tutti. " +
+                   "Per riattivarlo scrivi a info@iltuoarchitetto.it.",
       noTokenTitle: "Accesso richiesto",
       noTokenBody: "Per generare il report serve un link di accesso valido. " +
                    "Contatta info@iltuoarchitetto.it per riceverne uno.",
@@ -162,11 +167,16 @@
       contact: "Contattaci"
     },
     en: {
-      left: function (n, m) { return n + " of " + m + " reports remaining"; },
-      open: "Open access (demo)",
+      title: "Reports included",
+      left: function (n, m) { return n + " of " + m + " remaining"; },
+      rule: "After the third report the link closes.",
+      lastOne: "This is your last report.",
+      noneLeft: "No reports left.",
+      open: "Demo · open access",
+      openRule: "No limit active on this link.",
       blockedTitle: "No reports left",
-      blockedBody: "This link allows " + "%MAX%" + " report generations and you have used them all. " +
-                   "To get renewed access, email info@iltuoarchitetto.it.",
+      blockedBody: "This link includes %MAX% reports and you have used them all. " +
+                   "To reactivate it, email info@iltuoarchitetto.it.",
       noTokenTitle: "Access required",
       noTokenBody: "A valid access link is required to generate the report. " +
                    "Contact info@iltuoarchitetto.it to get one.",
@@ -183,23 +193,53 @@
     return T[n] ? n : "it";
   }
 
+  /* A small always-visible panel: how many reports are left, and the rule. */
   ITA.mountBadge = function () {
     if (!PROXY || document.getElementById("ita-quota-badge")) return;
+
     var el = document.createElement("div");
     el.id = "ita-quota-badge";
     el.style.cssText =
-      "position:fixed;right:14px;bottom:14px;z-index:99998;padding:8px 14px;border-radius:999px;" +
-      "background:#fff;border:1px solid #E2E8EF;color:#2C3E50;font:600 12px/1 'Source Sans 3',sans-serif;" +
-      "box-shadow:0 2px 12px rgba(35,90,133,.16);display:none;align-items:center;gap:7px";
+      "position:fixed;right:14px;bottom:14px;z-index:99998;padding:12px 16px;border-radius:12px;" +
+      "background:#fff;border:1px solid #E2E8EF;color:#2C3E50;" +
+      "font-family:'Source Sans 3','Segoe UI',sans-serif;" +
+      "box-shadow:0 4px 18px rgba(35,90,133,.18);max-width:250px;line-height:1.45";
     document.body.appendChild(el);
+
+    var dots = function (used, max, color) {
+      var out = '<span style="display:inline-flex;gap:4px;margin-left:2px">';
+      for (var i = 0; i < max; i++) {
+        out += '<span style="width:9px;height:9px;border-radius:50%;background:' +
+               (i < used ? "#E2E8EF" : color) + '"></span>';
+      }
+      return out + "</span>";
+    };
+
     var render = function () {
       var t = T[lang()];
-      if (!ITA.enforced || ITA.remaining == null) { el.style.display = "none"; return; }
-      el.style.display = "inline-flex";
-      var dotColor = ITA.remaining > 1 ? "#3479A8" : (ITA.remaining === 1 ? "#E0BC30" : "#C0392B");
-      el.innerHTML = '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + '"></span>' +
-                     '<span>' + t.left(ITA.remaining, ITA.max) + '</span>';
+
+      // No metering configured server-side -> show a quiet "open demo" note.
+      if (!ITA.enforced || ITA.remaining == null) {
+        el.innerHTML =
+          '<div style="font-size:12px;font-weight:700;color:#7B8B96">' + t.open + '</div>' +
+          '<div style="font-size:11.5px;color:#7B8B96;margin-top:2px">' + t.openRule + '</div>';
+        return;
+      }
+
+      var n = ITA.remaining, m = ITA.max || 3;
+      var color = n > 1 ? "#3479A8" : (n === 1 ? "#E0BC30" : "#C0392B");
+      var note = n === 0 ? t.noneLeft : (n === 1 ? t.lastOne : t.rule);
+
+      el.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">' +
+          '<span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#7B8B96">' +
+            t.title + '</span>' + dots(m - n, m, color) +
+        '</div>' +
+        '<div style="font-size:15px;font-weight:800;color:' + color + ';margin-top:5px">' +
+          t.left(n, m) + '</div>' +
+        '<div style="font-size:11.5px;color:#7B8B96;margin-top:3px">' + note + '</div>';
     };
+
     ITA.onChange(render);
     render();
   };
@@ -244,10 +284,26 @@
     });
   };
 
+  /* Page-level tweaks that only apply when the proxy serves the key. */
+  ITA.injectStyles = function () {
+    if (document.getElementById("ita-runtime-style")) return;
+    var css = ".gate-trials{font-size:12.5px;color:#7B8B96;border-left:3px solid #F5D04A;" +
+              "padding:6px 0 6px 10px;margin-top:8px}";
+    if (PROXY) {
+      // With the proxy in place visitors never need their own key.
+      css += ".settings-section:has(#owner-api-key){display:none!important}";
+    }
+    var s = document.createElement("style");
+    s.id = "ita-runtime-style";
+    s.textContent = css;
+    document.head.appendChild(s);
+  };
+
   window.ITA = ITA;
 
   // Kick off a status check early so the UI can show "x / 3 left".
   if (PROXY) { try { ITA.status(); } catch (e) {} }
+  try { ITA.injectStyles(); } catch (e) {}
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { ITA.mountBadge(); });
   } else {
