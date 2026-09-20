@@ -6193,10 +6193,10 @@ function Results({
       readOnly: reportMode
     }))) : /*#__PURE__*/React.createElement("div", {
       className: "basis-card renders-gate"
-    }, /*#__PURE__*/React.createElement("h3", null, "Floor plan & room renders \u2014 paid preview"), /*#__PURE__*/React.createElement("p", null, "Your cost, compliance, energy, value & rent and furniture report is ready on the other tabs. Generating the furnished floor plan and photorealistic room views is part of the paid preview."), onUpgrade && /*#__PURE__*/React.createElement("button", {
+    }, /*#__PURE__*/React.createElement("h3", null, "Planimetria arredata e render fotorealistici"), /*#__PURE__*/React.createElement("p", null, "Il resto del report \u00e8 gi\u00e0 pronto nelle altre schede. Sbloccando generi la planimetria arredata e le viste fotorealistiche di ogni stanza."), React.createElement("p", { className: "gate-trials" }, "Ogni sblocco usa uno dei 3 report inclusi nel tuo accesso. Dopo il terzo, il link smette di generare nuovi report."), onUpgrade && /*#__PURE__*/React.createElement("button", {
       className: "btn btn-p",
       onClick: onUpgrade
-    }, "Unlock plan & renders")),
+    }, "Sblocca planimetria e render")),
     detail: () => /*#__PURE__*/React.createElement("section", {
       className: "basis-card"
     }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · Work scope"), /*#__PURE__*/React.createElement("ul", null, s.ch.map(x => /*#__PURE__*/React.createElement("li", {
@@ -8533,7 +8533,7 @@ function SolRenderCard({
     }, el.id, ": ", el.visibility, " · ", el.evidence))));
   })), !plan && /*#__PURE__*/React.createElement("p", null, "No plan has been generated for this option."), plan && Object.keys(record.renders).length === 0 && /*#__PURE__*/React.createElement("p", null, "No room views have been generated for this option.")));
 }
-const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['costs', 'Costs'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['value', 'Value & rent'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
+const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['value', 'Value & rent'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
 function ReportSection({
   id,
   reportMode,
