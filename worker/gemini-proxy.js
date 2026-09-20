@@ -1,30 +1,52 @@
 /*
- * Il Tuo Architetto — Gemini API proxy + listing fetcher (Cloudflare Worker)
- * --------------------------------------------------------------------------
- * Two endpoints:
+ * Il Tuo Architetto — Gemini proxy + listing fetcher + 3-report access quota
+ * ==========================================================================
  *
- *   POST /v1beta/models/<model>:generateContent
- *     Forwards the request to Google's Gemini API, attaching the
- *     GEMINI_API_KEY secret. Lets the public site call Gemini without
- *     exposing the key.
+ * ENDPOINTS
+ *   POST /v1beta/models/<model>:generateContent   Gemini proxy (key added server-side)
+ *   GET  /v1beta/models?pageSize=200              Model listing (for auto-detection)
+ *   GET  /fetch-listing?url=<listing url>         Server-side page fetch for autofill
+ *   GET  /quota                                   How many reports this link has left
+ *   POST /consume                                 Burn one report slot -> generationId
+ *   POST /admin/token                             Mint a customer link  (admin secret)
+ *   GET  /admin/token?token=XXX                   Inspect a token       (admin secret)
+ *   GET  /admin/tokens                            List tokens           (admin secret)
  *
- *   GET  /fetch-listing?url=<encoded listing URL>
- *     Server-side fetches the listing HTML so the demo can extract data
- *     from sites that block browser CORS (immobiliare.it, idealista.it,
- *     casa.it, ...). Restricted to a known list of Italian real-estate
- *     domains so the proxy can't be abused as an open relay.
+ * ---------------------------------------------------------------------------
+ * SETUP IN CLOUDFLARE
  *
- * Secrets / variables (set in Cloudflare → Worker → Settings):
- *   GEMINI_API_KEY   secret — your AIza... key from aistudio.google.com
- *   ALLOWED_ORIGIN   variable (optional) — e.g.
- *                    "https://iltuoarchitetto.netlify.app". If unset,
- *                    every origin is allowed (fine while debugging).
+ * 1. Secrets & variables  (Worker -> Settings -> Variables and Secrets)
+ *      GEMINI_API_KEY   (Secret)    your AIza... key from aistudio.google.com
+ *      ADMIN_SECRET     (Secret)    any long random string you invent; it protects
+ *                                   the /admin endpoints and the admin page
+ *      ALLOWED_ORIGIN   (Variable)  optional, e.g. https://yoursite.netlify.app
+ *                                   leave unset to allow all origins
+ *      REQUIRE_TOKEN    (Variable)  optional, "true" to refuse visitors who have
+ *                                   no access link at all. Default: open demo.
+ *
+ * 2. KV namespace  (this is what stores the "3 reports" counters)
+ *      Storage & Databases -> KV -> Create namespace, name it "ITA_QUOTA"
+ *      Then Worker -> Settings -> Bindings -> Add -> KV namespace
+ *          Variable name: QUOTA        Namespace: ITA_QUOTA
+ *
+ *    Until the KV binding exists the Worker runs in OPEN mode: everything works,
+ *    nothing is metered. Quota only switches on once QUOTA is bound.
+ *
+ * Note: Cloudflare KV is eventually consistent and has no atomic counters. For a
+ * single customer clicking a button this is fine; two perfectly simultaneous
+ * clicks could in theory both read the same counter. Use Durable Objects if you
+ * ever need strict, race-proof accounting.
  */
 
 const UPSTREAM = "https://generativelanguage.googleapis.com";
+const DEFAULT_MAX_USES = 3;
+// A started report stays renderable for this long, so a slow session can finish.
+const GENERATION_TTL_SECONDS = 3 * 60 * 60;
+// Hard ceiling of image calls a single report may make. A full report needs
+// roughly 15-25; the ceiling simply stops a replayed generation id from being
+// used to mint unlimited renders inside the TTL window.
+const MAX_IMAGES_PER_GENERATION = 60;
 
-// Italian real-estate domains the /fetch-listing endpoint will fetch on
-// behalf of the demo. Extend if you want to support more.
 const LISTING_HOSTS = new Set([
   "immobiliare.it", "www.immobiliare.it",
   "idealista.it", "www.idealista.it",
@@ -43,18 +65,14 @@ const BROWSER_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
-  "Accept-Encoding": "gzip, deflate, br",
-  "Cache-Control": "no-cache",
-  "Pragma": "no-cache",
 };
 
 export default {
   async fetch(request, env) {
-    const allowedOrigin = env.ALLOWED_ORIGIN || "*";
     const cors = {
-      "Access-Control-Allow-Origin": allowedOrigin,
+      "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, X-Access-Token, X-Generation-Id, X-Admin-Secret",
       "Access-Control-Max-Age": "86400",
       "Vary": "Origin",
     };
@@ -64,79 +82,298 @@ export default {
     }
 
     const url = new URL(request.url);
+    const kv = env.QUOTA || null;          // KV binding; null => open mode
+    const enforced = !!kv;
+    const path = url.pathname;
 
-    // --- /fetch-listing -----------------------------------------------------
-    if (request.method === "GET" && url.pathname === "/fetch-listing") {
-      const target = url.searchParams.get("url");
-      if (!target) return json({ error: "missing url parameter" }, 400, cors);
-      let targetUrl;
-      try { targetUrl = new URL(target); }
-      catch { return json({ error: "invalid url" }, 400, cors); }
-      if (!/^https?:$/.test(targetUrl.protocol)) {
-        return json({ error: "only http/https allowed" }, 400, cors);
+    try {
+      /* ---------------- admin ---------------- */
+      if (path.startsWith("/admin/")) {
+        return await handleAdmin(request, env, url, cors, kv);
       }
-      if (!LISTING_HOSTS.has(targetUrl.hostname)) {
+
+      /* ---------------- quota status ---------------- */
+      if (path === "/quota" && request.method === "GET") {
+        if (!enforced) return json({ enforced: false }, 200, cors);
+        const token = request.headers.get("X-Access-Token") || url.searchParams.get("token") || "";
+        if (!token) return json({ enforced: true, remaining: null, code: "no_token" }, 200, cors);
+        const rec = await getToken(kv, token);
+        if (!rec) return json({ enforced: true, remaining: 0, code: "invalid_token" }, 200, cors);
         return json({
-          error: "host not in allowlist",
-          host: targetUrl.hostname,
-          allowed: [...LISTING_HOSTS],
-        }, 403, cors);
+          enforced: true,
+          remaining: Math.max(0, rec.max - rec.used),
+          max: rec.max,
+          used: rec.used,
+        }, 200, cors);
       }
-      let upstream;
-      try {
-        upstream = await fetch(targetUrl.toString(), {
-          headers: BROWSER_HEADERS,
-          redirect: "follow",
+
+      /* ---------------- consume one report slot ---------------- */
+      if (path === "/consume" && request.method === "POST") {
+        if (!enforced) return json({ ok: true, enforced: false, generationId: "open" }, 200, cors);
+
+        const token = request.headers.get("X-Access-Token") || "";
+        if (!token) {
+          if (String(env.REQUIRE_TOKEN) === "true") {
+            return json({ ok: false, code: "no_token", error: "Access link required" }, 403, cors);
+          }
+          // Open demo: allow, but still hand out a generation id.
+          const gid = randomId("gen");
+          await kv.put("gen:" + gid, JSON.stringify({ token: "" }), { expirationTtl: GENERATION_TTL_SECONDS });
+          return json({ ok: true, enforced: false, generationId: gid }, 200, cors);
+        }
+
+        const rec = await getToken(kv, token);
+        if (!rec) return json({ ok: false, code: "invalid_token", error: "Unknown access link" }, 403, cors);
+        if (rec.active === false) {
+          return json({ ok: false, code: "revoked", error: "This link has been revoked", remaining: 0, max: rec.max }, 403, cors);
+        }
+        if (rec.used >= rec.max) {
+          return json({ ok: false, code: "exhausted", error: "No reports left on this link", remaining: 0, max: rec.max }, 403, cors);
+        }
+
+        rec.used += 1;
+        rec.lastUsed = new Date().toISOString();
+        await kv.put("tok:" + token, JSON.stringify(rec));
+
+        const gid = randomId("gen");
+        await kv.put("gen:" + gid, JSON.stringify({ token }), { expirationTtl: GENERATION_TTL_SECONDS });
+
+        return json({
+          ok: true,
+          enforced: true,
+          generationId: gid,
+          remaining: Math.max(0, rec.max - rec.used),
+          max: rec.max,
+        }, 200, cors);
+      }
+
+      /* ---------------- listing fetcher ---------------- */
+      if (path === "/fetch-listing" && request.method === "GET") {
+        const target = url.searchParams.get("url");
+        if (!target) return json({ error: "missing url parameter" }, 400, cors);
+        let t;
+        try { t = new URL(target); } catch { return json({ error: "invalid url" }, 400, cors); }
+        if (!/^https?:$/.test(t.protocol)) return json({ error: "only http/https allowed" }, 400, cors);
+        if (!LISTING_HOSTS.has(t.hostname)) {
+          return json({ error: "host not in allowlist", host: t.hostname, allowed: [...LISTING_HOSTS] }, 403, cors);
+        }
+        let up;
+        try {
+          up = await fetch(t.toString(), { headers: BROWSER_HEADERS, redirect: "follow" });
+        } catch (e) {
+          return json({ error: "fetch failed", detail: String(e).slice(0, 200) }, 502, cors);
+        }
+        const text = await up.text();
+        return new Response(text, {
+          status: up.status,
+          headers: { ...cors, "Content-Type": up.headers.get("Content-Type") || "text/html; charset=utf-8" },
         });
-      } catch (e) {
-        return json({ error: "fetch failed", detail: String(e).slice(0, 200) }, 502, cors);
       }
-      const text = await upstream.text();
-      return new Response(text, {
-        status: upstream.status,
-        headers: {
-          ...cors,
-          "Content-Type": upstream.headers.get("Content-Type") || "text/html; charset=utf-8",
-          "X-Upstream-Status": String(upstream.status),
-          "X-Upstream-Length": String(text.length),
-        },
-      });
+
+      /* ---------------- Gemini: model listing ---------------- */
+      if (request.method === "GET" && path === "/v1beta/models") {
+        if (!env.GEMINI_API_KEY) return json({ error: "Server is missing GEMINI_API_KEY secret" }, 500, cors);
+        const gate = await checkAccess(request, kv, env, { needsGeneration: false });
+        if (!gate.ok) return json(gate.body, gate.status, cors);
+
+        const u = new URL(UPSTREAM + "/v1beta/models");
+        u.searchParams.set("pageSize", url.searchParams.get("pageSize") || "200");
+        u.searchParams.set("key", env.GEMINI_API_KEY);
+        const r = await fetch(u.toString());
+        const body = await r.text();
+        return new Response(body, {
+          status: r.status,
+          headers: { ...cors, "Content-Type": r.headers.get("Content-Type") || "application/json" },
+        });
+      }
+
+      /* ---------------- Gemini: generateContent ---------------- */
+      if (request.method === "POST" && /^\/v1beta\/models\/[^/]+:generateContent$/.test(path)) {
+        if (!env.GEMINI_API_KEY) return json({ error: "Server is missing GEMINI_API_KEY secret" }, 500, cors);
+
+        const model = path.slice("/v1beta/models/".length, -":generateContent".length);
+        const isImage = /image/i.test(model);
+
+        // Image generation is the paid deliverable: it needs a live generation id,
+        // which can only be obtained by spending one of the link's report slots.
+        const gate = await checkAccess(request, kv, env, { needsGeneration: isImage });
+        if (!gate.ok) return json(gate.body, gate.status, cors);
+
+        const u = new URL(UPSTREAM + path);
+        u.searchParams.set("key", env.GEMINI_API_KEY);
+
+        let body;
+        try { body = await request.text(); }
+        catch { return json({ error: "Could not read request body" }, 400, cors); }
+
+        const r = await fetch(u.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+        const text = await r.text();
+        return new Response(text, {
+          status: r.status,
+          headers: { ...cors, "Content-Type": r.headers.get("Content-Type") || "application/json" },
+        });
+      }
+
+      return json({ error: "Not found", path }, 404, cors);
+    } catch (e) {
+      return json({ error: "worker_error", detail: String(e && e.message || e).slice(0, 300) }, 500, cors);
     }
-
-    // --- /v1beta/models/<model>:generateContent (Gemini proxy) -------------
-    if (request.method !== "POST") {
-      return json({ error: "Method not allowed" }, 405, cors);
-    }
-    if (!/^\/v1beta\/models\/[^/]+:generateContent$/.test(url.pathname)) {
-      return json({ error: "Forbidden path" }, 403, cors);
-    }
-    if (!env.GEMINI_API_KEY) {
-      return json({ error: "Server is missing GEMINI_API_KEY secret" }, 500, cors);
-    }
-
-    const upstreamUrl = new URL(UPSTREAM + url.pathname);
-    upstreamUrl.searchParams.set("key", env.GEMINI_API_KEY);
-
-    let body;
-    try { body = await request.text(); }
-    catch { return json({ error: "Could not read request body" }, 400, cors); }
-
-    const resp = await fetch(upstreamUrl.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-
-    const text = await resp.text();
-    return new Response(text, {
-      status: resp.status,
-      headers: {
-        ...cors,
-        "Content-Type": resp.headers.get("Content-Type") || "application/json",
-      },
-    });
   },
 };
+
+/* ===================== helpers ===================== */
+
+async function getToken(kv, token) {
+  const raw = await kv.get("tok:" + token);
+  if (!raw) return null;
+  try {
+    const rec = JSON.parse(raw);
+    if (typeof rec.max !== "number") rec.max = DEFAULT_MAX_USES;
+    if (typeof rec.used !== "number") rec.used = 0;
+    return rec;
+  } catch { return null; }
+}
+
+/**
+ * Decides whether a Gemini call may proceed.
+ *  - open mode (no KV)            -> always allowed
+ *  - token present                -> must exist, be active and have slots left
+ *  - no token                     -> allowed unless REQUIRE_TOKEN === "true"
+ *  - needsGeneration (image call) -> a valid, unexpired generation id is required
+ */
+async function checkAccess(request, kv, env, opts) {
+  if (!kv) return { ok: true };
+
+  const token = request.headers.get("X-Access-Token") || "";
+  const requireToken = String(env.REQUIRE_TOKEN) === "true";
+
+  if (!token) {
+    if (requireToken) {
+      return { ok: false, status: 403, body: { error: "Access link required", code: "no_token" } };
+    }
+    if (opts.needsGeneration) {
+      const gid = request.headers.get("X-Generation-Id") || "";
+      if (!gid) return { ok: false, status: 403, body: { error: "No active report generation", code: "no_generation" } };
+      const g = await kv.get("gen:" + gid);
+      if (!g) return { ok: false, status: 403, body: { error: "Report session expired", code: "expired_generation" } };
+    }
+    return { ok: true };
+  }
+
+  const rec = await getToken(kv, token);
+  if (!rec) return { ok: false, status: 403, body: { error: "Unknown access link", code: "invalid_token" } };
+  if (rec.active === false) {
+    return { ok: false, status: 403, body: { error: "This link has been revoked", code: "revoked", remaining: 0, max: rec.max } };
+  }
+  if (rec.used > rec.max) {
+    return { ok: false, status: 403, body: { error: "No reports left on this link", code: "exhausted", remaining: 0, max: rec.max } };
+  }
+
+  if (opts.needsGeneration) {
+    const gid = request.headers.get("X-Generation-Id") || "";
+    if (!gid) {
+      return { ok: false, status: 403, body: { error: "No active report generation", code: "no_generation", remaining: Math.max(0, rec.max - rec.used), max: rec.max } };
+    }
+    const raw = await kv.get("gen:" + gid);
+    if (!raw) {
+      return { ok: false, status: 403, body: { error: "Report session expired", code: "expired_generation", remaining: Math.max(0, rec.max - rec.used), max: rec.max } };
+    }
+    let g = {};
+    try { g = JSON.parse(raw); } catch {}
+    if (g.token && g.token !== token) {
+      return { ok: false, status: 403, body: { error: "Generation does not belong to this link", code: "generation_mismatch" } };
+    }
+    const images = (g.images || 0) + 1;
+    if (images > MAX_IMAGES_PER_GENERATION) {
+      return { ok: false, status: 429, body: { error: "Image limit reached for this report", code: "generation_image_limit", remaining: Math.max(0, rec.max - rec.used), max: rec.max } };
+    }
+    g.images = images;
+    await kv.put("gen:" + gid, JSON.stringify(g), { expirationTtl: GENERATION_TTL_SECONDS });
+  }
+
+  return { ok: true };
+}
+
+async function handleAdmin(request, env, url, cors, kv) {
+  if (!env.ADMIN_SECRET) {
+    return json({ error: "ADMIN_SECRET is not configured on the Worker" }, 500, cors);
+  }
+  const given = request.headers.get("X-Admin-Secret") || url.searchParams.get("secret") || "";
+  if (given !== env.ADMIN_SECRET) {
+    return json({ error: "Unauthorized" }, 401, cors);
+  }
+  if (!kv) {
+    return json({ error: "KV namespace 'QUOTA' is not bound — create it to enable access links." }, 503, cors);
+  }
+
+  const path = url.pathname;
+
+  // Mint a new customer link
+  if (path === "/admin/token" && request.method === "POST") {
+    let payload = {};
+    try { payload = JSON.parse((await request.text()) || "{}"); } catch {}
+    const max = Number.isFinite(payload.max) && payload.max > 0 ? Math.floor(payload.max) : DEFAULT_MAX_USES;
+    const token = randomId("ita").replace("ita_", "");
+    const rec = {
+      max,
+      used: 0,
+      active: true,
+      note: String(payload.note || "").slice(0, 120),
+      created: new Date().toISOString(),
+    };
+    await kv.put("tok:" + token, JSON.stringify(rec));
+    return json({ ok: true, token, max, note: rec.note, created: rec.created }, 200, cors);
+  }
+
+  // Inspect one token
+  if (path === "/admin/token" && request.method === "GET") {
+    const token = url.searchParams.get("token") || "";
+    if (!token) return json({ error: "missing token parameter" }, 400, cors);
+    const rec = await getToken(kv, token);
+    if (!rec) return json({ error: "not found", token }, 404, cors);
+    return json({ ok: true, token, ...rec, remaining: Math.max(0, rec.max - rec.used) }, 200, cors);
+  }
+
+  // Revoke / reactivate / top up
+  if (path === "/admin/token" && request.method === "PUT") {
+    let payload = {};
+    try { payload = JSON.parse((await request.text()) || "{}"); } catch {}
+    const token = payload.token || url.searchParams.get("token") || "";
+    if (!token) return json({ error: "missing token" }, 400, cors);
+    const rec = await getToken(kv, token);
+    if (!rec) return json({ error: "not found", token }, 404, cors);
+    if (typeof payload.active === "boolean") rec.active = payload.active;
+    if (Number.isFinite(payload.max) && payload.max > 0) rec.max = Math.floor(payload.max);
+    if (payload.resetUsed === true) rec.used = 0;
+    await kv.put("tok:" + token, JSON.stringify(rec));
+    return json({ ok: true, token, ...rec, remaining: Math.max(0, rec.max - rec.used) }, 200, cors);
+  }
+
+  // List issued tokens
+  if (path === "/admin/tokens" && request.method === "GET") {
+    const list = await kv.list({ prefix: "tok:", limit: 200 });
+    const out = [];
+    for (const k of list.keys) {
+      const rec = await getToken(kv, k.name.slice(4));
+      if (rec) out.push({ token: k.name.slice(4), ...rec, remaining: Math.max(0, rec.max - rec.used) });
+    }
+    out.sort((a, b) => String(b.created || "").localeCompare(String(a.created || "")));
+    return json({ ok: true, count: out.length, tokens: out }, 200, cors);
+  }
+
+  return json({ error: "Unknown admin endpoint", path }, 404, cors);
+}
+
+function randomId(prefix) {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return prefix + "_" + hex;
+}
 
 function json(obj, status, headers) {
   return new Response(JSON.stringify(obj), {
