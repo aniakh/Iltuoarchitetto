@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Il Tuo Architetto — Gestione accessi</title>
+<link rel="stylesheet" href="assets/css/fonts.css">
+<style>
+  :root{--primary:#3479A8;--primary-d:#235A85;--primary-l:#D8E5F0;--accent:#F5D04A;
+        --ink:#2C3E50;--soft:#44556A;--muted:#7B8B96;--line:#E2E8EF;--bg:#F4F6F8;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Source Sans 3','Segoe UI',sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;padding:28px 18px}
+  .wrap{max-width:940px;margin:0 auto}
+  h1{font-size:26px;font-weight:800;color:var(--primary);letter-spacing:.01em}
+  h2{font-size:18px;font-weight:700;color:var(--primary);margin-bottom:14px}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:24px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:24px;margin-bottom:18px;
+        box-shadow:0 1px 3px rgba(35,90,133,.05),0 8px 24px rgba(35,90,133,.06)}
+  label{display:block;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--soft);margin-bottom:5px}
+  input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;font-family:inherit;font-size:14px;color:var(--ink);background:#fff}
+  input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(52,121,168,.12)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  .row.three{grid-template-columns:2fr 1fr 1fr}
+  .field{margin-bottom:14px}
+  button{padding:11px 20px;border-radius:7px;border:2px solid transparent;font-family:inherit;font-size:14px;
+         font-weight:700;cursor:pointer;transition:all .15s}
+  .btn-p{background:var(--primary);color:#fff}.btn-p:hover{background:var(--primary-d)}
+  .btn-g{background:transparent;color:var(--primary);border-color:var(--line)}.btn-g:hover{border-color:var(--primary)}
+  .btn-sm{padding:6px 12px;font-size:12px}
+  .result{margin-top:16px;padding:16px;border-radius:9px;background:var(--primary-l);border:1px solid var(--primary);display:none}
+  .result.show{display:block}
+  .linkbox{display:flex;gap:8px;margin-top:10px}
+  .linkbox input{font-family:ui-monospace,monospace;font-size:12.5px;background:#fff}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--line)}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr:hover td{background:#FAFBFC}
+  code{font-family:ui-monospace,monospace;font-size:12px;background:var(--bg);padding:2px 6px;border-radius:4px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700}
+  .pill.ok{background:#D6EBDC;color:#1B5E20}.pill.low{background:#FCEFC7;color:#7A5B00}
+  .pill.out{background:#F8D7DA;color:#8B1A1F}.pill.rev{background:#E5E8EB;color:#5A6570}
+  .msg{padding:12px 14px;border-radius:8px;font-size:13.5px;margin-bottom:14px;display:none}
+  .msg.show{display:block}
+  .msg.err{background:#F8D7DA;color:#8B1A1F;border:1px solid #E7A9AD}
+  .msg.ok{background:#D6EBDC;color:#1B5E20;border:1px solid #A3CDB0}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .empty{text-align:center;color:var(--muted);padding:26px;font-size:14px}
+  a{color:var(--primary)}
+  @media(max-width:640px){.row,.row.three{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Gestione accessi</h1>
+  <p class="sub">Crea i link per i clienti che hanno pagato. Ogni link permette un numero limitato di generazioni del report (default: 3).</p>
+
+  <div id="msg" class="msg"></div>
+
+  <!-- Connection -->
+  <div class="card">
+    <h2>1 · Connessione</h2>
+    <div class="row">
+      <div>
+        <label for="proxy">URL del Worker</label>
+        <input id="proxy" placeholder="https://iltuoarchitetto-proxy.....workers.dev">
+      </div>
+      <div>
+        <label for="secret">Admin secret</label>
+        <input id="secret" type="password" placeholder="ADMIN_SECRET del Worker">
+      </div>
+    </div>
+    <button class="btn-g" id="save">Salva e verifica</button>
+    <p class="hint">Salvati solo in questo browser (localStorage). L'admin secret non viene mai pubblicato nel sito.</p>
+  </div>
+
+  <!-- Create link -->
+  <div class="card">
+    <h2>2 · Crea un nuovo link cliente</h2>
+    <div class="row three">
+      <div>
+        <label for="note">Cliente / nota</label>
+        <input id="note" placeholder="Es. Mario Rossi — ordine #1234">
+      </div>
+      <div>
+        <label for="max">Report inclusi</label>
+        <input id="max" type="number" min="1" max="50" value="3">
+      </div>
+      <div>
+        <label for="base">Sito</label>
+        <input id="base" placeholder="https://tuosito.netlify.app">
+      </div>
+    </div>
+    <button class="btn-p" id="mint">Genera link</button>
+    <div class="result" id="result">
+      <strong>Link pronto — invialo al cliente:</strong>
+      <div class="linkbox">
+        <input id="link" readonly>
+        <button class="btn-g" id="copy">Copia</button>
+      </div>
+      <p class="hint" id="rmeta"></p>
+    </div>
+  </div>
+
+  <!-- Existing -->
+  <div class="card">
+    <h2>3 · Link emessi</h2>
+    <button class="btn-g btn-sm" id="refresh">Aggiorna elenco</button>
+    <div id="list" style="margin-top:14px"><p class="empty">Premi "Aggiorna elenco" per caricare.</p></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const LS = { proxy:'ita_admin_proxy', secret:'ita_admin_secret', base:'ita_admin_base' };
+
+// restore
+$('proxy').value  = localStorage.getItem(LS.proxy)  || '';
+$('secret').value = localStorage.getItem(LS.secret) || '';
+$('base').value   = localStorage.getItem(LS.base)   || location.origin;
+
+function msg(text, kind){
+  const m = $('msg');
+  m.textContent = text;
+  m.className = 'msg show ' + (kind || 'ok');
+  if (kind !== 'err') setTimeout(()=>m.classList.remove('show'), 4000);
+}
+function proxy(){ return ($('proxy').value || '').trim().replace(/\/+$/,''); }
+function secret(){ return ($('secret').value || '').trim(); }
+
+async function api(path, opts){
+  const p = proxy();
+  if (!p)      throw new Error('Inserisci l\'URL del Worker');
+  if (!secret()) throw new Error('Inserisci l\'admin secret');
+  const res = await fetch(p + path, Object.assign({}, opts, {
+    headers: Object.assign({ 'Content-Type':'application/json', 'X-Admin-Secret': secret() }, (opts||{}).headers || {})
+  }));
+  const j = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+  return j;
+}
+
+$('save').onclick = async () => {
+  localStorage.setItem(LS.proxy,  proxy());
+  localStorage.setItem(LS.secret, secret());
+  localStorage.setItem(LS.base,   $('base').value.trim());
+  try {
+    const j = await api('/admin/tokens', { method:'GET' });
+    msg('Connessione riuscita — ' + j.count + ' link esistenti.', 'ok');
+    renderList(j.tokens);
+  } catch (e) { msg('Errore: ' + e.message, 'err'); }
+};
+
+$('mint').onclick = async () => {
+  try {
+    const max = parseInt($('max').value, 10) || 3;
+    const j = await api('/admin/token', {
+      method: 'POST',
+      body: JSON.stringify({ max, note: $('note').value.trim() })
+    });
+    const base = ($('base').value || location.origin).trim().replace(/\/+$/,'');
+    localStorage.setItem(LS.base, base);
+    const link = base + '/demo.html?token=' + j.token;
+    $('link').value = link;
+    $('rmeta').textContent = j.max + ' report · creato ' + new Date(j.created).toLocaleString('it-IT') + (j.note ? ' · ' + j.note : '');
+    $('result').classList.add('show');
+    msg('Link creato.', 'ok');
+    refresh();
+  } catch (e) { msg('Errore: ' + e.message, 'err'); }
+};
+
+$('copy').onclick = () => {
+  $('link').select();
+  navigator.clipboard.writeText($('link').value).then(
+    ()=>msg('Link copiato negli appunti.','ok'),
+    ()=>msg('Copia manualmente il link.','err')
+  );
+};
+
+async function refresh(){
+  try { const j = await api('/admin/tokens', { method:'GET' }); renderList(j.tokens); }
+  catch (e) { msg('Errore: ' + e.message, 'err'); }
+}
+$('refresh').onclick = refresh;
+
+function pill(t){
+  if (t.active === false) return '<span class="pill rev">revocato</span>';
+  const r = t.remaining;
+  if (r <= 0) return '<span class="pill out">esaurito</span>';
+  if (r === 1) return '<span class="pill low">1 rimasto</span>';
+  return '<span class="pill ok">' + r + ' rimasti</span>';
+}
+
+function renderList(tokens){
+  const el = $('list');
+  if (!tokens || !tokens.length){ el.innerHTML = '<p class="empty">Nessun link emesso finora.</p>'; return; }
+  const base = ($('base').value || location.origin).trim().replace(/\/+$/,'');
+  el.innerHTML =
+    '<table><thead><tr><th>Cliente / nota</th><th>Token</th><th>Uso</th><th>Stato</th><th>Creato</th><th></th></tr></thead><tbody>' +
+    tokens.map(t =>
+      '<tr>' +
+      '<td>' + (t.note ? escapeHtml(t.note) : '<span style="color:#9AA7B2">—</span>') + '</td>' +
+      '<td><code>' + t.token.slice(0,10) + '…</code></td>' +
+      '<td>' + t.used + ' / ' + t.max + '</td>' +
+      '<td>' + pill(t) + '</td>' +
+      '<td style="color:#7B8B96;font-size:12.5px">' + (t.created ? new Date(t.created).toLocaleDateString('it-IT') : '—') + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn-g btn-sm" data-copy="' + base + '/demo.html?token=' + t.token + '">Copia</button> ' +
+        '<button class="btn-g btn-sm" data-toggle="' + t.token + '" data-active="' + (t.active !== false) + '">' +
+          (t.active === false ? 'Riattiva' : 'Revoca') + '</button>' +
+      '</td></tr>'
+    ).join('') + '</tbody></table>';
+
+  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
+    navigator.clipboard.writeText(b.dataset.copy).then(()=>msg('Link copiato.','ok'));
+  });
+  el.querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
+    try {
+      await api('/admin/token', { method:'PUT', body: JSON.stringify({
+        token: b.dataset.toggle, active: b.dataset.active !== 'true'
+      })});
+      msg('Aggiornato.','ok'); refresh();
+    } catch (e) { msg('Errore: ' + e.message, 'err'); }
+  });
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>

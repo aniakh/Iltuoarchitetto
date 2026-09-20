@@ -1,87 +1,123 @@
 # Il Tuo Architetto
 
-Vitrine (showcase) website for **Il Tuo Architetto** — an AI-powered home
-renovation tool for Lombardy, Italy. Built from the `RenovaStudio Lombardia`
-prototype.
+Vitrine site + AI renovation planner for **Il Tuo Architetto** (Studio di
+Architettura Colombo) — Lombardy, Italy.
 
-- **`index.html`** — bilingual (IT / EN) marketing landing page.
-- **`demo.html`** — the live, interactive renovation tool (5-step wizard:
-  property → floor plan → interventions → style → 3 solutions).
-- **`src/demo-app.jsx`** — the demo's React source (the editable source of truth).
-- **`assets/`** — fonts (Cormorant Garamond + Source Sans 3), CSS, the i18n
-  script, the React runtime, `js/demo-app.js` (the compiled demo) and
-  `js/config.js` (runtime config; see proxy section below).
-- **`worker/gemini-proxy.js`** — Cloudflare Worker that holds your Gemini API
-  key server-side so visitors don't need their own.
-- **`netlify.toml`** — Netlify hosting config.
+| File | What it is |
+|---|---|
+| `index.html` | Bilingual (IT/EN) marketing landing page |
+| `demo.html` | The guided planner dashboard — fully self-contained, no CDN |
+| `admin.html` | Private page to mint access links for paying customers |
+| `assets/` | Local fonts, CSS, i18n, `config.js` (proxy URL), `ita-runtime.js` |
+| `worker/gemini-proxy.js` | Cloudflare Worker: Gemini proxy + listing fetcher + access quota |
+| `netlify.toml` | Netlify hosting config |
+
+The dashboard has **no external dependencies** — React, the fonts and all data
+are local, so it runs anywhere you can serve static files.
 
 ## Run locally
 
-It is fully static — serve the folder over HTTP (so the demo's relative
-assets and API calls work; `file://` is not recommended):
-
 ```bash
 python3 -m http.server 8000
-# then open http://localhost:8000
+# open http://localhost:8000
 ```
 
-The language toggle (IT/EN, top-right) is remembered across visits. The demo
-talks directly to the Google Gemini API, so its listing extraction, floor-plan
-analysis and photorealistic renders need a personal **Google AI Studio API
-key** (`AIza…`), entered in the tool's header.
+## Architecture
 
-## Editing the demo
-
-`assets/js/demo-app.js` is generated from `src/demo-app.jsx`. After editing the
-source, recompile it with Babel (JSX → JS):
-
-```bash
-npx babel src/demo-app.jsx --presets @babel/preset-react -o assets/js/demo-app.js
+```
+  visitor's browser                 Cloudflare Worker              Google
+ ┌──────────────────┐            ┌──────────────────────┐      ┌───────────┐
+ │ demo.html        │  no key →  │ adds GEMINI_API_KEY  │  →   │ Gemini API│
+ │ ita-runtime.js   │            │ checks access quota  │      └───────────┘
+ │  ?token=abc123   │            │ fetches listing HTML │
+ └──────────────────┘            └──────────┬───────────┘
+                                            │ KV: how many reports left
+                                            ▼
+                                    ┌──────────────┐
+                                    │ ITA_QUOTA KV │
+                                    └──────────────┘
 ```
 
-## Hosting on Netlify (cleaner URL than GitHub Pages)
+Your `AIza…` key lives only as a Cloudflare secret — it is never sent to a
+browser and never appears in this repository.
 
-1. Sign up at https://app.netlify.com/signup (free, no card).
-2. **Add new site → Import an existing project → GitHub** → pick
-   `aniakh/Iltuoarchitetto` → branch `main`. Leave the build command **empty**
-   and set the publish directory to `.` (or accept what `netlify.toml` provides).
-   Click **Deploy**.
-3. After deploy, open **Site configuration → Change site name** and set it to
-   `iltuoarchitetto`. The site is now live at
-   **https://iltuoarchitetto.netlify.app**.
+## Cloudflare Worker setup
 
-Pushes to `main` redeploy automatically.
+1. https://dash.cloudflare.com → **Workers & Pages → Create → Create Worker**,
+   name it `iltuoarchitetto-proxy`, **Deploy**.
+2. **Edit code** → paste the whole of `worker/gemini-proxy.js` → **Save and Deploy**.
+3. **Settings → Variables and Secrets**:
 
-## Letting visitors use the demo without their own API key
+   | Name | Type | Value |
+   |---|---|---|
+   | `GEMINI_API_KEY` | Secret | your key from https://aistudio.google.com/apikey |
+   | `ADMIN_SECRET` | Secret | any long random string you invent |
+   | `ALLOWED_ORIGIN` | Variable | *(optional)* your site URL, e.g. `https://iltuoarchitetto.netlify.app` |
+   | `REQUIRE_TOKEN` | Variable | *(optional)* `true` to refuse visitors without an access link |
 
-By default each visitor pastes their own Google AI Studio key into the demo
-header. To remove that step — and never expose your key in the public site —
-deploy the included Cloudflare Worker as a proxy:
-
-1. **Sign in** at https://dash.cloudflare.com/ (free).
-2. **Workers & Pages → Create → Create Worker**. Name it
-   `iltuoarchitetto-proxy` and click **Deploy** (the default Hello World
-   placeholder is fine for a first deploy).
-3. Click **Edit code**, replace the whole file with the contents of
-   `worker/gemini-proxy.js`, then **Save and Deploy**.
-4. **Settings → Variables and Secrets → Add Secret**:
-   - Name: `GEMINI_API_KEY`
-   - Value: your `AIza…` key from https://aistudio.google.com/apikey
-
-   Optionally also add a plain variable `ALLOWED_ORIGIN` set to
-   `https://iltuoarchitetto.netlify.app` to restrict who can call the proxy.
-5. Copy the Worker URL (looks like
-   `https://iltuoarchitetto-proxy.<account>.workers.dev`).
-6. Edit **`assets/js/config.js`**, set:
+4. Copy the Worker URL and put it in `assets/js/config.js`:
    ```js
    window.GEMINI_PROXY = "https://iltuoarchitetto-proxy.<account>.workers.dev";
    ```
-   Commit and push — Netlify redeploys and the key field disappears from the
-   demo header. Visitors can now use every AI feature with no setup.
 
-Your `AIza…` key stays as a Cloudflare secret; it is never sent to the browser.
+## Access links — capping reports at 3 per customer
+
+Each paying customer gets a personal link that works a fixed number of times
+(3 by default). The counter lives **on the server**, so clearing cookies,
+using incognito, switching device or sharing the link does not reset it.
+
+### 1. Create the KV namespace (this is what stores the counters)
+
+- Cloudflare → **Storage & Databases → KV → Create namespace**, name it `ITA_QUOTA`.
+- Worker → **Settings → Bindings → Add → KV namespace**
+  - Variable name: `QUOTA`
+  - Namespace: `ITA_QUOTA`
+
+Until this binding exists the Worker runs in **open mode**: everything works,
+nothing is metered. Quota switches on the moment `QUOTA` is bound.
+
+### 2. Mint a link
+
+Open `admin.html` on your site, enter the Worker URL and your `ADMIN_SECRET`,
+then create a link. You get something like:
+
+```
+https://your-site.netlify.app/demo.html?token=9f3c1a2b...
+```
+
+Send that to the customer. The page shows them how many reports remain, and
+once the third one is used the unlock button is refused with a clear message.
+
+### How the cap is enforced
+
+- `POST /consume` spends one slot and returns a short-lived `generationId`.
+- Photorealistic renders are refused unless the request carries a **live**
+  `generationId` — so a slot has to be spent before any render can be produced;
+  skipping the counter in the browser does not help.
+- Text/vision calls (the free tabs) stay open while the link has slots left.
+- A single report may make at most 60 image calls, which bounds replay of an
+  old `generationId` inside its 3-hour window.
+
+You can revoke or reactivate any link from `admin.html`.
+
+> **Note on KV limits.** Cloudflare's free KV tier allows 1,000 writes/day.
+> A full report uses roughly 25 writes, so ~40 reports/day. Paid KV is $5/mo
+> if you outgrow it. KV is also eventually consistent and has no atomic
+> counters — fine for one customer clicking a button, but two perfectly
+> simultaneous clicks could in theory read the same counter. Durable Objects
+> would be the fix if you ever need strict accounting.
+
+## Hosting on Netlify
+
+1. https://app.netlify.com → **Add new site → Import an existing project → GitHub**
+   → pick `aniakh/Iltuoarchitetto`, branch `main`.
+2. Build command: **empty**. Publish directory: `.`
+3. **Site configuration → Change site name** to pick your subdomain.
+
+Pushes to `main` redeploy automatically. The landing page's two contact forms
+use Netlify Forms — enable **Forms** in the site settings to collect them.
 
 ## Note
 
-Compliance checks, cost estimates and tax bonuses shown in the demo are
+Compliance checks, cost estimates and tax bonuses shown in the planner are
 indicative only and do not replace a project by a qualified professional.
