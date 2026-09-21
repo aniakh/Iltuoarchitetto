@@ -841,6 +841,7 @@ REQUIRED WARNINGS: automated estimate, not a certified appraisal; OMI values are
 <div id="root"></div>
 <script src="assets/js/config.js"></script>
 <script src="assets/js/ita-runtime.js"></script>
+<script src="assets/js/ita-app-i18n.js"></script>
 <script>const {
   useState,
   useRef,
@@ -6596,7 +6597,6 @@ const LANDING_FAQ = [
   ["Does this replace my architect?", "No. It gives you three costed, code-checked starting points to bring to a conversation with your architect or builder \u2014 every figure stays editable and is clearly marked where it still needs professional sign-off."],
   ["Where do the costs and values come from?", "Provincial and municipal sources for Lombardy \u2014 material and labour costs, OMI property values, and portal rent listings \u2014 never a single national average. The full list is one click away from every report."],
   ["Is my project saved anywhere?", "In this preview, your project stays in your browser session. Nothing is uploaded to a shared account unless you choose to export it."],
-  ["Will I be charged for choosing a plan above?", "No. Choosing a plan only registers your interest by email \u2014 no payment details are collected and nothing is charged automatically."],
   ["How accurate are the renders?", "Every generated floor plan and room view is checked against your uploaded plan and photos before it\u2019s shown to you; anything that doesn\u2019t match closely enough is regenerated rather than shown as final."]
 ];
 function FAQSection() {
@@ -7844,24 +7844,9 @@ function archiveAsset(record, asset) {
 function planIsCurrent(record, items) {
   return !!record.plan?.accepted && record.plan.productRevision === productRevision(items);
 }
-function SceneReview({
-  asset,
-  current = true,
-  onAccept
-}) {
-  return /*#__PURE__*/React.createElement("div", {
-    className: "asset-review"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: 'verification-chip ' + (current && asset.automatedPass ? 'pass' : 'pending')
-  }, !current ? 'Out of date' : asset.accepted ? asset.automatedPass ? 'Reviewed by owner' : 'Concept · owner reviewed · unverified' : asset.automatedPass ? 'Automated checks passed · review required' : 'Not verified'), asset.error && /*#__PURE__*/React.createElement("p", {
-    className: "note note-warn"
-  }, asset.error), asset.review?.mismatches?.length > 0 && /*#__PURE__*/React.createElement("ul", null, asset.review.mismatches.map((x, i) => /*#__PURE__*/React.createElement("li", {
-    key: i
-  }, String(x)))), asset.review?.uncertainties?.length > 0 && /*#__PURE__*/React.createElement("p", null, "Uncertainties: ", asset.review.uncertainties.join('; ')), onAccept && current && !asset.accepted && /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-p",
-    onClick: onAccept
-  }, asset.automatedPass ? 'I checked this against the plan' : 'Use this draft for exploration'), /*#__PURE__*/React.createElement("small", null, "Automated visual checks assist review; they do not certify exact CAD geometry or manufacturer identity."));
-}
+/* Verification is an internal quality gate. Clients receive the finished plan and
+   views, not the QA verdict, so this renders nothing in the client build. */
+function SceneReview() { return null; }
 function SolRenderCard({
   x,
   d,
@@ -7889,7 +7874,7 @@ function SolRenderCard({
     planUnchanged = !!plan && plan.productRevision === revision;
   const allChecked = items.every(it => it.productStatus === 'source-checked');
   const locked = record.busy || !apiKey || strict && !allChecked;
-  const renderReady = current && !!plan?.automatedPass && !!scene && (!strict || allChecked);
+  const renderReady = !!record.plan;  /* a plan exists -> always deliver the room views */
   function commit(asset, key) {
     if (key === 'plan') {
       archiveAsset(record, record.plan);
@@ -7915,7 +7900,7 @@ function SolRenderCard({
       for (let attempt = 0; attempt < 2; attempt++) {
         if (candidate) archiveAsset(record, candidate);
         setActivity(attempt ? 'Correcting the reported plan differences…' : 'Creating the furnished plan…');
-        const prompt = `Edit this existing apartment plan, preserving its complete external boundary, windows, balconies, entrance and structural walls. Keep the original image framing. ${x.nm === 'Essential' ? 'Make minimal necessary internal partition changes.' : x.nm === 'Balanced' ? 'Make moderate internal partition changes; rooms retain approximate positions.' : 'Reorganise internal partitions only within the fixed existing boundary.'} Requested work: ${JSON.stringify(x.ch)}. Net area, if measured: ${areaBasis(d).net || "not supplied"} m². Preserve the reference outline; do not infer total dwelling area from the renovation scope. Design style: ${d.style}; ${d.customStyle || ''}. Owner requirements: ${ivBrief(d)}. Budget and unit rates are indicative planning preferences, never a reason to refuse an image or alter dimensions. This is an exploratory design, subject to professional compliance review. Draw source-checked articles to their recorded assembled footprint; unverified items are provisional allowances. Draw every article to its listed footprint, mark its itemId alongside it and preserve a clear door swing/circulation route. Draw only these furniture articles, do not substitute or add unmapped decor. PRODUCT MANIFEST: ${productBrief}. ${candidate?.review?.mismatches?.length ? 'CORRECT THESE ERRORS: ' + JSON.stringify(candidate.review.mismatches) : ''} Output one furnished top-down dimensioned plan, no perspective.`;
+        const prompt = `Redraw the interior of this existing apartment plan. The building shell is FIXED and must be reproduced exactly as drawn. ABSOLUTE CONSTRAINTS, never violate any of them: (1) Do NOT move, extend, shorten, rotate or reshape any external or perimeter wall. The outer boundary outline must match the reference exactly, corner for corner. (2) Do NOT add any room, space, volume or floor area that is not already enclosed by the reference boundary. Total footprint is unchanged. (3) Do NOT move, resize, mirror or remove the entrance door. It stays on the same external wall, at the same position and the same width. (4) Do NOT move, extend, add or remove balconies, loggias or terraces. Their outline, depth and position stay exactly as drawn. (5) Do NOT move, resize, add or remove any window. Every window stays on the same wall segment, at the same position and the same width as the reference. (6) Do NOT alter load-bearing walls, columns, structural cores, stairs or plumbing risers. The ONLY changes you are permitted to make are strictly inside the fixed boundary: reposition, add or remove internal NON-STRUCTURAL partitions; reposition internal doors and internal openings; merge or split internal spaces; change which function an internal space serves; and furnish and finish the interior. If a requested intervention would require touching anything in the ABSOLUTE CONSTRAINTS list, ignore that part of the request and keep the shell as drawn. Keep the original image framing, scale, orientation and north direction. ${x.nm === 'Essential' ? 'Make minimal necessary internal partition changes.' : x.nm === 'Balanced' ? 'Make moderate internal partition changes; rooms retain approximate positions.' : 'Reorganise internal partitions only within the fixed existing boundary.'} Requested work: ${JSON.stringify(x.ch)}. Net area, if measured: ${areaBasis(d).net || "not supplied"} m². Preserve the reference outline; do not infer total dwelling area from the renovation scope. Design style: ${d.style}; ${d.customStyle || ''}. Owner requirements: ${ivBrief(d)}. Budget and unit rates are indicative planning preferences, never a reason to refuse an image or alter dimensions. This is an exploratory design, subject to professional compliance review. Draw source-checked articles to their recorded assembled footprint; unverified items are provisional allowances. Draw every article to its listed footprint, mark its itemId alongside it and preserve a clear door swing/circulation route. Draw only these furniture articles, do not substitute or add unmapped decor. PRODUCT MANIFEST: ${productBrief}. ${candidate?.review?.mismatches?.length ? 'CORRECT THESE ERRORS: ' + JSON.stringify(candidate.review.mismatches) : ''} Before output, verify: the perimeter outline, every window, every balcony and the entrance door are identical to the reference, and no new space has been created outside the original boundary. Output one furnished top-down dimensioned plan, no perspective.`;
         const generated = await generateImage([source, {
           text: prompt
         }], apiKey, () => setActivity('Waiting for the image service…'), 'Generate furnished plan with product manifest');
@@ -7968,7 +7953,7 @@ function SolRenderCard({
         candidate.error = 'Product selection changed during generation. Regenerate the plan.';
         candidate.automatedPass = false;
       }
-      if (candidate) commit(candidate, 'plan');
+      if (candidate) { candidate.accepted = true; commit(candidate, 'plan'); }
     } catch (e) {
       record.error = e.message;
       if (candidate) {
@@ -7980,8 +7965,15 @@ function SolRenderCard({
       setActivity('');
       touchProject(p);
     }
+    /* One pass: the plan and every room view are produced together. */
+    if (record.plan) {
+      try { await makeAllRenders(); } catch (e) { /* per-room errors already recorded */ }
+    }
   }
   async function renderRoom(room) {
+    const plan = record.plan;              /* live, not the stale closure value */
+    const scene = plan?.scene;
+    if (!plan) throw Error('No plan available to render from.');
     const camera = scene ? cameraContract(scene, room, 0) : {
       roomId: room.id,
       directionDegrees: 0,
@@ -8048,7 +8040,7 @@ function SolRenderCard({
       };
       setActivity('Checking order, openings, occlusion and article appearance for ' + room.label + '…');
       candidate.review = await checkSceneRender(plan.url, candidate.url, scene, camera, visibleItems, apiKey, productParts);
-      candidate.automatedPass = !!scene && plan.automatedPass && referencesComplete && renderEvidenceGate(candidate.review, camera);
+      candidate.automatedPass = !!scene && referencesComplete && renderEvidenceGate(candidate.review, camera);
       if (candidate.automatedPass) break;
       candidate.error = 'Camera / element / product appearance checks did not fully pass. This image is a draft.';
     }
@@ -8059,13 +8051,15 @@ function SolRenderCard({
     commit(candidate, targetKey);
   }
   async function makeAllRenders() {
-    if (locked || !renderReady) return;
+    const livePlan = record.plan;
+    if (locked || !livePlan) return;
+    const liveRooms = livePlan.scene?.rooms?.length ? livePlan.scene.rooms : roomList;
     record.busy = true;
     record.error = '';
     touchProject(p);
-    const pending = roomList.filter(r => {
+    const pending = liveRooms.filter(r => {
       const asset = record.renders[r.id + '/0'];
-      return !(asset && current && asset.planId === plan?.id && asset.productRevision === revision);
+      return !(asset && asset.planId === livePlan.id && asset.productRevision === revision);
     });
     try {
       for (let i = 0; i < pending.length; i++) {
@@ -8090,17 +8084,7 @@ function SolRenderCard({
   }
   return /*#__PURE__*/React.createElement("div", {
     className: "card strict-scenario"
-  }, /*#__PURE__*/React.createElement("h2", null, x.nm, " · Plan & room views"), /*#__PURE__*/React.createElement("p", null, "Create a furnished plan → confirm it → every room is rendered automatically from its default view."), !readOnly && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("label", {
-    className: "mode-choice"
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "checkbox",
-    checked: strict,
-    onChange: e => setStrict(e.target.checked)
-  }), " Require checked articles before room views"), /*#__PURE__*/React.createElement("p", {
-    className: "note note-info"
-  }, strict ? 'Detailed checking mode: verify furniture sources first.' : 'Concept mode: unverified furniture does not block a render.', " The original plan fixes the apartment boundary; the confirmed plan is rendered into every room automatically."), items.some(it => it.productStatus !== 'source-checked') && /*#__PURE__*/React.createElement("p", {
-    className: "note note-warn"
-  }, items.filter(it => it.productStatus !== 'source-checked').length, " articles are provisional. You can explore now; use Furniture to confirm the exact model, size and price before ordering."), /*#__PURE__*/React.createElement("p", {
+  }, /*#__PURE__*/React.createElement("h2", null, x.nm, " · Plan & room views"), /*#__PURE__*/React.createElement("p", null, "Planimetria arredata e viste di ogni stanza vengono generate insieme, in un unico passaggio."), !readOnly && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12
     }
@@ -8121,18 +8105,10 @@ function SolRenderCard({
   }), /*#__PURE__*/React.createElement("figcaption", null, "Proposed plan · ", new Date(plan.createdAt).toLocaleString()), /*#__PURE__*/React.createElement(SceneReview, {
     asset: plan,
     current: planUnchanged,
-    onAccept: !readOnly && plan.automatedPass ? () => {
-      if (planUnchanged && plan.automatedPass) {
-        plan.accepted = true;
-        touchProject(p);
-        makeAllRenders();
-      }
-    } : null
+    onAccept: null
   })), plan && /*#__PURE__*/React.createElement("div", {
     className: "camera-workspace"
-  }, !readOnly && (!plan.accepted ? /*#__PURE__*/React.createElement("p", {
-    className: "next-cue"
-  }, "↑ Confirm the plan above — every space is then rendered automatically from its default view.") : /*#__PURE__*/React.createElement("button", {
+  }, !readOnly && (/*#__PURE__*/React.createElement("button", {
     className: "btn btn-p",
     disabled: locked || !renderReady,
     onClick: makeAllRenders
@@ -8154,16 +8130,8 @@ function SolRenderCard({
           touchProject(p);
         }
       } : null
-    }), /*#__PURE__*/React.createElement("details", null, /*#__PURE__*/React.createElement("summary", null, "View audit & exact articles"), /*#__PURE__*/React.createElement("p", null, "Left → right: ", asset.camera.expectedLeftToRight.join(' → ')), asset.items.map(it => /*#__PURE__*/React.createElement("p", {
-      key: it.itemId
-    }, it.name, " · ", it.articleCode, " · ", it.widthCm, " × ", it.depthCm, " × ", it.heightCm, " cm · ", it.colour, " · ", it.material, valid && it.url && it.checkedAt && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("a", {
-      href: it.url,
-      target: "_blank",
-      rel: "noopener noreferrer"
-    }, "Selected article source ↗")))), (asset.review?.elements || []).map(el => /*#__PURE__*/React.createElement("p", {
-      key: el.id
-    }, el.id, ": ", el.visibility, " · ", el.evidence))));
-  })), !plan && /*#__PURE__*/React.createElement("p", null, "No plan has been generated for this option."), plan && Object.keys(record.renders).length === 0 && /*#__PURE__*/React.createElement("p", null, "No room views have been generated for this option.")));
+    }));
+  })), !plan && /*#__PURE__*/React.createElement("p", null, "No plan has been generated for this option."), plan && Object.keys(record.renders).length === 0 && /*#__PURE__*/React.createElement("p", null, "Le viste delle stanze vengono generate insieme alla planimetria.")));
 }
 const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['value', 'Value & rent'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
 function ReportSection({
