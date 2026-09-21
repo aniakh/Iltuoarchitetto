@@ -1928,11 +1928,43 @@ function calcLombardyVal(d, sol, renoCostOverride) {
   const a = areaBasis(d),
     m = marketEvidence(d),
     reno = renoCostOverride ?? sol.co.total;
-  const unit = m.ready ? nPositive(m.currentSqm) : null,
-    postUnit = m.ready ? nPositive(m.renovatedSqm) : null;
+  /* Without reviewed market evidence, fall back to the Lombardy reference
+     table so value and rent are shown as an estimate rather than left blank. */
+  const base = lombardyMarketFor(d);
+  const CONDITION_FACTOR = {
+    'Da ristrutturare': 0.78,
+    'Buono / Abitabile': 0.92,
+    'Ristrutturato': 1.02,
+    'Ottimo': 1.06,
+    'Nuovo / In costruzione': 1.10
+  };
+  const condFactor = CONDITION_FACTOR[d.currentStatus] ?? 0.90;
+  const fbCurrent = base && base.sale ? Math.round(base.sale * condFactor) : null;
+  /* A light refresh must not be valued like a full renovation. Scale the
+     post-works rate by how complete this scenario really is, measured against
+     a full gut-renovation benchmark, instead of applying one flat premium. */
+  const FULL_RENO_EUR_PER_SQM = 900;
+  const renoPerSqm = a.market && reno ? reno / a.market : 0;
+  const spend = Math.max(0, Math.min(1, renoPerSqm / FULL_RENO_EUR_PER_SQM));
+  /* Diminishing returns: bringing a tired flat up to standard adds far more
+     value per euro than the last tier of finishes, so value does not track
+     spend linearly (a linear curve would also make ROI identical for every
+     scenario, which tells the owner nothing). */
+  const completeness = Math.pow(spend, 0.65);
+  /* Ceiling is the fully-renovated rate on the same condition ladder used for
+     the current rate, so the two stay internally consistent. */
+  const ceilingUnit = base && base.sale ? base.sale * (CONDITION_FACTOR['Ottimo'] ?? 1.06) : null;
+  const fbRenovated = fbCurrent != null && ceilingUnit != null
+    ? Math.round(fbCurrent + (ceilingUnit - fbCurrent) * completeness)
+    : null;
+  const fbRent = base && base.rent ? base.rent : null;
+  const modelledMarket = !m.ready;
+
+  const unit = (m.ready ? nPositive(m.currentSqm) : null) ?? fbCurrent,
+    postUnit = (m.ready ? nPositive(m.renovatedSqm) : null) ?? fbRenovated;
   const pre = unit && a.market ? unit * a.market : null,
     post = postUnit && a.market ? postUnit * a.market : null;
-  const rentUnit = m.ready ? nPositive(m.rentSqm) : null,
+  const rentUnit = (m.ready ? nPositive(m.rentSqm) : null) ?? fbRent,
     rent = rentUnit && a.market ? rentUnit * a.market : null;
   const vacancy = Math.min(100, nNonnegative(m.vacancyPct) ?? 5) / 100,
     expenses = nNonnegative(m.annualExpenses),
@@ -1945,6 +1977,7 @@ function calcLombardyVal(d, sol, renoCostOverride) {
     profit = uplift == null ? null : uplift - reno - (nNonnegative(m.transactionCosts) ?? 0);
   const omi = m.ready && m.omiZone && m.omiSemester && m.omiAreaBasis && nPositive(m.omiMin) && nPositive(m.omiMax) && +m.omiMin <= +m.omiMax ? [+m.omiMin, +m.omiMax] : null;
   return {
+    modelled: modelledMarket,
     pB: unit,
     pA: postUnit,
     vB: pre,
@@ -1974,7 +2007,7 @@ function calcLombardyVal(d, sol, renoCostOverride) {
     pre_value_range: [],
     post_value_range: [],
     confidence: null,
-    confidence_label: m.ready ? (m.reviewed ? 'Owner-reviewed comparable evidence' : 'Live market lookup \u2014 AI-assisted, not owner-reviewed') : 'Evidence needed',
+    confidence_label: m.ready ? (m.reviewed ? 'Owner-reviewed comparable evidence' : 'Live market lookup \u2014 AI-assisted, not owner-reviewed') : 'Indicative estimate from Lombardy reference values \u2014 not verified comparables',
     recommendation: 'Compare sourced values with actual quotes; no guaranteed uplift.',
     trace: [{
       step: 1,
@@ -2892,20 +2925,84 @@ function calcCosts(a, ch, st, bd, rm, d = {}, qm = 1) {
   });
   return out;
 }
-function calcEnergy(cls, ch, a) {
+/* ── Indicative energy model ──────────────────────────────────────────────
+   Used whenever no measured APE or metered evidence has been entered, so the
+   report shows a defensible estimate instead of an empty table. Bands are the
+   usual residential EPgl,nren ranges for climate zone E (Lombardy). Everything
+   derived here is flagged `modelled: true` and is clearly an estimate, not a
+   certified APE. Measured inputs always take precedence. */
+const APE_BANDS = [
+  ['A4', 0, 25], ['A3', 25, 35], ['A2', 35, 50], ['A1', 50, 70],
+  ['B', 70, 95], ['C', 95, 125], ['D', 125, 175],
+  ['E', 175, 235], ['F', 235, 310], ['G', 310, 450]
+];
+const ENERGY_PRICE_EUR_PER_KWH = 0.22;   /* blended gas + electricity */
+const CO2_KG_PER_KWH = 0.21;             /* non-renewable primary energy mix */
+const EP_FLOOR = 15;                     /* no realistic retrofit goes below this */
+
+/* Share of primary energy each measure removes, applied multiplicatively. */
+const ENERGY_MEASURE_EFFECT = {
+  'Opaque envelope': 0.25,
+  'Heating system': 0.20,
+  'Renewable sources': 0.15,
+  'Transparent envelope': 0.12,
+  'Ventilation system': 0.06,
+  'Smart controls': 0.04,
+  'Cooling system': 0.03,
+  'Other energy interventions': 0.02
+};
+
+function epForClass(cls) {
+  const b = APE_BANDS.find(x => x[0] === String(cls || '').toUpperCase());
+  return b ? Math.round((b[1] + b[2]) / 2) : null;
+}
+function classForEp(ep) {
+  if (ep == null || !isFinite(ep)) return null;
+  for (const [name, , hi] of APE_BANDS) if (ep < hi) return name;
+  return 'G';
+}
+function classRank(cls) {            /* 0 = A4 (best) … 9 = G (worst) */
+  const i = APE_BANDS.findIndex(x => x[0] === String(cls || '').toUpperCase());
+  return i < 0 ? null : i;
+}
+function modelledEnergy(cls, ch) {
+  const before = epForClass(cls);
+  let list = Array.isArray(ch) ? ch.slice() : [];
+  if (list.includes('Complete energy upgrade')) {
+    list = list.concat(Object.keys(ENERGY_MEASURE_EFFECT));
+  }
+  const seen = {};
+  let retained = 1, applied = 0;
+  list.forEach(c => {
+    const eff = ENERGY_MEASURE_EFFECT[c];
+    if (eff && !seen[c]) { seen[c] = 1; retained *= (1 - eff); applied++; }
+  });
+  if (before == null) return { before: null, after: null, savingPct: null, applied };
+  const after = applied ? Math.max(EP_FLOOR, Math.round(before * retained)) : before;
   return {
-    bC: cls || 'Unknown',
-    bS: null,
-    aC: 'Not calculated',
-    aS: null,
-    sp: null
+    before,
+    after,
+    savingPct: before ? Math.round((1 - after / before) * 100) : null,
+    applied
   };
 }
-function calcSave() {
+
+function calcEnergy(cls, ch, a) {
+  const m = modelledEnergy(cls, ch);
   return {
-    yr: null,
-    mo: null
+    bC: cls || 'Unknown',
+    bS: m.before,
+    aC: m.after == null ? 'Unknown' : classForEp(m.after),
+    aS: m.after,
+    sp: m.savingPct,
+    measures: m.applied,
+    modelled: true
   };
+}
+function calcSave(before, after, heatedArea) {
+  if (before == null || after == null || !heatedArea) return { yr: null, mo: null };
+  const yr = Math.round((before - after) * heatedArea * ENERGY_PRICE_EUR_PER_KWH);
+  return { yr, mo: Math.round(yr / 12) };
 }
 function calcSched(a, ch) {
   const heavy = ch.filter(c => ['Internal layout optimization', 'Bathroom upgrade', 'Kitchen upgrade', 'Heating system', 'Structural reinforcement'].includes(c)).length;
@@ -3140,37 +3237,72 @@ function calcEnergyNPV(investment, taxDeductionRate, annualSaving, years = 30, d
 }
 function runFullEnergyCalc(d, sol) {
   const e = energyScreen(d, sol);
+  const en = sol.en || {};
+  const a = areaBasis(d);
+  const measured = e.ep != null && e.saving != null;
+
+  /* Measured evidence wins; otherwise fall back to the indicative model so the
+     report always states an after-renovation class rather than a blank. */
+  const epAnte = e.ep != null ? e.ep : (en.bS ?? null);
+  const epPost = en.aS ?? null;
+  const kwhSaved = epAnte != null && epPost != null && a.heated
+    ? (epAnte - epPost) * a.heated : null;
+  const savingYear = e.saving != null
+    ? e.saving
+    : (kwhSaved != null ? Math.round(kwhSaved * ENERGY_PRICE_EUR_PER_KWH) : null);
+  const rankBefore = classRank(en.bC ?? d.eCls);
+  const rankAfter = classRank(en.aC);
+  const jumps = rankBefore != null && rankAfter != null ? rankBefore - rankAfter : null;
+
+  /* Payback / NPV on the modelled saving when no metered series exists. */
+  let payback = e.payback, npv = e.npv, cashflow = e.cashflow;
+  if (!measured && savingYear != null && e.investment > 0) {
+    let sum = -e.investment;
+    npv = -e.investment;
+    cashflow = [];
+    payback = null;
+    for (let year = 1; year <= 30; year++) {
+      const cf = savingYear * Math.pow(1.03, year - 1);
+      sum += cf;
+      npv += cf / Math.pow(1.04, year);
+      cashflow.push({ year, saving: cf, cumulative: sum });
+      if (payback == null && sum >= 0) payback = year;
+    }
+  }
+
   return {
     screen: e,
-    GG: null,
+    modelled: !measured,
+    GG: LOMBARDY_GG[String(d.city || '').toLowerCase().trim()] ?? null,
     EPrif: null,
     ante: {
-      EPnren: e.ep,
-      classe: d.eCls || 'Unknown',
+      EPnren: epAnte,
+      classe: en.bC || d.eCls || 'Unknown',
       cost: e.pre
     },
     post: {
-      EPnren: null,
-      classe: 'Not calculated',
+      EPnren: epPost,
+      classe: en.aC || 'Unknown',
       cost: e.post
     },
     delta: {
-      saving_year: e.saving,
-      saving_pct: e.pre && e.post != null ? (1 - e.post / e.pre) * 100 : null,
-      co2_kg_saved: null,
-      class_jumps: null
+      saving_year: savingYear,
+      saving_pct: e.pre && e.post != null ? (1 - e.post / e.pre) * 100 : (en.sp ?? null),
+      kwh_saved: kwhSaved == null ? null : Math.round(kwhSaved),
+      co2_kg_saved: kwhSaved == null ? null : Math.round(kwhSaved * CO2_KG_PER_KWH),
+      class_jumps: jumps
     },
     economy: {
       investment_gross: e.investment,
       tax_deduction: 0,
       investment_net: e.investment,
-      payback_years: e.payback,
-      npv_30y: e.npv,
-      cashflow: e.cashflow
+      payback_years: payback,
+      npv_30y: npv,
+      cashflow: cashflow
     }
   };
 }
-const fmt = n => n == null ? "—" : "€" + n.toLocaleString("it-IT");
+const fmt = n => n == null ? "—" : "€" + Math.round(n).toLocaleString("it-IT");
 const fmtK = n => n >= 1e3 ? "€" + (n / 1e3).toFixed(0) + "k" : "€" + n;
 const T_E = ["Finishes refresh", "Storage boost", "Ceiling renovation", "Wall treatments", "Other energy interventions"];
 const T_C = ["Kitchen upgrade", "Bathroom upgrade", "Electrical upgrade", "Plumbing upgrade", "Smart controls"];
@@ -3217,11 +3349,12 @@ function genSols(d) {
       }
     };
     const e = energyScreen(ed, s);
-    s.en.bS = e.ep;
-    s.sv = {
-      yr: e.saving,
-      mo: e.saving == null ? null : e.saving / 12
-    };
+    if (e.ep != null) s.en.bS = e.ep;            /* measured APE wins over the model */
+    const _ab = areaBasis(d);
+    const _modelled = calcSave(s.en.bS, s.en.aS, _ab.heated);
+    s.sv = e.saving != null
+      ? { yr: e.saving, mo: e.saving / 12 }
+      : _modelled;
     s.energy = e;
     s.vl = calcLombardyVal(d, s);
     return s;
@@ -16498,7 +16631,10 @@ function areaBasis(d) {
     plan = nPositive(d.extractedPlan?.totalArea);
   const works = nPositive(d.area),
     overall = listing || nPositive(a.overall),
-    heatedPlan = plan || overall,
+    /* Fall back to the area the owner typed in step 1. Without this, a project
+       with no uploaded plan and no extracted listing has no heated/market area,
+       which silently blanked energy savings, property value and rent. */
+    heatedPlan = plan || overall || works,
     net = heatedPlan ? Math.round(heatedPlan * 0.93 * 10) / 10 : null,
     market = heatedPlan ? Math.round(heatedPlan * 1.12 * 10) / 10 : null,
     heated = heatedPlan;
@@ -17108,7 +17244,19 @@ function EnergySummary({
     className: "basis-card"
   }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · ", detail ? 'Energy calculation trace' : 'Energy evidence'), /*#__PURE__*/React.createElement("div", {
     className: "area-evidence"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("small", null, "Recorded APE class"), /*#__PURE__*/React.createElement("strong", null, d.eCls || 'Unknown'), /*#__PURE__*/React.createElement("span", null, shown(e.ep, ' kWh/m²/year'), " · primary energy")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("small", null, "Forecast annual bill saving"), /*#__PURE__*/React.createElement("strong", null, fmt(e.saving)), /*#__PURE__*/React.createElement("span", null, e.ready ? 'From this scenario’s entered forecast' : 'Add complete bills and a scenario forecast'))), /*#__PURE__*/React.createElement("p", null, "No new APE class is inferred. ", shown(e.area, ' m²'), " heated area. APE and billed consumption are separate evidence."), detail && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("small", null, "Current APE class"),
+      /*#__PURE__*/React.createElement("strong", null, (s.en && s.en.bC) || d.eCls || 'Unknown'),
+      /*#__PURE__*/React.createElement("span", null, shown(e.ep != null ? e.ep : (s.en && s.en.bS), ' kWh/m\u00b2/year'), " \u00b7 primary energy")),
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("small", null, "APE class after the works"),
+      /*#__PURE__*/React.createElement("strong", null, (s.en && s.en.aC) || 'Unknown'),
+      /*#__PURE__*/React.createElement("span", null, shown(s.en && s.en.aS, ' kWh/m\u00b2/year'), (s.en && s.en.sp ? ' \u00b7 \u2212' + s.en.sp + '%' : ''))),
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("small", null, "Estimated annual bill saving"),
+      /*#__PURE__*/React.createElement("strong", null, fmt(e.saving != null ? e.saving : (s.sv && s.sv.yr))),
+      /*#__PURE__*/React.createElement("span", null, e.ready ? 'From your metered forecast' : 'Indicative estimate'))),
+  /*#__PURE__*/React.createElement("p", null, "The class after the works is estimated from the energy measures in this scenario over ", shown(e.area, ' m\u00b2'), " of heated area. It is an indicative projection, not a certified APE \u2014 a qualified assessor issues the final certificate."), detail && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "table-scroll"
   }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Vector"), /*#__PURE__*/React.createElement("th", null, "Current / year"), /*#__PURE__*/React.createElement("th", null, "Forecast / year"), /*#__PURE__*/React.createElement("th", null, "Variable rate"), /*#__PURE__*/React.createElement("th", null, "Fixed / year"), /*#__PURE__*/React.createElement("th", null, "Current bill"), /*#__PURE__*/React.createElement("th", null, "Forecast bill"))), /*#__PURE__*/React.createElement("tbody", null, e.rows.map(r => /*#__PURE__*/React.createElement("tr", {
     key: r.key
