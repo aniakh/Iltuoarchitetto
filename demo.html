@@ -871,70 +871,7 @@ function visionCfg(maxTokens, extra) {
 }
 const AI_USAGE_STORAGE_KEY = "renovastudio_ai_usage_v1";
 let _usageMemory = [];
-const MODEL_PRICING_USD_PER_M = {
-  "gemini-3.5-flash": {
-    input: 1.50,
-    textOutput: 9.00,
-    imageOutput: 0
-  },
-  "gemini-3.1-flash-lite": {
-    input: 0.25,
-    textOutput: 1.50,
-    imageOutput: 0
-  },
-  "gemini-2.5-flash": {
-    input: 0.30,
-    textOutput: 2.50,
-    imageOutput: 0
-  },
-  "gemini-2.5-flash-lite": {
-    input: 0.10,
-    textOutput: 0.40,
-    imageOutput: 0
-  },
-  "gemini-2.0-flash": {
-    input: 0.10,
-    textOutput: 0.40,
-    imageOutput: 0
-  },
-  "gemini-3-flash-preview": {
-    input: 0.50,
-    textOutput: 3.00,
-    imageOutput: 0
-  },
-  "gemini-3.1-flash-image": {
-    input: 0.50,
-    textOutput: 3.00,
-    imageOutput: 60.00
-  },
-  "gemini-3.1-flash-image-preview": {
-    input: 0.50,
-    textOutput: 3.00,
-    imageOutput: 60.00,
-    estimated: true
-  },
-  "gemini-3.1-flash-lite-image": {
-    input: 0.25,
-    textOutput: 1.50,
-    imageOutput: 30.00
-  },
-  "gemini-2.5-flash-image": {
-    input: 0.30,
-    textOutput: 2.50,
-    imageOutput: 30.00
-  },
-  "gemini-3-pro-image": {
-    input: 2.00,
-    textOutput: 12.00,
-    imageOutput: 120.00
-  },
-  "gemini-3-pro-image-preview": {
-    input: 2.00,
-    textOutput: 12.00,
-    imageOutput: 120.00,
-    estimated: true
-  }
-};
+const MODEL_PRICING_USD_PER_M = {}; /* internal rate card removed from the client build */
 function pricingForModel(model) {
   if (MODEL_PRICING_USD_PER_M[model]) return {
     ...MODEL_PRICING_USD_PER_M[model],
@@ -6323,268 +6260,7 @@ function exportUsageCsv(rows) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
-function AIUsagePanel() {
-  const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState(() => AIUsageLog.all());
-  useEffect(() => {
-    const refresh = () => setRows(AIUsageLog.all());
-    window.addEventListener("ai-usage-updated", refresh);
-    window.addEventListener("storage", refresh);
-    return () => {
-      window.removeEventListener("ai-usage-updated", refresh);
-      window.removeEventListener("storage", refresh);
-    };
-  }, []);
-  const totals = useMemo(() => rows.reduce((a, r) => ({
-    tokens: a.tokens + (Number(r.totalTokens) || 0),
-    duration: a.duration + (Number(r.durationMs) || 0),
-    cost: a.cost + (Number(r.costUsd) || 0),
-    errors: a.errors + (r.status === "error" ? 1 : 0)
-  }), {
-    tokens: 0,
-    duration: 0,
-    cost: 0,
-    errors: 0
-  }), [rows]);
-  return React.createElement(React.Fragment, null, React.createElement("button", {
-    onClick: () => setOpen(!open),
-    title: "AI token, time and cost log",
-    style: {
-      border: "1px solid #2465A6",
-      background: open ? "#2465A6" : "#fff",
-      color: open ? "#fff" : "#2465A6",
-      borderRadius: 7,
-      padding: "6px 10px",
-      fontSize: 10.5,
-      fontWeight: 700,
-      cursor: "pointer",
-      whiteSpace: "nowrap"
-    }
-  }, "Activity · ", rows.length, " · ", usageCostFmt(totals.cost)), open && React.createElement("div", {
-    role: "dialog",
-    "aria-label": "AI usage log",
-    style: {
-      position: "fixed",
-      zIndex: 9999,
-      top: 78,
-      right: 16,
-      width: "min(880px,calc(100vw - 32px))",
-      maxHeight: "calc(100vh - 96px)",
-      overflow: "hidden",
-      background: "#fff",
-      border: "1px solid #D9D4CC",
-      borderRadius: 10,
-      boxShadow: "0 18px 55px rgba(28,25,23,.24)",
-      color: "#17324F"
-    }
-  }, React.createElement("div", {
-    style: {
-      padding: "14px 16px 12px",
-      borderBottom: "1px solid #E8E4DE",
-      display: "flex",
-      justifyContent: "space-between",
-      gap: 12
-    }
-  }, React.createElement("div", null, React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: "#123B66"
-    }
-  }, "AI operation usage log"), React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "#52677E",
-      marginTop: 2
-    }
-  }, "Tokens, elapsed API time and estimated paid-tier USD cost per operation")), React.createElement("button", {
-    onClick: () => setOpen(false),
-    "aria-label": "Close usage log",
-    style: {
-      border: 0,
-      background: "transparent",
-      fontSize: 19,
-      cursor: "pointer",
-      color: "#52677E"
-    }
-  }, "×")), React.createElement("div", {
-    style: {
-      padding: "12px 16px",
-      display: "grid",
-      gridTemplateColumns: "repeat(4,minmax(0,1fr))",
-      gap: 8,
-      borderBottom: "1px solid #EEEAE4"
-    }
-  }, [["Operations", rows.length, totals.errors ? totals.errors + " failed" : "All successful"], ["Total tokens", usageTokenFmt(totals.tokens), "Input + output + thinking"], ["API time (sum)", usageDurationFmt(totals.duration), "Parallel calls are summed"], ["Estimated cost", usageCostFmt(totals.cost), "USD · standard paid tier"]].map(([l, v, n]) => React.createElement("div", {
-    key: l,
-    style: {
-      padding: "9px 10px",
-      background: "#F3F7FC",
-      borderRadius: 7
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 9,
-      textTransform: "uppercase",
-      color: "#52677E"
-    }
-  }, l), React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: "#123B66",
-      marginTop: 2
-    }
-  }, v), React.createElement("div", {
-    style: {
-      fontSize: 8.5,
-      color: "#52677E"
-    }
-  }, n)))), React.createElement("div", {
-    style: {
-      padding: "9px 16px",
-      display: "flex",
-      justifyContent: "space-between",
-      gap: 8,
-      alignItems: "center",
-      borderBottom: "1px solid #EEEAE4",
-      flexWrap: "wrap"
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 9.5,
-      color: "#52677E"
-    }
-  }, "≈ marks estimated token counts or fallback rates. Search charges beyond account allowances are excluded."), React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6
-    }
-  }, React.createElement("button", {
-    className: "btn btn-g",
-    disabled: !rows.length,
-    onClick: () => exportUsageCsv(rows),
-    style: {
-      fontSize: 10,
-      padding: "5px 9px"
-    }
-  }, "Export CSV"), React.createElement("button", {
-    className: "btn btn-g",
-    disabled: !rows.length,
-    onClick: () => {
-      if (window.confirm("Clear the locally stored AI usage log?")) AIUsageLog.clear();
-    },
-    style: {
-      fontSize: 10,
-      padding: "5px 9px",
-      color: "#B91C1C"
-    }
-  }, "Clear"))), React.createElement("div", {
-    style: {
-      overflow: "auto",
-      maxHeight: "calc(100vh - 330px)"
-    }
-  }, !rows.length ? React.createElement("div", {
-    style: {
-      padding: 28,
-      textAlign: "center",
-      color: "#52677E",
-      fontSize: 12
-    }
-  }, "No AI operations logged yet.") : React.createElement("table", {
-    style: {
-      minWidth: 830
-    }
-  }, React.createElement("thead", {
-    style: {
-      position: "sticky",
-      top: 0,
-      background: "#FAF9F7"
-    }
-  }, React.createElement("tr", null, ["Time", "Operation", "Model", "Tokens", "Duration", "Cost", "Status"].map(h => React.createElement("th", {
-    key: h,
-    style: {
-      fontSize: 9,
-      color: "#52677E"
-    }
-  }, h)))), React.createElement("tbody", null, rows.map(r => React.createElement("tr", {
-    key: r.id,
-    style: {
-      borderBottom: "1px solid #EEEAE4",
-      background: r.status === "error" ? "#FFF8F7" : "#fff"
-    }
-  }, React.createElement("td", {
-    style: {
-      whiteSpace: "nowrap",
-      fontSize: 9.5
-    }
-  }, new Date(r.timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  })), React.createElement("td", {
-    style: {
-      fontSize: 10.5,
-      fontWeight: 600
-    }
-  }, r.operation, r.grounded && React.createElement("div", {
-    style: {
-      fontSize: 8.5,
-      color: "#A16207"
-    }
-  }, "Grounded search")), React.createElement("td", {
-    style: {
-      fontSize: 9,
-      fontFamily: "monospace"
-    }
-  }, r.model), React.createElement("td", {
-    style: {
-      whiteSpace: "nowrap"
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 10.5,
-      fontWeight: 700
-    }
-  }, r.estimated ? "≈ " : "", usageTokenFmt(r.totalTokens)), React.createElement("div", {
-    style: {
-      fontSize: 8.5,
-      color: "#52677E"
-    }
-  }, "in ", usageTokenFmt(r.inputTokens), " · out ", usageTokenFmt(r.outputTokens), " · think ", usageTokenFmt(r.thoughtTokens), r.imageOutputTokens ? " · image " + usageTokenFmt(r.imageOutputTokens) : "")), React.createElement("td", {
-    style: {
-      whiteSpace: "nowrap",
-      fontSize: 10
-    }
-  }, usageDurationFmt(r.durationMs)), React.createElement("td", {
-    style: {
-      whiteSpace: "nowrap",
-      fontSize: 10,
-      fontWeight: 700
-    }
-  }, r.estimated || r.rateEstimated ? "≈ " : "", usageCostFmt(r.costUsd)), React.createElement("td", {
-    title: r.error || "",
-    style: {
-      fontSize: 9.5,
-      fontWeight: 700,
-      color: r.status === "success" ? "#123B66" : "#B91C1C"
-    }
-  }, r.status === "success" ? "✓ OK" : "✕ " + (r.httpStatus || "Error"))))))), React.createElement("div", {
-    style: {
-      padding: "8px 16px",
-      fontSize: 8.8,
-      color: "#52677E",
-      borderTop: "1px solid #EEEAE4"
-    }
-  }, "Pricing last verified 30 Jul 2026. Actual billing may differ. ", React.createElement("a", {
-    href: "https://ai.google.dev/gemini-api/docs/pricing",
-    target: "_blank",
-    rel: "noopener noreferrer",
-    style: {
-      color: "#2465A6"
-    }
-  }, "Official Gemini pricing"))));
-}
+/* Internal AI usage/cost panel removed from the client build. */
 function UIIcon({
   name = "home",
   size = 21
@@ -6881,45 +6557,7 @@ function ExampleModal() {
 /* ── plans: indicative preview pricing, never a real charge. Choosing a
    plan only opens an honest interest-capture form (email only, no card,
    nothing billed) \u2014 never a fabricated checkout. ── */
-const PRICING_PLANS = [
-  { id: "explore", name: "Explore", monthly: 0, tagline: "Try the full planner on one property, no commitment.", features: ["One property, saved for this session", "All three renovation scenarios", "Full cost & compliance breakdown"], cta: "Start for free" },
-  { id: "homeowner", name: "Homeowner", monthly: 29, featured: true, tagline: "For a real renovation you\u2019re about to start.", features: ["Everything in Explore", "Save and revisit several properties", "Furniture shortlist with real retailer links", "Exportable PDF report for your architect"], cta: "Get started" },
-  { id: "studio", name: "Studio", monthly: 89, tagline: "For architects and agents presenting to clients.", features: ["Everything in Homeowner", "Unlimited client properties", "Studio branding on exported reports", "Priority support"], cta: "Talk to us" }
-];
-function PricingSection({ onChoose, onStart }) {
-  const h = React.createElement;
-  const [annual, setAnnual] = useState(false);
-  return h("section", { className: "landing-section tint", id: "landing-pricing" },
-    h("h2", null, "Plans"),
-    h("p", { className: "section-lead" }, "Indicative pricing for this preview \u2014 nothing here is charged automatically. The free plan opens the planner directly; paid plans only register your interest."),
-    h("label", { className: "pricing-toggle" },
-      "Monthly",
-      h("span", { className: "switch" },
-        h("input", { type: "checkbox", checked: annual, onChange: function (e) { setAnnual(e.target.checked); }, "aria-label": "Toggle annual billing" }),
-        h("span", { className: "switch-track", "aria-hidden": "true" })
-      ),
-      "Annual ", h("span", { className: "save-badge" }, "Save 20%")
-    ),
-    h("div", { className: "pricing-grid" }, PRICING_PLANS.map(function (plan) {
-      var price = plan.monthly === 0 ? 0 : (annual ? Math.round(plan.monthly * 0.8) : plan.monthly);
-      return h("div", { key: plan.id, className: "pricing-card" + (plan.featured ? " featured" : "") },
-        plan.featured ? h("span", { className: "badge" }, "Most popular") : null,
-        h("h3", null, plan.name),
-        h("div", { className: "price" },
-          h("strong", null, plan.monthly === 0 ? "Free" : "\u20ac" + price),
-          plan.monthly === 0 ? null : h("span", null, "/month", annual ? " billed annually" : "")
-        ),
-        h("p", { className: "tagline" }, plan.tagline),
-        h("ul", null, plan.features.map(function (f) { return h("li", { key: f }, h("b", null, "\u2713"), f); })),
-        h("button", {
-          className: "btn " + (plan.featured ? "btn-p" : "btn-g"),
-          onClick: function () { plan.monthly === 0 ? onStart('free') : onChoose(plan, annual); }
-        }, plan.cta)
-      );
-    })),
-    h("p", { className: "pricing-note" }, "Prices shown are indicative placeholders for this preview and will be confirmed before any public launch. No payment details are collected on this page. The report \u2014 costs, compliance, energy, value & rent and furniture \u2014 is generated on every plan; the paid plans add the AI-generated floor plan and room renders.")
-  );
-}
+/* Pricing plans and the plans section were removed from the client build. */
 function PlanInterestForm({ plan, annual, onClose, onStart }) {
   const h = React.createElement;
   const [email, setEmail] = useState("");
@@ -7029,7 +6667,7 @@ function OwnerLanding({ onStart }) {
           );
         }))
       ),
-      h(PricingSection, { onStart: onStart, onChoose: function (plan, annual) { setChosenPlan({ plan: plan, annual: annual }); } }),
+      
       h(FAQSection),
       h("div", { className: "landing-finalcta" },
         h("div", { className: "landing-finalcta-inner" },
@@ -7342,12 +6980,6 @@ function App() {
   }, showKey ? "Hide" : "Show")), React.createElement("p", null, "Used for listing imports, image reading and AI-generated plan and room previews. You can enter property details and compare estimates without a key."), React.createElement("p", null, "The key stays in memory for this session. Generated images and extracted measurements need review."), apiKey && React.createElement("div", {
     className: "note note-info"
   }, models.detected ? "Available models detected" : "Checking available models…")), React.createElement("div", {
-    className: "settings-section"
-  }, React.createElement("h3", {
-    style: {
-      fontSize: 16
-    }
-  }, "Usage & costs"), React.createElement("p", null, "Review activity and estimated API costs. Image generation starts when you request it."), React.createElement(AIUsagePanel, null)), React.createElement("div", {
     className: "settings-section"
   }, React.createElement("h3", {
     style: {
@@ -8472,7 +8104,7 @@ function SolRenderCard({
     style: {
       fontSize: 12
     }
-  }, "Up to two image attempts per room, plus review calls, charged to your API account."), /*#__PURE__*/React.createElement("button", {
+  }, "Ogni stanza riceve fino a due tentativi di render, con un controllo di qualit\u00e0 automatico."), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-p",
     disabled: locked || !original,
     onClick: makePlan
