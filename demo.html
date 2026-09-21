@@ -3231,17 +3231,27 @@ function modelledEnergy(cls, ch) {
   };
 }
 
-function calcEnergy(cls, ch, a) {
-  const m = modelledEnergy(cls, ch);
-  return {
-    bC: cls || 'Unknown',
-    bS: m.before,
-    aC: m.after == null ? 'Unknown' : classForEp(m.after),
-    aS: m.after,
-    sp: m.savingPct,
-    measures: m.applied,
-    modelled: true
-  };
+function calcEnergy(cls,ch,a){
+  /* Reductions calibrated on ENEA "riqualificazione importante" data 2020-2024.
+     Combined multiplicatively (not summed) on the residual demand. */
+  const b=ENERGY_MID[cls]||230;
+  let residual = 1.0;
+  if(ch.includes("Opaque envelope"))      residual *= 0.74;   // cappotto -26%
+  if(ch.includes("Transparent envelope")) residual *= 0.90;   // serramenti -10%
+  if(ch.includes("Ventilation system"))   residual *= 0.93;   // VMC double-flow -7%
+  if(ch.includes("Heating system"))       residual *= 0.78;   // condensing boiler or PdC -22%
+  if(ch.includes("Renewable sources"))    residual *= 0.85;   // solar+PV self-cons -15%
+  if(ch.includes("Cooling system"))       residual *= 0.96;   // -4% on EPgl
+  if(ch.includes("Smart controls"))       residual *= 0.96;   // -4% via zoning/regulation
+  if(ch.includes("Other energy interventions")) residual *= 0.98;
+  if(ch.includes("Complete energy upgrade")) residual = 0.42; // 58% total (NZEB-ready)
+  if(ch.includes("Electrical upgrade"))   residual *= 0.99;
+  if(ch.includes("Finishes refresh"))     residual *= 0.99;
+  /* Realistic floor: cannot go below 0.30 (70% reduction) without NZEB intervention */
+  residual = Math.max(0.30, residual);
+  const af = b * residual;
+  const sp = Math.round((1 - residual)*1000)/10;
+  return{bC:cls,bS:b,aC:eCl(af),aS:Math.round(af*10)/10,sp};
 }
 function calcSave(before, after, heatedArea) {
   if (before == null || after == null || !heatedArea) return { yr: null, mo: null };
@@ -3251,24 +3261,22 @@ function calcSave(before, after, heatedArea) {
 function calcSched(a, ch) {
   const heavy = ch.filter(c => ['Internal layout optimization', 'Bathroom upgrade', 'Kitchen upgrade', 'Heating system', 'Structural reinforcement'].includes(c)).length;
   const build = Math.max(4, Math.ceil(a / 24) + heavy);
-  const stages = [{
-    name: 'Survey and brief',
-    weeks: 1
-  }, {
-    name: 'Design and scope',
-    weeks: 3
-  }, {
-    name: 'Procurement allowance',
-    weeks: 2
-  }, {
-    name: 'Construction allowance',
-    weeks: build
-  }, {
-    name: 'Testing and handover',
-    weeks: 1
-  }];
+  /* Start weeks are explicit so the programme can be drawn as a Gantt.
+     Real projects overlap: procurement begins while design is finishing,
+     and permits run alongside the works rather than blocking them. */
+  const permitWeeks = ch.some(c => ['Internal layout optimization', 'Opaque envelope',
+    'Transparent envelope', 'Structural reinforcement', 'Partition walls addition'].includes(c)) ? 4 : 2;
+  const stages = [
+    { name: 'Survey and brief',       start: 0,                weeks: 1,           kind: 'design' },
+    { name: 'Design and scope',       start: 1,                weeks: 3,           kind: 'design' },
+    { name: 'Permits / CILA-SCIA',    start: 3,                weeks: permitWeeks, kind: 'permit' },
+    { name: 'Procurement allowance',  start: 3,                weeks: 2,           kind: 'procure' },
+    { name: 'Construction allowance', start: 5,                weeks: build,       kind: 'build' },
+    { name: 'Testing and handover',   start: 5 + build,        weeks: 1,           kind: 'handover' }
+  ];
+  const finish = stages.reduce((m, s) => Math.max(m, s.start + s.weeks), 0);
   return {
-    tw: stages.reduce((s, x) => s + x.weeks, 0),
+    tw: finish,
     stages,
     note: 'Illustrative sequential programme. Authority review, condominium decisions, availability and dependencies are not modelled.'
   };
@@ -3479,70 +3487,80 @@ function calcEnergyNPV(investment, taxDeductionRate, annualSaving, years = 30, d
     paybackYears: investment > 0 && annualSaving > 0 ? +(investment * (1 - taxDeductionRate) / annualSaving).toFixed(1) : null
   };
 }
-function runFullEnergyCalc(d, sol) {
-  const e = energyScreen(d, sol);
-  const en = sol.en || {};
-  const a = areaBasis(d);
-  const measured = e.ep != null && e.saving != null;
+function runFullEnergyCalc(d, sol){
+  const area = parseFloat(d.area)||85;
+  const cityKey = (d.city||"").toLowerCase().trim();
+  const GG = LOMBARDY_GG[cityKey] || 2404;
+  const S_su_V = 0.65;
+  const EPrif = EPnren_rif(GG, S_su_V);
+  const EP_pre = estimateEPnrenPre(d);
+  const EP_post = applyInterventions(EP_pre, sol.ch);
+  const heatingVector = d.heatingType==="Pompa di calore" ? "elettricita" : d.heatingType==="Centralizzato"?"teleriscaldamento":"gas";
+  const hasPdC_pre = d.heatingType==="Pompa di calore";
+  const hasPdC_post = sol.ch.includes("Heating system") || sol.ch.includes("Complete energy upgrade");
+  const cons_pre = decomposeConsumption(EP_pre, area, heatingVector, hasPdC_pre);
+  let cons_post = decomposeConsumption(EP_post, area, heatingVector, hasPdC_post);
 
-  /* Measured evidence wins; otherwise fall back to the indicative model so the
-     report always states an after-renovation class rather than a blank. */
-  const epAnte = e.ep != null ? e.ep : (en.bS ?? null);
-  const epPost = en.aS ?? null;
-  const kwhSaved = epAnte != null && epPost != null && a.heated
-    ? (epAnte - epPost) * a.heated : null;
-  const savingYear = e.saving != null
-    ? e.saving
-    : (kwhSaved != null ? Math.round(kwhSaved * ENERGY_PRICE_EUR_PER_KWH) : null);
-  const rankBefore = classRank(en.bC ?? d.eCls);
-  const rankAfter = classRank(en.aC);
-  const jumps = rankBefore != null && rankAfter != null ? rankBefore - rankAfter : null;
-
-  /* Payback / NPV on the modelled saving when no metered series exists. */
-  let payback = e.payback, npv = e.npv, cashflow = e.cashflow;
-  if (!measured && savingYear != null && e.investment > 0) {
-    let sum = -e.investment;
-    npv = -e.investment;
-    cashflow = [];
-    payback = null;
-    for (let year = 1; year <= 30; year++) {
-      const cf = savingYear * Math.pow(1.03, year - 1);
-      sum += cf;
-      npv += cf / Math.pow(1.04, year);
-      cashflow.push({ year, saving: cf, cumulative: sum });
-      if (payback == null && sum >= 0) payback = year;
-    }
+  /* PV self-consumption subtracts from electricity */
+  if(sol.ch.includes("Renewable sources") || sol.ch.includes("Complete energy upgrade")){
+    const kWp = 3, hasBattery = sol.ch.includes("Complete energy upgrade");
+    const pv = pvProduction(kWp, hasBattery);
+    cons_post.elec_kWh = Math.max(0, cons_post.elec_kWh - pv);
   }
 
+  const cost_pre = annualCost(cons_pre);
+  const cost_post = annualCost(cons_post);
+  const co2_pre = annualCO2(cons_pre);
+  const co2_post = annualCO2(cons_post);
+  const cls_pre = classFromRatio(EP_pre/EPrif);
+  const cls_post = classFromRatio(EP_post/EPrif);
+  const saving_year = cost_pre - cost_post;
+
+  /* Investment subset for energy-only interventions */
+  const energyInterv = ["Opaque envelope","Transparent envelope","Heating system","Cooling system","Renewable sources","Ventilation system","Complete energy upgrade","Smart controls","Other energy interventions"];
+  const investmentEnergy = Math.round(
+    (sol.co.heating||0) + (sol.co.cooling||0) + (sol.co.windows||0) +
+    (sol.co.insulation_int||0) + (sol.co.solar||0) + (sol.co.ventilation||0) +
+    (sol.co.smart||0) + (sol.co.led||0)
+  );
+  const taxRate = 0.50; // Ecobonus primary residence 2026
+
+  const npvResult = calcEnergyNPV(investmentEnergy, taxRate, saving_year, 30, 0.04, 0.03);
+
+  const rapportoPre = EP_pre/EPrif;
+  const rapportoPost = EP_post/EPrif;
+
   return {
-    screen: e,
-    modelled: !measured,
-    GG: LOMBARDY_GG[String(d.city || '').toLowerCase().trim()] ?? null,
-    EPrif: null,
+    GG, EPrif: Math.round(EPrif*10)/10,
     ante: {
-      EPnren: epAnte,
-      classe: en.bC || d.eCls || 'Unknown',
-      cost: e.pre
+      EPnren: Math.round(EP_pre*10)/10,
+      classe: cls_pre,
+      rapporto: Math.round(rapportoPre*100)/100,
+      cons: cons_pre,
+      cost: cost_pre,
+      co2: co2_pre
     },
     post: {
-      EPnren: epPost,
-      classe: en.aC || 'Unknown',
-      cost: e.post
+      EPnren: Math.round(EP_post*10)/10,
+      classe: cls_post,
+      rapporto: Math.round(rapportoPost*100)/100,
+      cons: cons_post,
+      cost: cost_post,
+      co2: co2_post
     },
     delta: {
-      saving_year: savingYear,
-      saving_pct: e.pre && e.post != null ? (1 - e.post / e.pre) * 100 : (en.sp ?? null),
-      kwh_saved: kwhSaved == null ? null : Math.round(kwhSaved),
-      co2_kg_saved: kwhSaved == null ? null : Math.round(kwhSaved * CO2_KG_PER_KWH),
-      class_jumps: jumps
+      saving_year,
+      saving_pct: Math.round((1 - EP_post/EP_pre)*1000)/10,
+      co2_kg_saved: co2_pre - co2_post,
+      class_jumps: Math.max(0, (ENERGY_RANK[cls_post]||0) - (ENERGY_RANK[cls_pre]||0))
     },
     economy: {
-      investment_gross: e.investment,
-      tax_deduction: 0,
-      investment_net: e.investment,
-      payback_years: payback,
-      npv_30y: npv,
-      cashflow: cashflow
+      investment_gross: investmentEnergy,
+      tax_deduction: Math.round(investmentEnergy*taxRate),
+      investment_net: Math.round(investmentEnergy*(1-taxRate)),
+      payback_years: npvResult.paybackYears,
+      npv_30y: npvResult.npv,
+      cashflow: npvResult.cashflow
     }
   };
 }
@@ -3600,6 +3618,7 @@ function genSols(d) {
       ? { yr: e.saving, mo: e.saving / 12 }
       : _modelled;
     s.energy = e;
+    try { s.efull = runFullEnergyCalc(ed, s); } catch (err) { s.efull = null; }
     s.vl = calcLombardyVal(d, s);
     return s;
   });
@@ -5302,6 +5321,22 @@ function checkPlanBoundary(originalPlan, proposed, declaredAreaM2) {
   const origWin = (originalPlan?.externalWalls || []).reduce((s, w) => s + (w.windows || []).length, 0);
   const gotWin = Object.values(proposed || {}).reduce((s, r) => s + (r && r.windowCount && r.windowCount.value || 0), 0);
   if (origWin && gotWin !== origWin) reasons.push(`${gotWin} windows drawn against ${origWin} in the original — new openings were created in the façade`);
+  /* Spaces may be merged or split inside the shell, but the plan must never
+     gain a space that the original did not have. */
+  const origRooms = Array.isArray(originalPlan?.roomList)
+    ? originalPlan.roomList.filter(r => r && r.presentInPlan !== false).length
+    : null;
+  const gotRooms = proposed
+    ? Object.keys(proposed).filter(k => {
+        const r = proposed[k];
+        return r && typeof r === 'object' && r.present !== false && k.indexOf('__') !== 0;
+      }).length
+    : null;
+  if (origRooms && gotRooms && gotRooms > origRooms) {
+    reasons.push(gotRooms + ' spaces drawn against ' + origRooms +
+      ' in the original — the plan added rooms that do not exist');
+  }
+
   const origBd = (originalPlan?.balconyDoors || []).length;
   if (origBd === 0 && proposed && Object.values(proposed).some(r => r && r.key === "balcony")) reasons.push("a balcony appears that the original plan does not have");
   return {
@@ -6532,11 +6567,13 @@ function Results({
     }),
     schedule: () => /*#__PURE__*/React.createElement("section", {
       className: "basis-card"
-    }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · Planning programme"), /*#__PURE__*/React.createElement("ol", {
-      className: "schedule-basis"
-    }, s.sc.stages.map(x => /*#__PURE__*/React.createElement("li", {
-      key: x.name
-    }, /*#__PURE__*/React.createElement("strong", null, x.name), /*#__PURE__*/React.createElement("span", null, x.weeks, " weeks")))), /*#__PURE__*/React.createElement("p", null, s.sc.note), /*#__PURE__*/React.createElement("p", null, "Construction = max(4, ceil(renovation area / 24) + count of selected layout/bathroom/kitchen/heating/structure packages). This is an allowance, not a contractual deadline.")),
+    }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · Planning programme"), /*#__PURE__*/React.createElement(GanttChart, {
+      sched: s.sc
+    }), /*#__PURE__*/React.createElement("p", null, s.sc.note), /*#__PURE__*/React.createElement("p", null, "Construction = max(4, ceil(renovation area / 24) + count of selected layout/bathroom/kitchen/heating/structure packages). This is an allowance, not a contractual deadline.")),
+    costbreakdown: () => /*#__PURE__*/React.createElement(CostBreakdown, {
+      d: d,
+      s: s
+    }),
     value: () => /*#__PURE__*/React.createElement(ValueSummary, {
       d: d,
       s: s,
@@ -7958,6 +7995,43 @@ function sceneProblems(scene, items) {
   if (scene.furniture.some(f => !items.some(it => it.itemId === f.itemId))) errors.push('Plan contains unmapped furniture.');
   return [...new Set(errors)];
 }
+/* Collects the best measurement we hold for a room — owner-entered figures
+   first, then the geometry read off the uploaded plan, then the ceiling height
+   declared for the property — so a render can be told how big the space is
+   instead of inventing a comfortable-looking box. */
+function roomDimensionBrief(d, room) {
+  const key = String(room.kind || room.id || room.label || '').replace(/-\d+$/, '').toLowerCase();
+  const rd = (d.roomDetails || {})[key] || {};
+  const list = (d.extractedPlan || {}).roomList || [];
+  const fromPlan = list.find(r => {
+    if (!r) return false;
+    const id = String(r.id || '').toLowerCase(), type = String(r.type || '').toLowerCase();
+    return id.indexOf(key) === 0 || type === key;
+  }) || null;
+
+  const w = nPositive(rd.width) || (fromPlan && nPositive(fromPlan.widthM)) || null;
+  const l = nPositive(rd.length) || (fromPlan && nPositive(fromPlan.lengthM)) || null;
+  const hgt = nPositive(rd.ceilingHeight) || nPositive(d.ceiling) || null;
+  const area = nPositive(rd.netArea)
+    || (fromPlan && nPositive(fromPlan.netAreaM2))
+    || (w && l ? Math.round(w * l * 10) / 10 : null);
+  const win = rd.windowCount != null ? rd.windowCount
+    : (fromPlan && fromPlan.windowCount != null ? fromPlan.windowCount : null);
+
+  const parts = [];
+  if (w && l) parts.push('floor ' + w + ' m x ' + l + ' m');
+  if (area) parts.push('about ' + area + ' m2 net');
+  if (hgt) parts.push('ceiling height ' + hgt + ' m');
+  if (win != null) parts.push(win + ' window opening(s)');
+  if (!parts.length) return '';
+
+  return ' MEASURED GEOMETRY of ' + (room.label || key) + ': ' + parts.join(' - ') + '. ' +
+    'These are real measurements of this apartment, not suggestions. Compose the camera so the ' +
+    'space reads at exactly this size: the facing wall at the stated distance, the ceiling at the ' +
+    'stated height, and furniture scaled against them. Do not widen, lengthen, heighten or ' +
+    'open up the room to make a more attractive picture. If the furniture does not fit these ' +
+    'dimensions, show fewer pieces rather than a larger room.';
+}
 async function measureScene(plan, items, apiKey) {
   const image = await imgPartFromAny(plan);
   if (!image) throw Error('Cannot read the accepted plan image.');
@@ -8273,11 +8347,36 @@ function SolRenderCard({
     try {
       const source = await imgPartFromAny(original);
       if (!source) throw Error('Upload a readable existing plan.');
+
+      /* Read the real dimensions out of the owner's room photos once, so the
+         plan and every render are held to the apartment's actual geometry
+         rather than to whatever looks comfortable. Results are merged into
+         roomDetails, which roomDimensionBrief() reads. */
+      try {
+        const details = d.roomDetails || {};
+        for (const key of Object.keys(details)) {
+          const rd = details[key] || {};
+          const photo = (rd.photos || []).find(f => f instanceof File);
+          if (!photo || rd.extractedData) continue;
+          setActivity('Measuring ' + key + ' from your photo…');
+          const geo = await analyzeRoomPhoto(photo, key, apiKey);
+          if (!geo) continue;
+          rd.extractedData = geo;
+          const dim = geo.estimatedDimensions || {};
+          if (!nPositive(rd.width) && nPositive(dim.widthM)) rd.width = dim.widthM;
+          if (!nPositive(rd.length) && nPositive(dim.lengthM)) rd.length = dim.lengthM;
+          if (!nPositive(rd.ceilingHeight) && nPositive(dim.ceilingHeightM)) rd.ceilingHeight = dim.ceilingHeightM;
+          if (rd.windowCount == null && Array.isArray(geo.windows)) {
+            rd.windowCount = geo.windows.reduce((s, wnd) => s + (wnd && wnd.count ? wnd.count : 1), 0);
+          }
+        }
+      } catch (err) { /* photo measurement is best-effort, never blocks the plan */ }
+
       const productBrief = JSON.stringify(items.map(productManifest));
       for (let attempt = 0; attempt < 2; attempt++) {
         if (candidate) archiveAsset(record, candidate);
         setActivity(attempt ? 'Correcting the reported plan differences…' : 'Creating the furnished plan…');
-        const prompt = `Redraw the interior of this existing apartment plan. The building shell is FIXED and must be reproduced exactly as drawn. ABSOLUTE CONSTRAINTS, never violate any of them: (1) Do NOT move, extend, shorten, rotate or reshape any external or perimeter wall. The outer boundary outline must match the reference exactly, corner for corner. (2) Do NOT add any room, space, volume or floor area that is not already enclosed by the reference boundary. Total footprint is unchanged. (3) Do NOT move, resize, mirror or remove the entrance door. It stays on the same external wall, at the same position and the same width. (4) Do NOT move, extend, add or remove balconies, loggias or terraces. Their outline, depth and position stay exactly as drawn. (5) Do NOT move, resize, add or remove any window. Every window stays on the same wall segment, at the same position and the same width as the reference. (6) Do NOT alter load-bearing walls, columns, structural cores, stairs or plumbing risers. The ONLY changes you are permitted to make are strictly inside the fixed boundary: reposition, add or remove internal NON-STRUCTURAL partitions; reposition internal doors and internal openings; merge or split internal spaces; change which function an internal space serves; and furnish and finish the interior. If a requested intervention would require touching anything in the ABSOLUTE CONSTRAINTS list, ignore that part of the request and keep the shell as drawn. Keep the original image framing, scale, orientation and north direction. ${x.nm === 'Essential' ? 'Make minimal necessary internal partition changes.' : x.nm === 'Balanced' ? 'Make moderate internal partition changes; rooms retain approximate positions.' : 'Reorganise internal partitions only within the fixed existing boundary.'} Requested work: ${JSON.stringify(x.ch)}. Net area, if measured: ${areaBasis(d).net || "not supplied"} m². Preserve the reference outline; do not infer total dwelling area from the renovation scope. Design style: ${d.style}; ${d.customStyle || ''}. Owner requirements: ${ivBrief(d)}. Budget and unit rates are indicative planning preferences, never a reason to refuse an image or alter dimensions. This is an exploratory design, subject to professional compliance review. Draw source-checked articles to their recorded assembled footprint; unverified items are provisional allowances. Draw every article to its listed footprint, mark its itemId alongside it and preserve a clear door swing/circulation route. Draw only these furniture articles, do not substitute or add unmapped decor. PRODUCT MANIFEST: ${productBrief}. ${candidate?.review?.mismatches?.length ? 'CORRECT THESE ERRORS: ' + JSON.stringify(candidate.review.mismatches) : ''} Before output, verify: the perimeter outline, every window, every balcony and the entrance door are identical to the reference, and no new space has been created outside the original boundary. Output one furnished top-down dimensioned plan, no perspective.`;
+        const prompt = `Redraw the interior of this existing apartment plan. The building shell is FIXED and must be reproduced exactly as drawn. ${(d.extractedPlan?.roomList?.length ? "The original plan contains exactly " + d.extractedPlan.roomList.length + " enclosed spaces. The redrawn plan must contain the SAME NUMBER OR FEWER. Never draw an extra room, alcove, closet, hallway or partitioned nook that is not already in the reference. " : "")}ABSOLUTE CONSTRAINTS, never violate any of them: (1) Do NOT move, extend, shorten, rotate or reshape any external or perimeter wall. The outer boundary outline must match the reference exactly, corner for corner. (2) Do NOT add any room, space, volume or floor area that is not already enclosed by the reference boundary. Total footprint is unchanged. (3) Do NOT move, resize, mirror or remove the entrance door. It stays on the same external wall, at the same position and the same width. (4) Do NOT move, extend, add or remove balconies, loggias or terraces. Their outline, depth and position stay exactly as drawn. (5) Do NOT move, resize, add or remove any window. Every window stays on the same wall segment, at the same position and the same width as the reference. (6) Do NOT alter load-bearing walls, columns, structural cores, stairs or plumbing risers. The ONLY changes you are permitted to make are strictly inside the fixed boundary: reposition, add or remove internal NON-STRUCTURAL partitions; reposition internal doors and internal openings; merge or split internal spaces; change which function an internal space serves; and furnish and finish the interior. If a requested intervention would require touching anything in the ABSOLUTE CONSTRAINTS list, ignore that part of the request and keep the shell as drawn. Keep the original image framing, scale, orientation and north direction. ${x.nm === 'Essential' ? 'Make minimal necessary internal partition changes.' : x.nm === 'Balanced' ? 'Make moderate internal partition changes; rooms retain approximate positions.' : 'Reorganise internal partitions only within the fixed existing boundary.'} Requested work: ${JSON.stringify(x.ch)}. Net area, if measured: ${areaBasis(d).net || "not supplied"} m². Preserve the reference outline; do not infer total dwelling area from the renovation scope. Design style: ${d.style}; ${d.customStyle || ''}. Owner requirements: ${ivBrief(d)}. Budget and unit rates are indicative planning preferences, never a reason to refuse an image or alter dimensions. This is an exploratory design, subject to professional compliance review. Draw source-checked articles to their recorded assembled footprint; unverified items are provisional allowances. Draw every article to its listed footprint, mark its itemId alongside it and preserve a clear door swing/circulation route. Draw only these furniture articles, do not substitute or add unmapped decor. PRODUCT MANIFEST: ${productBrief}. ${candidate?.review?.mismatches?.length ? 'CORRECT THESE ERRORS: ' + JSON.stringify(candidate.review.mismatches) : ''} Before output, verify: the perimeter outline, every window, every balcony and the entrance door are identical to the reference, and no new space has been created outside the original boundary. Output one furnished top-down dimensioned plan, no perspective.`;
         const generated = await generateImage([source, {
           text: prompt
         }], apiKey, () => setActivity('Waiting for the image service…'), 'Generate furnished plan with product manifest');
@@ -8394,7 +8493,7 @@ function SolRenderCard({
         camera,
         products: visibleItems.map(productManifest)
       });
-      const constraints = `IMAGE 1 is the ACCEPTED FURNISHED PLAN, the only source for architecture, room sequence, camera placement and furniture location. Other images are exact product appearance references only. Never copy a photo’s camera or furniture positions. Render the requested rectilinear camera view; do not mirror or move the camera. Every visible door, window, neighbouring space and piece of furniture must project from its mapped coordinates, with identical left-to-right order and near-to-far depth. Only elements in the frustum and not physically occluded should appear: do not force off-camera objects into view. Respect article dimensions, material, colour, quantity, rotation and footprint, with no substitutions. No extra decor, doors or spaces. If measured coordinates are unavailable, derive the named room directly from IMAGE 1 and keep the view conceptual. Never invent rooms. Unverified products are approximate; no exact article match is claimed without a source photograph. Budget, unit rates and preliminary compliance flags are advisory and must not prevent this exploratory image. Manifest: ${manifest}. Style applies only to remaining finishes: ${d.style}; ${d.customStyle || ''}. ${candidate?.review?.mismatches?.length ? 'Correct the previous differences: ' + JSON.stringify(candidate.review.mismatches) : ''} Produce one room image without text labels.`;
+      const constraints = `IMAGE 1 is the ACCEPTED FURNISHED PLAN, the only source for architecture, room sequence, camera placement and furniture location.${roomDimensionBrief(d, room)} Other images are exact product appearance references only. Never copy a photo’s camera or furniture positions. Render the requested rectilinear camera view; do not mirror or move the camera. Every visible door, window, neighbouring space and piece of furniture must project from its mapped coordinates, with identical left-to-right order and near-to-far depth. Only elements in the frustum and not physically occluded should appear: do not force off-camera objects into view. Respect article dimensions, material, colour, quantity, rotation and footprint, with no substitutions. No extra decor, doors or spaces. If measured coordinates are unavailable, derive the named room directly from IMAGE 1 and keep the view conceptual. Never invent rooms. Unverified products are approximate; no exact article match is claimed without a source photograph. Budget, unit rates and preliminary compliance flags are advisory and must not prevent this exploratory image. Manifest: ${manifest}. Style applies only to remaining finishes: ${d.style}; ${d.customStyle || ''}. ${candidate?.review?.mismatches?.length ? 'Correct the previous differences: ' + JSON.stringify(candidate.review.mismatches) : ''} Produce one room image without text labels.`;
       const generated = await generateImage([{
         text: 'IMAGE 1: accepted furnished plan.'
       }, planPart, ...productParts, {
@@ -8510,7 +8609,7 @@ function SolRenderCard({
     }));
   })), !plan && /*#__PURE__*/React.createElement("p", null, "No plan has been generated for this option."), plan && Object.keys(record.renders).length === 0 && /*#__PURE__*/React.createElement("p", null, "Le viste delle stanze vengono generate insieme alla planimetria.")));
 }
-const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['value', 'Value & rent'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
+const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['costbreakdown', 'Cost breakdown'], ['value', 'Value & rent'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
 function ReportSection({
   id,
   reportMode,
@@ -17220,7 +17319,7 @@ function EvidenceWorkspace({
   d,
   u
 }) {
-  const [page, setPage] = useState('cost'),
+  const [page, setPage] = useState('market'),
     [message, setMessage] = useState(''),
     [tier, setTier] = useState('Balanced');
   const m = d.marketInputs || {},
@@ -17272,70 +17371,13 @@ function EvidenceWorkspace({
     className: "basis-tabs",
     role: "tablist",
     "aria-label": "Evidence inputs"
-  }, [['cost', 'Work rates'], ['market', 'Value & rent'], ['energy', 'Bills & APE'], ['sources', 'Source register']].map(([id, name]) => /*#__PURE__*/React.createElement("button", {
+  }, [['market', 'Value & rent'], ['energy', 'Bills & APE'], ['sources', 'Source register']].map(([id, name]) => /*#__PURE__*/React.createElement("button", {
     role: "tab",
     "aria-selected": page === id,
     className: page === id ? 'selected' : '',
     key: id,
     onClick: () => setPage(id)
-  }, name))), page === 'cost' && /*#__PURE__*/React.createElement("div", {
-    role: "tabpanel"
-  }, /*#__PURE__*/React.createElement(SourceLink, {
-    id: "cost"
-  }), /*#__PURE__*/React.createElement("p", null, "The embedded rates are the original planning allowances. They have not been relabelled as official 2026 prices. Import checked quantities and rates using the template; one record replaces one work package."), /*#__PURE__*/React.createElement("div", {
-    className: "basis-actions"
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-g",
-    onClick: () => downloadEvidence('lombardy-cost-template.json', {
-      schema: 'lombardy-costs-v1',
-      items: [{
-        key: 'electrical',
-        unit: 'm²',
-        quantity: null,
-        rate: null,
-        code: '',
-        edition: '',
-        date: '',
-        source: '',
-        url: ''
-      }],
-      allowedMappings: COST_SPECS.map(([key,, description, unit]) => ({
-        key,
-        description,
-        unit
-      })),
-      instructions: 'Fill every required field. Match the full package scope and unit, or obtain a package quote. Do not copy one detailed price-list item into a whole-package rate without a quantity/scope reconciliation.'
-    })
-  }, "Download rate template ↓"), /*#__PURE__*/React.createElement("label", {
-    className: "btn btn-p"
-  }, "Import checked rate JSON", /*#__PURE__*/React.createElement("input", {
-    className: "visually-hidden",
-    type: "file",
-    accept: ".json,application/json",
-    onChange: e => e.target.files[0] && importCosts(e.target.files[0])
-  })), /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-g",
-    onClick: () => u(p => ({
-      ...p,
-      costInputs: {}
-    }))
-  }, "Reset to allowances")), /*#__PURE__*/React.createElement("p", {
-    role: "status"
-  }, message), /*#__PURE__*/React.createElement("div", {
-    className: "basis-grid"
-  }, [['professional', 'Professional fee quote · €'], ['permit', 'Municipal / permit fees · €'], ['contingencyPct', 'Contingency · %'], ['vatAmount', 'VAT allowance · €']].map(([k, l]) => /*#__PURE__*/React.createElement(Field, {
-    key: k,
-    label: l,
-    value: d.costFees?.[k],
-    onChange: v => u(p => ({
-      ...p,
-      costFees: {
-        ...p.costFees,
-        [k]: v
-      }
-    })),
-    hint: k === 'professional' ? 'Blank = 7% provisional fee' : k === 'contingencyPct' ? 'Blank = 8%' : 'Blank = excluded, not assumed tax-free'
-  }))), /*#__PURE__*/React.createElement("p", null, "Rates × quantities reconcile to each subtotal. Original tier factors (0.85 / 1 / 1.25) apply only to unsourced allowances. Imported rates stay exact. Design, structure, MEP, VAT and fees still require scope-specific quotes.")), page === 'market' && /*#__PURE__*/React.createElement("div", {
+  }, name))), page === 'market' && /*#__PURE__*/React.createElement("div", {
     role: "tabpanel"
   }, /*#__PURE__*/React.createElement(SourceLink, {
     id: "omi"
@@ -17478,39 +17520,286 @@ function CostLedger({
     id: "cost"
   }));
 }
+/* Share of each work package that is site labour rather than supplied goods.
+   Used only to split the packages into a workforce vs materials view; the
+   package totals themselves are unchanged. */
+const LABOUR_SHARE = {
+  finishes: 0.55, layout: 0.60, partitions: 0.55, electrical: 0.60, plumbing: 0.60,
+  bathroom: 0.45, kitchen: 0.35, windows: 0.30, heating: 0.35, cooling: 0.35,
+  insulation_int: 0.45, ventilation: 0.40, smart: 0.30, solar: 0.30, led: 0.35,
+  ceiling: 0.55, wall_treat: 0.60, balcony: 0.50, fire: 0.40, joinery: 0.45
+};
+
+function CostBreakdown({ d, s }) {
+  const h = React.createElement;
+  const co = s.co || {};
+  const rows = (co.rows || []);
+  const bom = (typeof allBOMItems === 'function' && typeof generateBOM === 'function')
+    ? allBOMItems(generateBOM(s, d)) : [];
+  const furniture = bom.reduce((t, it) => t + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
+
+  const worksTotal = rows.reduce((t, r) => t + (r.amount || 0), 0);
+  const labour = rows.reduce((t, r) => t + Math.round((r.amount || 0) * (LABOUR_SHARE[r.key] ?? 0.45)), 0);
+  const materials = worksTotal - labour;
+  const permits = co.permit_fees || 0;
+  const fees = co.professional_fees || 0;
+  const contingency = co.contingency || 0;
+  const vat = co.vat_allowance || 0;
+  const grand = worksTotal + permits + fees + contingency + vat + furniture;
+
+  const money = n => fmt(n);
+  const pct = n => grand > 0 ? ((n / grand) * 100).toFixed(1) + '%' : '—';
+
+  const summaryTile = (label, value, note, tone) => h("div", null,
+    h("small", null, label),
+    h("strong", tone ? { style: { color: tone } } : null, money(value)),
+    h("span", null, note));
+
+  const section = (title, subtitle, body) => h("div", { style: { marginTop: 18 } },
+    h("h4", { style: { fontSize: 15, fontWeight: 700, color: '#3479A8', margin: '0 0 2px' } }, title),
+    subtitle ? h("p", { style: { fontSize: 12.5, color: '#7B8B96', margin: '0 0 8px' } }, subtitle) : null,
+    body);
+
+  return h("section", { className: "basis-card" },
+    h("h3", null, s.nm, " · Cost breakdown structure"),
+
+    h("div", { className: "area-evidence" },
+      summaryTile('Construction works', worksTotal, pct(worksTotal) + ' of total', '#3479A8'),
+      summaryTile('Permits & professional fees', permits + fees, pct(permits + fees) + ' of total', '#8E6FBF'),
+      summaryTile('Furniture & materials', furniture, pct(furniture) + ' of total', '#E0BC30'),
+      summaryTile('Grand total', grand, 'Everything below combined', '#2C3E50')),
+
+    section('1 · Interventions',
+      'Each selected work package, with the quantity and unit rate behind it.',
+      h("div", { className: "table-scroll" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "Work package"), h("th", null, "Quantity"),
+            h("th", null, "Unit rate"), h("th", null, "Labour"),
+            h("th", null, "Materials"), h("th", null, "Amount"))),
+          h("tbody", null,
+            rows.length ? rows.map(r => {
+              const share = LABOUR_SHARE[r.key] ?? 0.45;
+              const lab = Math.round((r.amount || 0) * share);
+              return h("tr", { key: r.key },
+                h("td", null, r.label),
+                h("td", null, (Math.round((r.quantity || 0) * 10) / 10) + ' ' + (r.unit || '')),
+                h("td", null, money(r.rate)),
+                h("td", null, money(lab)),
+                h("td", null, money((r.amount || 0) - lab)),
+                h("td", { style: { fontWeight: 700 } }, money(r.amount)));
+            }) : h("tr", null, h("td", { colSpan: 6 }, "No work packages selected for this scenario.")),
+            h("tr", { style: { fontWeight: 700, borderTop: '2px solid #E2E8EF' } },
+              h("td", null, "Works subtotal"), h("td", null, ""), h("td", null, ""),
+              h("td", null, money(labour)), h("td", null, money(materials)),
+              h("td", null, money(worksTotal))))))),
+
+    section('2 · Permits and professional fees',
+      'Authority charges and the design / site-supervision team.',
+      h("div", { className: "table-scroll" },
+        h("table", null, h("tbody", null,
+          h("tr", null, h("th", null, "Municipal / permit fees (CILA, SCIA, cadastral)"), h("td", null, money(permits))),
+          h("tr", null, h("th", null, "Professional fees (design, DL, safety, APE)"), h("td", null, money(fees))),
+          h("tr", { style: { fontWeight: 700 } }, h("th", null, "Subtotal"), h("td", null, money(permits + fees))))))),
+
+    section('3 · Workforce vs supplied goods',
+      'The same works subtotal split by where the money goes.',
+      h("div", { className: "table-scroll" },
+        h("table", null, h("tbody", null,
+          h("tr", null, h("th", null, "Site labour"), h("td", null, money(labour)), h("td", null, pct(labour))),
+          h("tr", null, h("th", null, "Materials and equipment in the works"), h("td", null, money(materials)), h("td", null, pct(materials))),
+          h("tr", null, h("th", null, "Loose furniture and fittings"), h("td", null, money(furniture)), h("td", null, pct(furniture))))))),
+
+    section('4 · Furniture and materials',
+      bom.length ? bom.length + ' articles from the furnishing schedule.' : 'No furnishing schedule generated yet.',
+      bom.length ? h("div", { className: "table-scroll" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "Room"), h("th", null, "Article"), h("th", null, "Qty"), h("th", null, "Amount"))),
+          h("tbody", null,
+            bom.slice(0, 60).map((it, i) => h("tr", { key: (it.itemId || it.name) + i },
+              h("td", null, it.room || '—'),
+              h("td", null, it.name || '—'),
+              h("td", null, it.qty || 1),
+              h("td", null, money((Number(it.price) || 0) * (Number(it.qty) || 1))))),
+            h("tr", { style: { fontWeight: 700, borderTop: '2px solid #E2E8EF' } },
+              h("td", null, "Furnishing subtotal"), h("td", null, ""), h("td", null, ""),
+              h("td", null, money(furniture)))))) : null),
+
+    section('5 · Contingency and tax',
+      'Held against risk and, where applicable, VAT.',
+      h("div", { className: "table-scroll" },
+        h("table", null, h("tbody", null,
+          h("tr", null, h("th", null, "Contingency"), h("td", null, money(contingency))),
+          h("tr", null, h("th", null, "VAT allowance"), h("td", null, money(vat))),
+          h("tr", { style: { fontWeight: 800, borderTop: '2px solid #3479A8' } },
+            h("th", null, "GRAND TOTAL"), h("td", null, money(grand))))))),
+
+    h("p", { style: { marginTop: 14 } },
+      "Package rates are planning allowances, not quotations. The labour and materials split is ",
+      "indicative and exists to show where the budget sits — a contractor's breakdown will differ. ",
+      "Design, structure, MEP and VAT still need scope-specific quotes."));
+}
+function GanttChart({ sched }) {
+  const h = React.createElement;
+  const stages = (sched && sched.stages) || [];
+  if (!stages.length) return null;
+  const total = Math.max(1, sched.tw || stages.reduce((m, s) => Math.max(m, (s.start || 0) + s.weeks), 0));
+  const COLOR = {
+    design: '#3479A8', permit: '#8E6FBF', procure: '#E0BC30',
+    build: '#2E9E6B', handover: '#C0703A'
+  };
+  /* A tick every week for short jobs, every 4 for long ones. */
+  const step = total <= 12 ? 1 : total <= 28 ? 2 : 4;
+  const ticks = [];
+  for (let wk = 0; wk <= total; wk += step) ticks.push(wk);
+
+  return h("div", { className: "gantt", style: { marginTop: 6 } },
+    h("div", { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, fontSize: 11.5 } },
+      Object.keys(COLOR).map(k => h("span", { key: k, style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+        h("span", { style: { width: 10, height: 10, borderRadius: 2, background: COLOR[k] } }),
+        ({ design: 'Design', permit: 'Permits', procure: 'Procurement', build: 'Construction', handover: 'Handover' })[k]))),
+
+    h("div", { style: { display: 'grid', gridTemplateColumns: 'minmax(130px,190px) 1fr', gap: '6px 10px', alignItems: 'center' } },
+      stages.map(st => {
+        const start = st.start || 0;
+        const left = (start / total) * 100;
+        const width = Math.max(1.5, (st.weeks / total) * 100);
+        const bg = COLOR[st.kind] || '#7B8B96';
+        return h(React.Fragment, { key: st.name },
+          h("div", { style: { fontSize: 13, fontWeight: 600, color: '#2C3E50' } }, st.name),
+          h("div", { style: { position: 'relative', height: 26, background: '#F1F4F7', borderRadius: 5, overflow: 'hidden' } },
+            h("div", {
+              title: st.name + ': week ' + (start + 1) + '–' + (start + st.weeks),
+              style: {
+                position: 'absolute', left: left + '%', width: width + '%', top: 3, bottom: 3,
+                background: bg, borderRadius: 4, display: 'flex', alignItems: 'center',
+                justifyContent: 'center', color: '#fff', fontSize: 11, fontWeight: 700,
+                whiteSpace: 'nowrap', overflow: 'hidden'
+              }
+            }, st.weeks >= Math.max(2, total * 0.08) ? st.weeks + 'w' : '')));
+      })),
+
+    h("div", { style: { display: 'grid', gridTemplateColumns: 'minmax(130px,190px) 1fr', gap: '0 10px', marginTop: 6 } },
+      h("div", null),
+      h("div", { style: { position: 'relative', height: 18, borderTop: '1px solid #E2E8EF' } },
+        ticks.map(wk => h("span", {
+          key: wk,
+          style: {
+            position: 'absolute', left: Math.min(98, (wk / total) * 100) + '%',
+            fontSize: 10.5, color: '#7B8B96', transform: 'translateX(-50%)', paddingTop: 3
+          }
+        }, 'w' + wk)))),
+
+    h("p", { style: { fontSize: 12.5, color: '#44556A', marginTop: 10 } },
+      "Total programme ", h("strong", null, total, " weeks"),
+      " (about ", (total / 4.33).toFixed(1), " months). Bars that overlap run in parallel."));
+}
 function EnergySummary({
   d,
   s,
   detail = false
 }) {
-  const e = s.energy;
-  return /*#__PURE__*/React.createElement("div", {
-    className: "basis-card"
-  }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · ", detail ? 'Energy calculation trace' : 'Energy evidence'), /*#__PURE__*/React.createElement("div", {
-    className: "area-evidence"
-  }, /*#__PURE__*/React.createElement("div", null,
-      /*#__PURE__*/React.createElement("small", null, "Current APE class"),
-      /*#__PURE__*/React.createElement("strong", null, (s.en && s.en.bC) || d.eCls || 'Unknown'),
-      /*#__PURE__*/React.createElement("span", null, shown(e.ep != null ? e.ep : (s.en && s.en.bS), ' kWh/m\u00b2/year'), " \u00b7 primary energy")),
-    /*#__PURE__*/React.createElement("div", null,
-      /*#__PURE__*/React.createElement("small", null, "APE class after the works"),
-      /*#__PURE__*/React.createElement("strong", null, (s.en && s.en.aC) || 'Unknown'),
-      /*#__PURE__*/React.createElement("span", null, shown(s.en && s.en.aS, ' kWh/m\u00b2/year'), (s.en && s.en.sp ? ' \u00b7 \u2212' + s.en.sp + '%' : ''))),
-    /*#__PURE__*/React.createElement("div", null,
-      /*#__PURE__*/React.createElement("small", null, "Estimated annual bill saving"),
-      /*#__PURE__*/React.createElement("strong", null, fmt(e.saving != null ? e.saving : (s.sv && s.sv.yr))),
-      /*#__PURE__*/React.createElement("span", null, e.ready ? 'From your metered forecast' : 'Indicative estimate'))),
-  /*#__PURE__*/React.createElement("p", null, "The class after the works is estimated from the energy measures in this scenario over ", shown(e.area, ' m\u00b2'), " of heated area. It is an indicative projection, not a certified APE \u2014 a qualified assessor issues the final certificate."), detail && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "table-scroll"
-  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Vector"), /*#__PURE__*/React.createElement("th", null, "Current / year"), /*#__PURE__*/React.createElement("th", null, "Forecast / year"), /*#__PURE__*/React.createElement("th", null, "Variable rate"), /*#__PURE__*/React.createElement("th", null, "Fixed / year"), /*#__PURE__*/React.createElement("th", null, "Current bill"), /*#__PURE__*/React.createElement("th", null, "Forecast bill"))), /*#__PURE__*/React.createElement("tbody", null, e.rows.map(r => /*#__PURE__*/React.createElement("tr", {
-    key: r.key
-  }, /*#__PURE__*/React.createElement("td", null, r.label), /*#__PURE__*/React.createElement("td", null, shown(r.before, ' ' + r.unit)), /*#__PURE__*/React.createElement("td", null, shown(r.after, ' ' + r.unit)), /*#__PURE__*/React.createElement("td", null, fmt(r.rate)), /*#__PURE__*/React.createElement("td", null, fmt(r.fixed), " → ", fmt(r.fixedAfter)), /*#__PURE__*/React.createElement("td", null, fmt(r.beforeCost)), /*#__PURE__*/React.createElement("td", null, fmt(r.afterCost))))))), /*#__PURE__*/React.createElement("p", null, "Source: ", e.source || 'not supplied', " · ", e.date || 'no date', ". Forecast: ", e.postBasis, "."), /*#__PURE__*/React.createElement("p", null, "Annual bill = Σ(delivered units × variable €/unit + annual fixed charges). Saving = current − forecast; negative savings are retained."), /*#__PURE__*/React.createElement("p", null, "Energy works: ", fmt(e.investment), ". NPV: ", fmt(e.npv), " over 30 years. Cumulative cashflow payback: ", e.payback == null ? 'not reached / not calculated' : e.payback + ' years', ". NPV = −investment + Σ[saving × 1.03^(year−1) ÷ 1.04^year]."), /*#__PURE__*/React.createElement("p", null, "4% discount and 3% price growth are sensitivity assumptions. Tax benefits, maintenance, replacements, financing and export revenue are excluded. Zero-cost measures and engineering interactions require review.")), /*#__PURE__*/React.createElement(SourceLink, {
-    id: "ape"
-  }), " · ", /*#__PURE__*/React.createElement(SourceLink, {
-    id: "tariff"
-  }), " · ", /*#__PURE__*/React.createElement(SourceLink, {
-    id: "pv"
-  }));
+  const h = React.createElement;
+  const scr = s.energy || {};
+  const f = s.efull || null;
+  const en = s.en || {};
+  const clsPre = (f && f.ante.classe) || en.bC || d.eCls || 'Unknown';
+  const clsPost = (f && f.post.classe) || en.aC || 'Unknown';
+  const epPre = f ? f.ante.EPnren : en.bS;
+  const epPost = f ? f.post.EPnren : en.aS;
+  const saving = scr.saving != null ? scr.saving : (f ? f.delta.saving_year : (s.sv && s.sv.yr));
+  const jumps = f ? f.delta.class_jumps : null;
+  const colour = c => (typeof ENERGY_COLOR !== 'undefined' && ENERGY_COLOR[c]) || '#7B8B96';
+  const ladder = ['G','F','E','D','C','B','A1','A2','A3','A4'];
+
+  /* APE ladder: every class, with the before and after positions marked. */
+  const scale = h("div", { style: { display: 'flex', gap: 3, margin: '14px 0 6px', flexWrap: 'wrap' } },
+    ladder.map(c => {
+      const isPre = c === clsPre, isPost = c === clsPost;
+      return h("div", {
+        key: c,
+        title: c,
+        style: {
+          flex: '1 1 0', minWidth: 34, textAlign: 'center', padding: '7px 2px',
+          borderRadius: 5, background: colour(c),
+          opacity: isPre || isPost ? 1 : 0.28,
+          color: ['A4','A3','G','F'].indexOf(c) >= 0 ? '#fff' : '#1c2733',
+          fontWeight: 800, fontSize: 11.5,
+          outline: isPost ? '3px solid #1c2733' : 'none',
+          outlineOffset: 1
+        }
+      }, c, (isPre || isPost) && h("div", { style: { fontSize: 8.5, fontWeight: 700, marginTop: 2 } },
+        isPre && isPost ? 'ora / dopo' : isPre ? 'ora' : 'dopo'));
+    }));
+
+  const tile = (label, value, note, tone) => h("div", null,
+    h("small", null, label),
+    h("strong", tone ? { style: { color: tone } } : null, value),
+    note ? h("span", null, note) : null);
+
+  const consRow = (label, unit, before, after) => {
+    const saved = before != null && after != null ? before - after : null;
+    return h("tr", { key: label },
+      h("td", null, label),
+      h("td", null, before == null ? '—' : Math.round(before).toLocaleString('it-IT') + ' ' + unit),
+      h("td", null, after == null ? '—' : Math.round(after).toLocaleString('it-IT') + ' ' + unit),
+      h("td", null, saved == null ? '—' : (saved > 0 ? '−' : '+') + Math.abs(Math.round(saved)).toLocaleString('it-IT') + ' ' + unit));
+  };
+
+  return h("div", { className: "basis-card" },
+    h("h3", null, s.nm, " · ", detail ? 'Energy calculation detail' : 'Energy performance'),
+    scale,
+    h("div", { className: "area-evidence" },
+      tile('Current APE class', clsPre,
+        shown(epPre, ' kWh/m²/year') + ' · primary energy', colour(clsPre)),
+      tile('APE class after the works', clsPost,
+        shown(epPost, ' kWh/m²/year') + (en.sp ? ' · −' + en.sp + '%' : ''), colour(clsPost)),
+      tile('Class improvement',
+        jumps == null ? '—' : (jumps > 0 ? '+' + jumps + (jumps === 1 ? ' class' : ' classes') : 'no change'),
+        f ? 'EP ratio ' + f.ante.rapporto + ' → ' + f.post.rapporto + ' vs reference building' : null),
+      tile('Estimated annual bill saving', fmt(saving),
+        scr.ready ? 'From your metered forecast' : 'Modelled estimate')),
+
+    f && h("div", { className: "table-scroll", style: { marginTop: 14 } },
+      h("table", null,
+        h("thead", null, h("tr", null,
+          h("th", null, "Energy vector"), h("th", null, "Now / year"),
+          h("th", null, "After works"), h("th", null, "Difference"))),
+        h("tbody", null, [
+          consRow('Natural gas', 'Sm³', f.ante.cons.gas_Smc, f.post.cons.gas_Smc),
+          consRow('Electricity', 'kWh', f.ante.cons.elec_kWh, f.post.cons.elec_kWh),
+          f.ante.cons.pellet_kg || f.post.cons.pellet_kg
+            ? consRow('Pellet', 'kg', f.ante.cons.pellet_kg, f.post.cons.pellet_kg) : null,
+          h("tr", { key: 'cost', style: { fontWeight: 700 } },
+            h("td", null, "Annual energy bill"),
+            h("td", null, fmt(f.ante.cost)), h("td", null, fmt(f.post.cost)),
+            h("td", null, "−" + fmt(Math.max(0, f.ante.cost - f.post.cost)).replace('€', '') + " €")),
+          h("tr", { key: 'co2' },
+            h("td", null, "CO₂ emissions"),
+            h("td", null, Math.round(f.ante.co2).toLocaleString('it-IT') + ' kg'),
+            h("td", null, Math.round(f.post.co2).toLocaleString('it-IT') + ' kg'),
+            h("td", null, "−" + Math.round(Math.max(0, f.delta.co2_kg_saved)).toLocaleString('it-IT') + ' kg'))
+        ].filter(Boolean)))),
+
+    f && detail && h("div", { className: "area-evidence", style: { marginTop: 14 } },
+      tile('Energy works investment', fmt(f.economy.investment_gross), 'Energy interventions only'),
+      tile('Ecobonus deduction', fmt(f.economy.tax_deduction), '50% over 10 years'),
+      tile('Net cost after deduction', fmt(f.economy.investment_net), null),
+      tile('Payback', f.economy.payback_years == null ? 'not reached' : f.economy.payback_years + ' years',
+        f.economy.npv_30y == null ? null : 'NPV 30y ' + fmt(f.economy.npv_30y))),
+
+    f && detail && h("p", null,
+      "Heating degree days for ", d.city || 'this comune', ": ", f.GG,
+      ". Reference building EP", h("sub", null, "nren"), ": ", f.EPrif, " kWh/m²/year. ",
+      "The class is the ratio of the property's EP", h("sub", null, "nren"),
+      " to that reference, per DM 26/06/2015."),
+
+    h("p", null,
+      "The class after the works is estimated from the energy measures in this scenario over ",
+      shown(scr.area || parseFloat(d.area), ' m²'), " of heated area. It is an indicative projection, ",
+      "not a certified APE — a qualified assessor issues the final certificate."),
+    h(SourceLink, { id: "ape" }), " · ", h(SourceLink, { id: "tariff" }), " · ", h(SourceLink, { id: "pv" }));
 }
 function ValueSummary({
   d,
