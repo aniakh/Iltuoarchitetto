@@ -1925,116 +1925,315 @@ function rentPropertyFactor(d, statusOverride, eClsOverride) {
 }
 const ASKING_TO_ACHIEVABLE = 0.93;
 function calcLombardyVal(d, sol, renoCostOverride) {
-  const a = areaBasis(d),
-    m = marketEvidence(d),
-    reno = renoCostOverride ?? sol.co.total;
-  /* Without reviewed market evidence, fall back to the Lombardy reference
-     table so value and rent are shown as an estimate rather than left blank. */
-  const base = lombardyMarketFor(d);
-  const CONDITION_FACTOR = {
-    'Da ristrutturare': 0.78,
-    'Buono / Abitabile': 0.92,
-    'Ristrutturato': 1.02,
-    'Ottimo': 1.06,
-    'Nuovo / In costruzione': 1.10
+  const area = parseFloat(d.area) || 85;
+  const trace = [];
+  const listingPrice = parseEuro(d.listingExtracted?.price);
+  const declaredValue = parseEuro(d.propertyValue);
+  const milanZone = matchMilanZone(d);
+  const market = lombardyMarketFor(d);
+  const live = d.marketOverride || {};
+  const askingRef = Number(live.askingSaleSqm) || milanZone?.sale || market.sale;
+  const rentRef = Number(live.marketRentSqm) || milanZone?.rent || market.rent;
+  const omiMin = Number(live.omiMin) || Math.round(askingRef * 0.78);
+  const omiMax = Number(live.omiMax) || Math.round(askingRef * 0.92);
+  trace.push({
+    step: 1,
+    label: "Geography — OMI + portal asking €/m²",
+    note: (milanZone ? `Milan zone "${milanZone.z}"` : (d.city || "Lombardy") + " local/provincial fallback") + " · OMI 2H 2025 + Immobiliare.it Jun 2026" + (d.marketOverride ? " · live override" : ""),
+    OMI_min: omiMin,
+    OMI_max: omiMax,
+    asking_ref: askingRef,
+    rent_ref: rentRef
+  });
+  const condPos = COND_POSITION[d.currentStatus] ?? 0.50;
+  const baseOMI = Math.round(omiMin + (omiMax - omiMin) * condPos);
+  trace.push({
+    step: 2,
+    label: "Base OMI (weighted by current condition)",
+    note: `${d.currentStatus || "normal"} → OMI position ${condPos} (0=stato OMI min · 1=OMI max)`,
+    value: baseOMI
+  });
+  const OMI_WEIGHT = 0.60,
+    ASK_WEIGHT = 0.40,
+    ASK_DISCOUNT = 0.06;
+  const calibrated = Math.round(OMI_WEIGHT * baseOMI + ASK_WEIGHT * askingRef * (1 - ASK_DISCOUNT));
+  trace.push({
+    step: 3,
+    label: "Calibrated achievable €/m²",
+    note: `60% OMI indication + 40% portal asking (−6% asking→achievable haircut)`,
+    value: calibrated
+  });
+  const adj = {};
+  const floor = parseInt(d.floor) || 3;
+  const hasElevator = d.elevator !== false;
+  if (hasElevator) {
+    if (floor === 0) adj.floor = -0.04;else if (floor >= 4) adj.floor = 0.04;else adj.floor = 0.02;
+  } else {
+    if (floor === 0) adj.floor = -0.05;else if (floor >= 4) adj.floor = -0.10;else if (floor >= 3) adj.floor = -0.06;else adj.floor = -0.02;
+  }
+  const features = (d.listingExtracted?.features || []).map(f => f.toLowerCase()).join(" ");
+  if (features.includes("terraz")) adj.outdoor = features.includes("grand") || features.includes("large") ? 0.08 : 0.05;else if (features.includes("balcon")) adj.outdoor = 0.02;else adj.outdoor = 0;
+  const condoY = parseFloat(d.listingExtracted?.condominium) || 0;
+  if (condoY > 0) {
+    if (condoY < 1200) adj.condo = 0.02;else if (condoY < 2500) adj.condo = 0.00;else if (condoY < 4000) adj.condo = -0.03;else adj.condo = -0.06;
+  } else adj.condo = 0;
+  const adjSum = Math.max(-0.20, Math.min(0.20, (adj.floor || 0) + (adj.outdoor || 0) + (adj.condo || 0)));
+  const adjusted = Math.round(calibrated * (1 + adjSum));
+  trace.push({
+    step: 4,
+    label: "Property adjustments",
+    note: `floor ${adj.floor * 100 || 0}% · outdoor ${adj.outdoor * 100 || 0}% · condo ${adj.condo * 100 || 0}% → total ${(adjSum * 100).toFixed(1)}%`,
+    value: adjusted,
+    adjustments: adj
+  });
+  const ePremPre = ENERGY_PREMIUM[d.eCls] ?? -0.03;
+  const modelPreSqm = Math.round(adjusted * (1 + ePremPre));
+  const modelPreTotal = Math.round(modelPreSqm * area);
+  const anchor = listingPrice || declaredValue || 0;
+  const preRenovTotal = anchor > 0 ? Math.round(anchor) : modelPreTotal;
+  const preRenovPerSqm = Math.round(preRenovTotal / area);
+  trace.push({
+    step: 5,
+    label: "Current value (pre-renovation)",
+    note: anchor > 0 ? `${listingPrice ? "Exact announcement price" : "Declared value"} €${Math.round(anchor).toLocaleString("it-IT")} used unchanged (market cross-check €${modelPreTotal.toLocaleString("it-IT")})` : `OMI model estimate · ${d.eCls || "?"} energy premium ${(ePremPre * 100).toFixed(1)}%`,
+    value: preRenovPerSqm,
+    total: preRenovTotal
+  });
+  const tier = TIER_TO_RENO[sol.nm] || TIER_TO_RENO["Balanced"];
+  const actualReno = renoCostOverride || sol?.co?.total || 0;
+  let renoCost, renoNote;
+  if (actualReno > 0) {
+    renoCost = Math.round(actualReno);
+    renoNote = `Actual scenario construction total (${sol.nm}) — includes finishes, plant, professional fees & contingency`;
+  } else {
+    const renoBase = RENO_COST_PER_SQM[tier.tier].typ;
+    let rc = area * renoBase;
+    const interv = sol.ch || [];
+    const adders = {};
+    if (interv.includes("Electrical upgrade")) adders.electrical = 6000;
+    if (interv.includes("Plumbing upgrade")) adders.plumbing = 12000;
+    if (interv.includes("Bathroom upgrade")) adders.bathroom = 12000;
+    if (interv.includes("Transparent envelope")) adders.windows = area * 0.15 * 750;
+    if (interv.includes("Heating system")) adders.heatpump = 9000;
+    if (interv.includes("Cooling system")) adders.aircon = 4500;
+    if (interv.includes("Complete energy upgrade")) adders.deep_retrofit = 15000;
+    adders.cila = 2500;
+    Object.values(adders).forEach(v => rc += v);
+    rc = rc * 1.12;
+    renoCost = Math.round(rc);
+    renoNote = `${tier.tier}: €${renoBase}/m² × ${area}m² + adders + 12% contingency`;
+  }
+  trace.push({
+    step: 6,
+    label: "Renovation cost",
+    note: renoNote,
+    value: renoCost
+  });
+  const targetECls = sol.en?.aC || "C";
+  const ePremPost = ENERGY_PREMIUM[targetECls] ?? 0.02;
+  const energyDelta = ePremPost - ePremPre;
+  const cvPre = CONDITION_VALUE[d.currentStatus] ?? 1.00;
+  const cvPost = CONDITION_VALUE[tier.postCond] ?? 1.30;
+  const condUplift = cvPost / cvPre - 1;
+  const upliftCap = {
+    Essential: 0.06,
+    Balanced: 0.12,
+    Premium: 0.18
+  }[sol.nm] || 0.12;
+  const upliftPct = Math.max(0.01, Math.min(upliftCap, condUplift + Math.max(0, energyDelta)));
+  let postPerSqmUncapped = Math.round(preRenovPerSqm * (1 + upliftPct));
+  const comparableRenovated = Number(live.comparableRenovated) || Math.round(askingRef * ({
+    Essential: 1.02,
+    Balanced: 1.06,
+    Premium: 1.10
+  }[sol.nm] || 1.06));
+  const ceiling = Math.round(comparableRenovated * 0.96);
+  const floorPost = Math.round(preRenovPerSqm * 1.01);
+  const postPerSqm = Math.max(floorPost, Math.min(postPerSqmUncapped, Math.max(floorPost, ceiling)));
+  const ceilingHit = postPerSqmUncapped > ceiling;
+  const postRenovTotal = Math.round(postPerSqm * area);
+  trace.push({
+    step: 7,
+    label: "Post-renovation achievable €/m²",
+    note: `exact before value × conservative ${sol.nm} uplift (max ${(upliftCap * 100).toFixed(0)}%)${ceilingHit ? ` · capped at 96% of local renovated asking €${comparableRenovated.toLocaleString("it-IT")}/m²` : ""}`,
+    value: postPerSqm,
+    total: postRenovTotal,
+    ceilingHit,
+    ceiling
+  });
+  const purchase = anchor > 0 ? Math.round(anchor) : preRenovTotal;
+  const agencyFee = purchase * 0.03;
+  const notaryTax = purchase * 0.04;
+  const totalInvestment = Math.round(purchase + agencyFee + notaryTax + renoCost);
+  const grossUplift = postRenovTotal - preRenovTotal;
+  const netUplift = grossUplift - renoCost;
+  const profitIfResold = postRenovTotal - totalInvestment;
+  const renovationRoi = renoCost > 0 ? netUplift / renoCost * 100 : 0;
+  const capitalRoi = totalInvestment > 0 ? profitIfResold / totalInvestment * 100 : 0;
+  trace.push({
+    step: 8,
+    label: "Investment & ROI",
+    note: `Buy €${(purchase / 1000).toFixed(0)}k + 3% agency + 4% notary/tax + reno €${(renoCost / 1000).toFixed(0)}k → renovation ROI = net uplift ÷ reno cost`,
+    value: totalInvestment,
+    gross_uplift: grossUplift,
+    net_uplift: netUplift,
+    profit_resold: profitIfResold,
+    roi_pct: Math.round(renovationRoi * 10) / 10,
+    capital_roi_pct: Math.round(capitalRoi * 10) / 10
+  });
+  const domDays = Number(d.marketOverride?.avgDaysOnMarket) || null;
+  const RENT_DEDUCTIONS = {
+    vacancy: domDays ? Math.min(0.12, Math.max(0.02, domDays / 365)) : 0.05,
+    management: 0.06,
+    condo_owner: 0.09,
+    maintenance: 0.06,
+    insurance: 0.01
   };
-  const condFactor = CONDITION_FACTOR[d.currentStatus] ?? 0.90;
-  /* base.sale is an ASKING rate; step it down to transaction level before
-     valuing the property, otherwise the report overstates what it would
-     actually sell for. The asking rate is kept and reported separately. */
-  const askingUnit = base && base.sale ? base.sale : null;
-  const txUnit = askingUnit ? askingUnit * ASKING_TO_TRANSACTION_SALE : null;
-  const fbCurrent = txUnit ? Math.round(txUnit * condFactor) : null;
-  /* A light refresh must not be valued like a full renovation. Scale the
-     post-works rate by how complete this scenario really is, measured against
-     a full gut-renovation benchmark, instead of applying one flat premium. */
-  const FULL_RENO_EUR_PER_SQM = 900;
-  const renoPerSqm = a.market && reno ? reno / a.market : 0;
-  const spend = Math.max(0, Math.min(1, renoPerSqm / FULL_RENO_EUR_PER_SQM));
-  /* Diminishing returns: bringing a tired flat up to standard adds far more
-     value per euro than the last tier of finishes, so value does not track
-     spend linearly (a linear curve would also make ROI identical for every
-     scenario, which tells the owner nothing). */
-  const completeness = Math.pow(spend, 0.65);
-  /* Ceiling is the fully-renovated rate on the same condition ladder used for
-     the current rate, so the two stay internally consistent. */
-  /* Cap the post-works rate at the best renovated comparable for the area:
-     a good interior in an ordinary building is not a new-build. */
-  const ceilingUnit = txUnit ? txUnit * (CONDITION_FACTOR['Ottimo'] ?? 1.06) : null;
-  const fbRenovated = fbCurrent != null && ceilingUnit != null
-    ? Math.round(fbCurrent + (ceilingUnit - fbCurrent) * completeness)
-    : null;
-  const fbRent = base && base.rent ? Math.round(base.rent * ASKING_TO_ACHIEVED_RENT * 100) / 100 : null;
-  const modelledMarket = !m.ready;
-
-  const unit = (m.ready ? nPositive(m.currentSqm) : null) ?? fbCurrent,
-    postUnit = (m.ready ? nPositive(m.renovatedSqm) : null) ?? fbRenovated;
-  const pre = unit && a.market ? unit * a.market : null,
-    post = postUnit && a.market ? postUnit * a.market : null;
-  const rentUnit = (m.ready ? nPositive(m.rentSqm) : null) ?? fbRent,
-    rent = rentUnit && a.market ? rentUnit * a.market : null;
-  const vacancy = Math.min(100, nNonnegative(m.vacancyPct) ?? 5) / 100,
-    expenses = nNonnegative(m.annualExpenses),
-    tax = nNonnegative(m.annualTax);
-  const rentGross = rent == null ? null : rent * 12,
-    collected = rentGross == null ? null : rentGross * (1 - vacancy),
-    net = collected != null && expenses != null && tax != null ? collected - expenses - tax : null;
-  const investment = pre == null ? null : pre + reno + (nNonnegative(m.transactionCosts) ?? 0),
-    uplift = pre != null && post != null ? post - pre : null,
-    profit = uplift == null ? null : uplift - reno - (nNonnegative(m.transactionCosts) ?? 0);
-  const omi = m.ready && m.omiZone && m.omiSemester && m.omiAreaBasis && nPositive(m.omiMin) && nPositive(m.omiMax) && +m.omiMin <= +m.omiMax ? [+m.omiMin, +m.omiMax] : null;
+  const RENT_DEDUCTION_TOTAL = Object.values(RENT_DEDUCTIONS).reduce((a, b) => a + b, 0);
+  const NOI_FACTOR = +(1 - RENT_DEDUCTION_TOTAL).toFixed(4);
+  const CEDOLARE_FLAT = 0.21;
+  const CEDOLARE_CONCORDATO = 0.10;
+  const sizeF = rentSizeFactor(area);
+  const benchmarkMonthly = Math.round(rentRef * area);
+  const padjPost = rentPropertyFactor(d, tier.postCond, targetECls);
+  const padjPre = rentPropertyFactor(d);
+  const askingMonthlyPost = Math.round(rentRef * sizeF * area * padjPost.factor);
+  const askingMonthlyPre = Math.round(rentRef * sizeF * area * padjPre.factor);
+  const preMonthlyRent = Math.round(askingMonthlyPre * ASKING_TO_ACHIEVABLE);
+  const rentUpliftCap = {
+    Essential: 1.04,
+    Balanced: 1.09,
+    Premium: 1.14
+  }[sol.nm] || 1.09;
+  const yieldCap = market.sale >= 5000 ? 0.055 : market.sale >= 2500 ? 0.060 : 0.070;
+  const yieldCapMonthly = Math.round(postRenovTotal * yieldCap / 12);
+  const monthlyRent = Math.max(preMonthlyRent, Math.min(Math.round(askingMonthlyPost * ASKING_TO_ACHIEVABLE), Math.round(preMonthlyRent * rentUpliftCap), yieldCapMonthly));
+  const annualRent = monthlyRent * 12;
+  const annualRentNet = Math.round(annualRent * NOI_FACTOR);
+  const monthlyRentNet = Math.round(annualRentNet / 12);
+  const preAnnualRentNet = Math.round(preMonthlyRent * 12 * NOI_FACTOR);
+  const rentUpliftMo = monthlyRent - preMonthlyRent;
+  const grossYield = totalInvestment > 0 ? annualRent / totalInvestment * 100 : 0;
+  const netYield = totalInvestment > 0 ? annualRentNet / totalInvestment * 100 : 0;
+  trace.push({
+    step: 9,
+    label: "Lombardia-normalized achievable rent",
+    note: `local asking €${rentRef}/m²·mo → property factors → −${Math.round((1 - ASKING_TO_ACHIEVABLE) * 100)}% contract haircut; post-reno uplift capped at ${Math.round((rentUpliftCap - 1) * 100)}% and gross yield at ${(yieldCap * 100).toFixed(1)}%`,
+    benchmark: benchmarkMonthly,
+    asking: askingMonthlyPost,
+    monthly: monthlyRent,
+    annual: annualRent,
+    monthly_net: monthlyRentNet,
+    gross_yield_pct: Math.round(grossYield * 100) / 100,
+    net_yield_pct: Math.round(netYield * 100) / 100,
+    adjustments: padjPost.rows
+  });
+  let confidence = 60;
+  if (anchor > 0) confidence += 16;
+  if (d.eCls && d.eCls !== "Unknown") confidence += 8;
+  if (milanZone) confidence += 8;
+  if (sol.co && sol.co.total > 0) confidence += 6;
+  confidence = Math.max(35, Math.min(95, confidence));
+  const confidence_label = confidence >= 85 ? "High" : confidence >= 70 ? "Good" : confidence >= 50 ? "Moderate" : "Low";
+  const band = confidence >= 85 ? 0.05 : confidence >= 70 ? 0.08 : confidence >= 50 ? 0.12 : 0.18;
+  const rng = c => [Math.round(c * (1 - band)), Math.round(c), Math.round(c * (1 + band))];
+  const scen = (label, priceMult, rentMult, costMult) => {
+    const pv = Math.round(Math.min(postRenovTotal * priceMult, ceiling * area));
+    const rc = Math.round(renoCost * costMult);
+    const roi = rc > 0 ? Math.round((pv - preRenovTotal - rc) / rc * 1000) / 10 : 0;
+    return {
+      label,
+      post_value: pv,
+      reno_cost: rc,
+      roi_pct: roi,
+      monthly_rent: Math.round(Math.min(monthlyRent * rentMult, yieldCapMonthly))
+    };
+  };
+  const scenarios = {
+    conservative: scen("Conservative", 0.93, 0.92, 1.15),
+    base: scen("Base", 1.00, 1.00, 1.00),
+    upside: scen("Upside", 1.07, 1.06, 0.95)
+  };
+  let recommendation = "Not recommended unless strategic reason";
+  if (renovationRoi >= 40) recommendation = "Strong value-add candidate";else if (renovationRoi >= 15) recommendation = "Moderate value-add candidate";else if (renovationRoi >= 0) recommendation = "Low-margin — negotiate price or trim reno scope";
+  /* Fields the report UI reads for provenance. The announcement price, when
+     present, is used unchanged as the pre-renovation value — it is the actual
+     price of this property, not a zonal average. */
+  const _liveOmi = !!(live && (live.omiMin || live.omiMax || live.askingSaleSqm));
   return {
-    modelled: modelledMarket,
-    price_basis: modelledMarket
-      ? 'Modelled transaction level (' + (base?.level || 'region') + ' baseline, asking rate stepped down)'
-      : 'Supplied market evidence',
-    geo_level: base?.level || null,
-    asking_unit: askingUnit,
-    pB: unit,
-    pA: postUnit,
-    vB: pre,
-    vA: post,
-    up: pre && post ? (post / pre - 1) * 100 : null,
-    taxBenefit: 0,
-    taxBenefitAnnual: 0,
-    zone: m.omiZone || d.city,
-    OMI_range: omi,
-    asking_ref: unit,
-    comparable_renovated: postUnit,
-    rent_ref: rentUnit,
-    listing_price_exact: false,
-    anchor_source: 'Comparable inputs; listing price displayed separately',
-    reno_cost: reno,
-    total_investment: investment,
-    gross_uplift: uplift,
-    net_uplift: profit,
-    profit_resold: profit,
-    roi_pct: profit != null && reno > 0 ? profit / reno * 100 : null,
-    monthly_rent: rent,
-    annual_rent: rentGross,
-    annual_rent_net: net,
-    monthly_rent_net: net == null ? null : net / 12,
-    gross_yield_pct: rentGross != null && investment ? rentGross / investment * 100 : null,
-    net_yield_pct: net != null && investment ? net / investment * 100 : null,
-    pre_value_range: [],
-    post_value_range: [],
-    confidence: null,
-    confidence_label: m.ready ? (m.reviewed ? 'Owner-reviewed comparable evidence' : 'Live market lookup \u2014 AI-assisted, not owner-reviewed') : 'Indicative estimate from Lombardy reference values \u2014 not verified comparables',
-    recommendation: 'Compare sourced values with actual quotes; no guaranteed uplift.',
-    trace: [{
-      step: 1,
-      label: 'Area basis',
-      note: 'Market area entered separately; no net/commercial conversion.'
-    }, {
-      step: 2,
-      label: 'Value',
-      note: 'Matching €/m² comparable × chosen market area. No synthetic OMI or automatic premium.'
-    }, {
-      step: 3,
-      label: 'Rent',
-      note: 'Annual rent × (1 − vacancy) − entered annual expenses − entered annual tax.'
-    }],
-    evidence: m
+    evidence: {
+      source: _liveOmi
+        ? (live.source || 'Agenzia delle Entrate OMI + portal asking (live lookup)')
+        : 'OMI band modelled from local asking reference',
+      date: live.asOf || live.date || '',
+      url: live.url || ''
+    },
+    marketInputs: d.marketInputs || {},
+    area_basis_m2: area,
+    modelled: !_liveOmi,
+    price_basis: listingPrice
+      ? 'Announcement price (exact, used unchanged)'
+      : declaredValue
+        ? 'Owner-declared value'
+        : 'Modelled from OMI + portal asking',
+    omi_weighting: { omi: OMI_WEIGHT, asking: ASK_WEIGHT, asking_haircut: ASK_DISCOUNT },
+    pB: preRenovPerSqm,
+    pA: postPerSqm,
+    vB: preRenovTotal,
+    vA: postRenovTotal,
+    up: Math.round((postPerSqm / preRenovPerSqm - 1) * 1000) / 10,
+    taxBenefit: Math.round(renoCost * 0.50),
+    taxBenefitAnnual: Math.round(renoCost * 0.50 / 10),
+    zone: milanZone?.z || d.city || "Lombardy",
+    OMI_range: [omiMin, omiMax],
+    asking_ref: askingRef,
+    comparable_renovated: comparableRenovated,
+    rent_ref: rentRef,
+    value_anchored: anchor > 0,
+    listing_price_exact: listingPrice > 0,
+    anchor_source: listingPrice ? "announcement" : declaredValue ? "manual" : "model",
+    cond_pre: d.currentStatus,
+    cond_post: tier.postCond,
+    energy_pre: d.eCls,
+    energy_post: targetECls,
+    reno_cost: renoCost,
+    reno_tier: tier.tier,
+    total_investment: totalInvestment,
+    gross_uplift: grossUplift,
+    net_uplift: netUplift,
+    profit_resold: profitIfResold,
+    roi_pct: Math.round(renovationRoi * 10) / 10,
+    capital_roi_pct: Math.round(capitalRoi * 10) / 10,
+    monthly_rent: monthlyRent,
+    annual_rent: annualRent,
+    monthly_rent_net: monthlyRentNet,
+    annual_rent_net: annualRentNet,
+    rent_deductions: RENT_DEDUCTIONS,
+    rent_deduction_total_pct: Math.round(RENT_DEDUCTION_TOTAL * 1000) / 10,
+    rent_after_tax_flat: Math.round(annualRentNet * (1 - CEDOLARE_FLAT)),
+    rent_after_tax_concordato: Math.round(annualRentNet * (1 - CEDOLARE_CONCORDATO)),
+    pre_monthly_rent: preMonthlyRent,
+    pre_annual_rent_net: preAnnualRentNet,
+    rent_uplift_mo: rentUpliftMo,
+    rent_benchmark: benchmarkMonthly,
+    rent_asking_post: askingMonthlyPost,
+    rent_asking_pre: askingMonthlyPre,
+    rent_size_factor: sizeF,
+    rent_factor_post: padjPost.factor,
+    rent_factor_pre: padjPre.factor,
+    rent_adjustments: padjPost.rows,
+    rent_asking_to_achievable: ASKING_TO_ACHIEVABLE,
+    gross_yield_pct: Math.round(grossYield * 100) / 100,
+    net_yield_pct: Math.round(netYield * 100) / 100,
+    pre_value_range: listingPrice ? [preRenovTotal, preRenovTotal, preRenovTotal] : rng(preRenovTotal),
+    post_value_range: rng(postRenovTotal),
+    confidence,
+    confidence_label,
+    confidence_band_pct: Math.round(band * 100),
+    scenarios,
+    recommendation,
+    ceiling_hit: ceilingHit,
+    trace
   };
 }
 const LOMBARDY_MARKET = {
@@ -2105,8 +2304,6 @@ const LOMBARDY_DEFAULT_MARKET = {
    quotations and actual closings sit below portal asking prices. These factors
    are the FALLBACK only — a live /market-lookup overrides them with local OMI
    and portal evidence, which is where a locally-estimated discount belongs. */
-const ASKING_TO_TRANSACTION_SALE = 0.88;   /* asking -> likely closing price */
-const ASKING_TO_ACHIEVED_RENT = 0.95;      /* asking rent -> achieved rent   */
 /* Comuni outside the provincial capital trade below the capital's rate. This is
    a deliberately conservative single factor: it cannot tell a large town from a
    small village, nor a lakefront resort from inland. That is precisely what the
@@ -5397,7 +5594,7 @@ function S1({
       ...p,
       propertyValue: v
     })),
-    hint: "Not automatically used as an appraised market value."
+    hint: "Used as the pre-renovation value. The announcement price from a pasted listing takes precedence."
   }), /*#__PURE__*/React.createElement(Field, {
     label: "Energy class from APE",
     value: d.eCls,
@@ -17367,7 +17564,25 @@ function ValueSummary({
     if (!city) return;
     let cancelled = false;
     ita.marketLookup(city, place?.province).then(res => {
-      if (res && !cancelled) applyLiveMarketData(res);
+      if (!res || cancelled) return;
+      applyLiveMarketData(res);                 /* evidence panel */
+      u(prev => ({                              /* figures the engine reads */
+        ...prev,
+        marketOverride: {
+          ...(prev.marketOverride || {}),
+          askingSaleSqm: res.askingSaleSqm ?? null,
+          marketRentSqm: res.marketRentSqm ?? null,
+          comparableRenovated: res.comparableRenovated ?? null,
+          omiMin: res.omiMin ?? null,
+          omiMax: res.omiMax ?? null,
+          omiZone: res.omiZone || '',
+          omiSemester: res.omiSemester || '',
+          avgDaysOnMarket: res.avgDaysOnMarket ?? null,
+          source: 'Agenzia delle Entrate OMI + portal asking (live lookup)',
+          url: 'https://www1.agenziaentrate.gov.it/servizi/Consultazione/ricerca.htm',
+          asOf: res.asOf || ''
+        }
+      }));
     });
     return () => { cancelled = true; };
   }, [d.city, m.ready]);
@@ -17388,7 +17603,7 @@ function ValueSummary({
     onData: applyLiveMarketData
   })), /*#__PURE__*/React.createElement("div", {
     className: "area-evidence"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("small", null, "Current comparable value"), /*#__PURE__*/React.createElement("strong", null, fmt(v.vB)), /*#__PURE__*/React.createElement("span", null, shown(a.market, ' m²'), " × ", fmt(v.pB), "/m²")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("small", null, "Renovated comparable value"), /*#__PURE__*/React.createElement("strong", null, fmt(v.vA)), /*#__PURE__*/React.createElement("span", null, shown(a.market, ' m²'), " × ", fmt(v.pA), "/m²"))), /*#__PURE__*/React.createElement("p", null, "Advertisement asking price: ", fmt(nPositive(d.listingExtracted?.price) || nPositive(d.propertyValue)), ". It is shown separately from comparable-based estimates."), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("small", null, "Current comparable value"), /*#__PURE__*/React.createElement("strong", null, fmt(v.vB)), /*#__PURE__*/React.createElement("span", null, shown(v.area_basis_m2 ?? a.market, ' m²'), " × ", fmt(v.pB), "/m²")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("small", null, "Renovated comparable value"), /*#__PURE__*/React.createElement("strong", null, fmt(v.vA)), /*#__PURE__*/React.createElement("span", null, shown(v.area_basis_m2 ?? a.market, ' m²'), " × ", fmt(v.pA), "/m²"))), /*#__PURE__*/React.createElement("p", null, "Advertisement asking price: ", fmt(nPositive(d.listingExtracted?.price) || nPositive(d.propertyValue)), ". It is shown separately from comparable-based estimates."), /*#__PURE__*/React.createElement("div", {
     className: "table-scroll"
   }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("tbody", null, [['Gross monthly asking rent', fmt(v.monthly_rent)], ['Annual gross rent', fmt(v.annual_rent)], ['Annual net cash after entered expenses/tax', fmt(v.annual_rent_net)], ['Residual after works + entered transaction costs', fmt(v.net_uplift)], ['Renovation ROI scenario', shown(v.roi_pct, '%')], ['OMI zonal range', v.OMI_range ? v.OMI_range.map(fmt).join(' – ') + '/m²' : 'Not supplied'], ['OMI zone / semester / area basis', [v.evidence.omiZone, v.evidence.omiSemester, v.evidence.omiAreaBasis].filter(Boolean).join(' · ') || 'Not supplied']].map(([k, value]) => /*#__PURE__*/React.createElement("tr", {
     key: k
