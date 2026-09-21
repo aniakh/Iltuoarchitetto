@@ -60,6 +60,39 @@ browser and never appears in this repository.
    window.GEMINI_PROXY = "https://iltuoarchitetto-proxy.<account>.workers.dev";
    ```
 
+## Market data: how property value and rent are worked out
+
+Italian portals (immobiliare.it, idealista) publish **asking** prices; OMI
+(Agenzia delle Entrate) publishes **transaction** quotations, which sit below
+them. The report must not treat one as the other, so there are two layers:
+
+**1. Live lookup (authoritative).** The value tab automatically calls the
+Worker's `/market-lookup?comune=X&province=Y`, which uses grounded search to
+retrieve the OMI sale/rent range, the portal asking rate, a renovated
+comparable and a locally-estimated asking→transaction discount for that
+specific comune. Results are cached in KV for 14 days, so a comune is looked
+up once and every later visitor and scenario reuses it.
+
+This layer is what keeps lakefront, resort, student and metropolitan
+submarkets from being flattened into a provincial average.
+
+**2. Modelled fallback** (used until a lookup succeeds):
+
+- Every one of Lombardy's ~1,500 comuni resolves to its **provincial**
+  baseline via the built-in ISTAT municipality table, not a single
+  region-wide average.
+- The provincial asking rate is stepped down to transaction level
+  (`ASKING_TO_TRANSACTION_SALE`), and asking rent to achieved rent
+  (`ASKING_TO_ACHIEVED_RENT`), so the figure shown is closer to what a
+  property would actually sell or let for.
+- Post-renovation value scales with how complete each scenario is, with
+  diminishing returns, and is capped at the best renovated comparable for
+  the area — a good interior in an ordinary building is not a new-build.
+
+The fallback is deliberately conservative and cannot distinguish a large town
+from a small village. Treat its figures as indicative; the live lookup is what
+makes them local. Everything is labelled in the report with the basis used.
+
 ## Access links — capping reports at 3 per customer
 
 Each paying customer gets a personal link that works a fixed number of times
@@ -75,6 +108,9 @@ using incognito, switching device or sharing the link does not reset it.
 
 Until this binding exists the Worker runs in **open mode**: everything works,
 nothing is metered. Quota switches on the moment `QUOTA` is bound.
+
+The same namespace also caches market lookups, so binding it makes the value
+and rent figures load instantly after the first visitor for each comune.
 
 ### 2. Mint a link
 

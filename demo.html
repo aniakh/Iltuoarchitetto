@@ -1939,7 +1939,12 @@ function calcLombardyVal(d, sol, renoCostOverride) {
     'Nuovo / In costruzione': 1.10
   };
   const condFactor = CONDITION_FACTOR[d.currentStatus] ?? 0.90;
-  const fbCurrent = base && base.sale ? Math.round(base.sale * condFactor) : null;
+  /* base.sale is an ASKING rate; step it down to transaction level before
+     valuing the property, otherwise the report overstates what it would
+     actually sell for. The asking rate is kept and reported separately. */
+  const askingUnit = base && base.sale ? base.sale : null;
+  const txUnit = askingUnit ? askingUnit * ASKING_TO_TRANSACTION_SALE : null;
+  const fbCurrent = txUnit ? Math.round(txUnit * condFactor) : null;
   /* A light refresh must not be valued like a full renovation. Scale the
      post-works rate by how complete this scenario really is, measured against
      a full gut-renovation benchmark, instead of applying one flat premium. */
@@ -1953,11 +1958,13 @@ function calcLombardyVal(d, sol, renoCostOverride) {
   const completeness = Math.pow(spend, 0.65);
   /* Ceiling is the fully-renovated rate on the same condition ladder used for
      the current rate, so the two stay internally consistent. */
-  const ceilingUnit = base && base.sale ? base.sale * (CONDITION_FACTOR['Ottimo'] ?? 1.06) : null;
+  /* Cap the post-works rate at the best renovated comparable for the area:
+     a good interior in an ordinary building is not a new-build. */
+  const ceilingUnit = txUnit ? txUnit * (CONDITION_FACTOR['Ottimo'] ?? 1.06) : null;
   const fbRenovated = fbCurrent != null && ceilingUnit != null
     ? Math.round(fbCurrent + (ceilingUnit - fbCurrent) * completeness)
     : null;
-  const fbRent = base && base.rent ? base.rent : null;
+  const fbRent = base && base.rent ? Math.round(base.rent * ASKING_TO_ACHIEVED_RENT * 100) / 100 : null;
   const modelledMarket = !m.ready;
 
   const unit = (m.ready ? nPositive(m.currentSqm) : null) ?? fbCurrent,
@@ -1978,6 +1985,11 @@ function calcLombardyVal(d, sol, renoCostOverride) {
   const omi = m.ready && m.omiZone && m.omiSemester && m.omiAreaBasis && nPositive(m.omiMin) && nPositive(m.omiMax) && +m.omiMin <= +m.omiMax ? [+m.omiMin, +m.omiMax] : null;
   return {
     modelled: modelledMarket,
+    price_basis: modelledMarket
+      ? 'Modelled transaction level (' + (base?.level || 'region') + ' baseline, asking rate stepped down)'
+      : 'Supplied market evidence',
+    geo_level: base?.level || null,
+    asking_unit: askingUnit,
     pB: unit,
     pA: postUnit,
     vB: pre,
@@ -2087,9 +2099,44 @@ const LOMBARDY_DEFAULT_MARKET = {
   sale: 2790,
   rent: 18.72
 };
+/* ── Price-level calibration ──────────────────────────────────────────────
+   LOMBARDY_MARKET holds ASKING (portal) rates. Per the valuation brief, asking
+   and transaction are different concepts and must not be merged: OMI zonal
+   quotations and actual closings sit below portal asking prices. These factors
+   are the FALLBACK only — a live /market-lookup overrides them with local OMI
+   and portal evidence, which is where a locally-estimated discount belongs. */
+const ASKING_TO_TRANSACTION_SALE = 0.88;   /* asking -> likely closing price */
+const ASKING_TO_ACHIEVED_RENT = 0.95;      /* asking rent -> achieved rent   */
+/* Comuni outside the provincial capital trade below the capital's rate. This is
+   a deliberately conservative single factor: it cannot tell a large town from a
+   small village, nor a lakefront resort from inland. That is precisely what the
+   live /market-lookup corrects, and it runs automatically. */
+const NON_CAPITAL_FACTOR = 0.82;
+const PROVINCE_CAPITAL = {
+  MI: 'milano', BG: 'bergamo', BS: 'brescia', CO: 'como', CR: 'cremona',
+  LC: 'lecco', LO: 'lodi', MN: 'mantova', MB: 'monza', PV: 'pavia',
+  SO: 'sondrio', VA: 'varese'
+};
+
+/* Returns ASKING €/m² for the comune, with the geographic level it came from.
+   Every one of the ~1500 Lombardy comuni resolves to at least its province
+   baseline instead of a single region-wide average. */
 function lombardyMarketFor(d) {
-  const key = (d.city || "").toLowerCase().trim();
-  return LOMBARDY_MARKET[key] || LOMBARDY_DEFAULT_MARKET;
+  const key = normPlace(d.city);
+  const direct = LOMBARDY_MARKET[key];
+  if (direct) return { ...direct, level: 'comune' };
+  const muni = typeof municipalityFor === 'function' ? municipalityFor(d) : null;
+  const capKey = muni && PROVINCE_CAPITAL[muni.province];
+  const cap = capKey && LOMBARDY_MARKET[capKey];
+  if (cap) {
+    return {
+      sale: Math.round(cap.sale * NON_CAPITAL_FACTOR),
+      rent: Math.round(cap.rent * NON_CAPITAL_FACTOR * 100) / 100,
+      level: 'province',
+      province: muni.province
+    };
+  }
+  return { ...LOMBARDY_DEFAULT_MARKET, level: 'region' };
 }
 const CITY_PRICES = Object.fromEntries(Object.entries(LOMBARDY_MARKET).map(([k, v]) => [k, v.sale]));
 const LOMBARDY_AVG = LOMBARDY_DEFAULT_MARKET.sale;
@@ -17307,6 +17354,23 @@ function ValueSummary({
       }
     }));
   }
+  /* Pull real OMI + portal figures for this comune once, automatically.
+     The Worker caches them, so this is a single cheap call per comune and
+     it replaces the modelled provincial baseline with local evidence —
+     which is what keeps lakefront, resort and student submarkets from being
+     flattened into a provincial average. */
+  useEffect(() => {
+    if (m.ready || !u) return;
+    const ita = typeof window !== 'undefined' ? window.ITA : null;
+    if (!ita || typeof ita.marketLookup !== 'function') return;
+    const city = place?.name || d.city;
+    if (!city) return;
+    let cancelled = false;
+    ita.marketLookup(city, place?.province).then(res => {
+      if (res && !cancelled) applyLiveMarketData(res);
+    });
+    return () => { cancelled = true; };
+  }, [d.city, m.ready]);
   return /*#__PURE__*/React.createElement("div", {
     className: "basis-card"
   }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · Value & rent"), /*#__PURE__*/React.createElement("p", null, v.confidence_label, ". Source: ", v.evidence.source || 'not supplied', " · ", v.evidence.date || 'no date', ". Municipality: ", place?.name || 'not selected', "."), u && !m.ready && /*#__PURE__*/React.createElement("div", {

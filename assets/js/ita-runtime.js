@@ -275,6 +275,65 @@
     ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
   };
 
+  /* --- Market lookup ------------------------------------------------
+   * Asks the Worker for OMI (transaction-level) and portal (asking-level)
+   * figures for a comune. The Worker caches them, so repeated visits and
+   * repeated scenarios cost nothing. Returns the shape the dashboard's
+   * applyLiveMarketData() expects, already stepped down to transaction
+   * level, or null when nothing usable came back.
+   */
+  var marketCache = {};
+  ITA.marketLookup = function (comune, province) {
+    if (!PROXY || !comune) return Promise.resolve(null);
+    var key = String(comune).toLowerCase() + "|" + (province || "");
+    if (marketCache[key]) return Promise.resolve(marketCache[key]);
+    var qs = "?comune=" + encodeURIComponent(comune) +
+             (province ? "&province=" + encodeURIComponent(province) : "");
+    return fetch(PROXY + "/market-lookup" + qs)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || j.error) return null;
+        var mid = function (a, b) {
+          var x = Number(a), y = Number(b);
+          if (isFinite(x) && isFinite(y)) return (x + y) / 2;
+          if (isFinite(x)) return x;
+          if (isFinite(y)) return y;
+          return null;
+        };
+        /* Prefer OMI (already transaction level). Fall back to the portal
+           asking rate stepped down by the locally-estimated discount. */
+        var disc = Number(j.asking_to_transaction_discount_pct);
+        var factor = isFinite(disc) && disc > 0 && disc < 60 ? (1 - disc / 100) : 0.88;
+        var omiSale = mid(j.omi_sale_min_eur_m2, j.omi_sale_max_eur_m2);
+        var asking = Number(j.asking_sale_eur_m2);
+        var current = omiSale != null ? omiSale : (isFinite(asking) ? asking * factor : null);
+        var renovAsk = Number(j.renovated_asking_sale_eur_m2);
+        var renovated = isFinite(renovAsk)
+          ? renovAsk * factor
+          : (Number(j.omi_sale_max_eur_m2) || (current != null ? current * 1.15 : null));
+        var omiRent = mid(j.omi_rent_min_eur_m2_month, j.omi_rent_max_eur_m2_month);
+        var askRent = Number(j.asking_rent_eur_m2_month);
+        var rent = omiRent != null ? omiRent : (isFinite(askRent) ? askRent * 0.95 : null);
+        if (current == null && rent == null) return null;
+        var out = {
+          comparableCurrent: current == null ? null : Math.round(current),
+          comparableRenovated: renovated == null ? null : Math.round(renovated),
+          marketRentSqm: rent == null ? null : Math.round(rent * 100) / 100,
+          omiMin: Number(j.omi_sale_min_eur_m2) || null,
+          omiMax: Number(j.omi_sale_max_eur_m2) || null,
+          omiZone: j.omi_zone || "",
+          omiSemester: j.omi_semester || "",
+          submarket: j.submarket || "",
+          confidence: j.confidence || null,
+          sources: j.sources || [],
+          asOf: j.as_of || j.fetched_at || ""
+        };
+        marketCache[key] = out;
+        return out;
+      })
+      .catch(function () { return null; });
+  };
+
   /* Convenience used by the dashboard's unlock button. */
   ITA.requestGeneration = function (onAllowed) {
     return ITA.consume().then(function (r) {
