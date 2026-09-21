@@ -62,36 +62,50 @@ browser and never appears in this repository.
 
 ## Market data: how property value and rent are worked out
 
-Italian portals (immobiliare.it, idealista) publish **asking** prices; OMI
-(Agenzia delle Entrate) publishes **transaction** quotations, which sit below
-them. The report must not treat one as the other, so there are two layers:
+**The pre-renovation value is the announcement price.** If a listing URL was
+pasted, the extracted asking price is used *unchanged* as the current value —
+it is the real price of that specific property, not a zonal average. Failing
+that, the "Asking / owner price" field is used. Only when neither exists is the
+value modelled from market references, and the report always states which of
+the three applies.
 
-**1. Live lookup (authoritative).** The value tab automatically calls the
-Worker's `/market-lookup?comune=X&province=Y`, which uses grounded search to
-retrieve the OMI sale/rent range, the portal asking rate, a renovated
-comparable and a locally-estimated asking→transaction discount for that
-specific comune. Results are cached in KV for 14 days, so a comune is looked
-up once and every later visitor and scenario reuses it.
+**Post-renovation value** starts from that exact figure and applies a
+conservative, capped uplift per scenario (Essential 6% · Balanced 12% ·
+Premium 18%), combining the condition step-up with any energy-class gain, then
+caps the result at 96% of the local renovated comparable so a good interior in
+an ordinary building is never valued as a new-build.
 
-This layer is what keeps lakefront, resort, student and metropolitan
-submarkets from being flattened into a provincial average.
+**OMI (Agenzia delle Entrate) is weighted against portal asking prices**, not
+confused with them: 60% OMI indication + 40% portal asking with a 6%
+asking→achievable haircut, with the OMI band positioned by the property's
+declared condition. Portals publish *asking* prices; OMI publishes
+*transaction* quotations.
 
-**2. Modelled fallback** (used until a lookup succeeds):
+**Rent** is a full NOI model, not a €/m² multiplication: local asking rent →
+size and property factors (floor, lift, outdoor space, condominium fees,
+energy class) → contract haircut → post-renovation uplift capped per scenario
+→ a gross-yield sanity cap. Deductions for vacancy, management, owner's share
+of condominium, maintenance and insurance are itemised, and the result is also
+shown after *cedolare secca* at both 21% and 10% (canone concordato).
 
-- Every one of Lombardy's ~1,500 comuni resolves to its **provincial**
-  baseline via the built-in ISTAT municipality table, not a single
-  region-wide average.
-- The provincial asking rate is stepped down to transaction level
-  (`ASKING_TO_TRANSACTION_SALE`), and asking rent to achieved rent
-  (`ASKING_TO_ACHIEVED_RENT`), so the figure shown is closer to what a
-  property would actually sell or let for.
-- Post-renovation value scales with how complete each scenario is, with
-  diminishing returns, and is capped at the best renovated comparable for
-  the area — a good interior in an ordinary building is not a new-build.
+Every figure carries a confidence score, a conservative/base/upside scenario
+set, and a step-by-step trace of how it was derived.
 
-The fallback is deliberately conservative and cannot distinguish a large town
-from a small village. Treat its figures as indicative; the live lookup is what
-makes them local. Everything is labelled in the report with the basis used.
+### Where the numbers come from
+
+**Live lookup (authoritative).** The value tab automatically calls the Worker's
+`/market-lookup?comune=X&province=Y`, which uses grounded search for that
+comune's OMI sale/rent range, portal asking rate, renovated comparable and a
+locally-estimated asking→transaction discount. Results cache in KV for 14 days,
+so each comune is fetched once. This is what keeps lakefront, resort, student
+and metropolitan submarkets from being flattened into a provincial average.
+
+**Modelled fallback** (until a lookup succeeds): every one of Lombardy's ~1,500
+comuni resolves to its **provincial** baseline through the built-in ISTAT
+municipality table rather than one region-wide average, and the OMI band is
+derived from that local asking reference. The fallback is deliberately
+conservative and cannot tell a large town from a small village — the live
+lookup is what makes it local.
 
 ## Access links — capping reports at 3 per customer
 

@@ -318,6 +318,11 @@
         var out = {
           comparableCurrent: current == null ? null : Math.round(current),
           comparableRenovated: renovated == null ? null : Math.round(renovated),
+          /* Portal asking rate, kept at asking level: the valuation engine
+             weights it against OMI itself and applies its own haircut. */
+          askingSaleSqm: isFinite(asking) ? Math.round(asking) : null,
+          askingRentSqm: isFinite(askRent) ? Math.round(askRent * 100) / 100 : null,
+          avgDaysOnMarket: Number(j.avg_days_on_market) || null,
           marketRentSqm: rent == null ? null : Math.round(rent * 100) / 100,
           omiMin: Number(j.omi_sale_min_eur_m2) || null,
           omiMax: Number(j.omi_sale_max_eur_m2) || null,

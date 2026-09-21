@@ -207,7 +207,7 @@ export default {
           '"omi_rent_min_eur_m2_month":null,"omi_rent_max_eur_m2_month":null,',
           '"asking_sale_eur_m2":null,"asking_rent_eur_m2_month":null,',
           '"renovated_asking_sale_eur_m2":null,',
-          '"asking_to_transaction_discount_pct":null,',
+          '"asking_to_transaction_discount_pct":null,"avg_days_on_market":null,',
           '"submarket":"","confidence":0,"sources":[{"name":"","url":""}],"as_of":"YYYY-MM-DD"}'
         ].join("\n");
 
