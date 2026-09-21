@@ -6,6 +6,7 @@
  *   POST /v1beta/models/<model>:generateContent   Gemini proxy (key added server-side)
  *   GET  /v1beta/models?pageSize=200              Model listing (for auto-detection)
  *   GET  /fetch-listing?url=<listing url>         Server-side page fetch for autofill
+ *   GET  /market-lookup?comune=X&province=Y       OMI + portal prices for a comune (cached)
  *   GET  /quota                                   How many reports this link has left
  *   POST /consume                                 Burn one report slot -> generationId
  *   POST /admin/token                             Mint a customer link  (admin secret)
@@ -46,6 +47,9 @@ const GENERATION_TTL_SECONDS = 3 * 60 * 60;
 // roughly 15-25; the ceiling simply stops a replayed generation id from being
 // used to mint unlimited renders inside the TTL window.
 const MAX_IMAGES_PER_GENERATION = 60;
+// Market quotations move slowly (OMI publishes twice a year), so a long
+// cache keeps lookups instant and stops every visitor re-billing the search.
+const MARKET_CACHE_TTL_SECONDS = 14 * 24 * 60 * 60;
 
 const LISTING_HOSTS = new Set([
   "immobiliare.it", "www.immobiliare.it",
@@ -168,6 +172,81 @@ export default {
           status: up.status,
           headers: { ...cors, "Content-Type": up.headers.get("Content-Type") || "text/html; charset=utf-8" },
         });
+      }
+
+      /* ---------------- market lookup (OMI + portals, cached) ---------------- */
+      if (request.method === "GET" && path === "/market-lookup") {
+        if (!env.GEMINI_API_KEY) return json({ error: "Server is missing GEMINI_API_KEY secret" }, 500, cors);
+        const comune = (url.searchParams.get("comune") || "").trim();
+        const province = (url.searchParams.get("province") || "").trim();
+        if (!comune) return json({ error: "missing comune parameter" }, 400, cors);
+
+        const cacheKey = "mkt:" + comune.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+          + (province ? "|" + province.toUpperCase() : "");
+        if (kv && url.searchParams.get("refresh") !== "1") {
+          const hit = await kv.get(cacheKey);
+          if (hit) {
+            return new Response(hit, { status: 200, headers: { ...cors, "Content-Type": "application/json", "X-Cache": "hit" } });
+          }
+        }
+
+        const prompt = [
+          "You are an Italian chartered property valuer. Using web search, report CURRENT market figures for",
+          `the comune of ${comune}${province ? " (" + province + ")" : ""}, Lombardy, Italy.`,
+          "",
+          "Keep the price concepts SEPARATE and never merge them:",
+          " - OMI (Agenzia delle Entrate) zonal quotations: these are TRANSACTION-level ranges.",
+          " - Portal ASKING prices (immobiliare.it, idealista.it): these are asking, not closing, prices.",
+          "Residential apartments in normal (not luxury, not derelict) condition.",
+          "Reflect the real local submarket: lakefront, mountain, resort, student and metropolitan",
+          "areas must NOT be smoothed into a provincial average.",
+          "",
+          "Return ONLY this JSON, using null where you have no reliable figure:",
+          '{"comune":"","province":"","omi_zone":"","omi_semester":"",',
+          '"omi_sale_min_eur_m2":null,"omi_sale_max_eur_m2":null,',
+          '"omi_rent_min_eur_m2_month":null,"omi_rent_max_eur_m2_month":null,',
+          '"asking_sale_eur_m2":null,"asking_rent_eur_m2_month":null,',
+          '"renovated_asking_sale_eur_m2":null,',
+          '"asking_to_transaction_discount_pct":null,',
+          '"submarket":"","confidence":0,"sources":[{"name":"","url":""}],"as_of":"YYYY-MM-DD"}'
+        ].join("\n");
+
+        let resp;
+        try {
+          const u = new URL(UPSTREAM + "/v1beta/models/gemini-2.5-flash:generateContent");
+          u.searchParams.set("key", env.GEMINI_API_KEY);
+          resp = await fetch(u.toString(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              tools: [{ google_search: {} }],
+              generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+            })
+          });
+        } catch (e) {
+          return json({ error: "lookup failed", detail: String(e).slice(0, 200) }, 502, cors);
+        }
+        if (!resp.ok) {
+          const t = await resp.text();
+          return json({ error: "upstream error", status: resp.status, detail: t.slice(0, 300) }, resp.status, cors);
+        }
+        const data = await resp.json();
+        const text = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+        const raw = text.map((p) => p.text || "").join("").trim();
+        const match = raw.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
+        if (!match) return json({ error: "no structured result", raw: raw.slice(0, 300) }, 502, cors);
+
+        let parsed;
+        try { parsed = JSON.parse(match[0]); }
+        catch (e) { return json({ error: "unparseable result", raw: match[0].slice(0, 300) }, 502, cors); }
+
+        parsed.comune = parsed.comune || comune;
+        parsed.province = parsed.province || province;
+        parsed.fetched_at = new Date().toISOString();
+        const body = JSON.stringify(parsed);
+        if (kv) await kv.put(cacheKey, body, { expirationTtl: MARKET_CACHE_TTL_SECONDS });
+        return new Response(body, { status: 200, headers: { ...cors, "Content-Type": "application/json", "X-Cache": "miss" } });
       }
 
       /* ---------------- Gemini: model listing ---------------- */
