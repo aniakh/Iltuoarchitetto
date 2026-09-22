@@ -7196,6 +7196,12 @@ function Results({
       apiKey: apiKey,
       u: u
     }),
+    investment: () => /*#__PURE__*/React.createElement(InvestmentCase, {
+      d: d,
+      s: s,
+      sols: sols,
+      reportMode: reportMode
+    }),
     furnishing: () => /*#__PURE__*/React.createElement(CompactProductReport, {
       d: d,
       s: s
@@ -9258,7 +9264,7 @@ function SolRenderCard({
     }));
   })), !plan && /*#__PURE__*/React.createElement("p", null, "No plan has been generated for this option."), plan && Object.keys(record.renders).length === 0 && /*#__PURE__*/React.createElement("p", null, "Le viste delle stanze vengono generate insieme alla planimetria.")));
 }
-const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['costbreakdown', 'Cost breakdown'], ['value', 'Value & rent'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
+const REPORT_TABS = [['compare', 'Comparison'], ['renders', 'Plans & room views'], ['detail', 'Scope & details'], ['energy', 'Energy summary'], ['energydetail', 'Energy calculations'], ['schedule', 'Schedule'], ['costbreakdown', 'Cost breakdown'], ['value', 'Value & rent'], ['investment', 'ROI & investment decision'], ['furnishing', 'Furniture & materials'], ['dd', 'Compliance']];
 function ReportSection({
   id,
   reportMode,
@@ -18140,22 +18146,600 @@ const LABOUR_SHARE = {
   ceiling: 0.55, wall_treat: 0.60, balcony: 0.50, fire: 0.40, joinery: 0.45
 };
 
-function CostBreakdown({ d, s }) {
-  const h = React.createElement;
+/* ── Investment case — 30-year outlook for a buyer ────────────────────────
+   This answers a different question from the cost tabs. Not "what does the
+   renovation cost" but "should I buy this flat, renovate it, and what comes
+   back over thirty years".
+
+   Three rules keep it honest:
+
+   1. THE ENERGY SAVING IS NOT INVESTOR CASH FLOW. In a let property the
+      tenant pays the bills, and the saving is already priced into the rent
+      and into the resale value. Counting it again here would double count
+      it, which is how renovation ROI is usually overstated.
+   2. Money in is everything it takes to OWN THE FINISHED FLAT: the price,
+      the purchase taxes and fees, the works and the furniture.
+   3. Every rate below is a planning assumption, disclosed on the page, not
+      a quotation. The Italian renovation deduction in particular turns on
+      whether the flat becomes your main home and is reset by budget law, so
+      both rates are shown and neither is presented as settled.
+*/
+const INVEST = {
+  horizonYears: 30,
+  discountRate: 0.045,          /* real, applied to real cash flows          */
+  valueGrowthPct: 0.015,        /* capital growth per year                   */
+  rentGrowthPct: 0.015,
+
+  /* Getting in */
+  negotiationPct: 0.06,         /* asking → achievable; the same haircut the
+                                   value engine applies to portal prices     */
+  registryTaxPct: 0.09,         /* imposta di registro, not a main home      */
+  cadastralProxyPct: 0.60,      /* prezzo-valore base as a share of price — a
+                                   PROXY. The real base is the rendita
+                                   catastale revalued, which we do not have. */
+  registryMin: 1000,
+  agencyBuyPct: 0.03,
+  agencyVatPct: 0.22,
+  notaryFee: 2500,
+
+  /* Getting out */
+  sellCostPct: 0.03,
+  capitalGainsPct: 0.26,        /* plusvalenza, only inside the exempt window */
+  capitalGainsExemptYears: 5,
+
+  /* Coming back through the tax return */
+  worksDeductionRate: 0.36,     /* a property that is not your main home      */
+  worksDeductionRateMain: 0.50,
+  worksDeductionCap: 96000,     /* per real-estate unit                       */
+  furnitureDeductionRate: 0.50,
+  furnitureDeductionCap: 5000,  /* bonus mobili, requires a qualifying works  */
+  deductionYears: 10
+};
+
+/* One place that totals a project, so the cost tab and the investment tab
+   can never disagree about what the job costs. */
+function projectCosts(d, s) {
   const co = s.co || {};
-  const rows = (co.rows || []);
+  const rows = co.rows || [];
   const bom = (typeof allBOMItems === 'function' && typeof generateBOM === 'function')
     ? allBOMItems(generateBOM(s, d)) : [];
   const furniture = bom.reduce((t, it) => t + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
-
   const worksTotal = rows.reduce((t, r) => t + (r.amount || 0), 0);
   const labour = rows.reduce((t, r) => t + Math.round((r.amount || 0) * (LABOUR_SHARE[r.key] ?? 0.45)), 0);
-  const materials = worksTotal - labour;
   const permits = co.permit_fees || 0;
   const fees = co.professional_fees || 0;
   const contingency = co.contingency || 0;
   const vat = co.vat_allowance || 0;
-  const grand = worksTotal + permits + fees + contingency + vat + furniture;
+  const construction = worksTotal + permits + fees + contingency + vat;
+  return {
+    rows, bom, worksTotal, labour, materials: worksTotal - labour,
+    permits, fees, contingency, vat, furniture,
+    construction, grand: construction + furniture
+  };
+}
+
+/* Internal rate of return by bisection. Returns null when the cash flow
+   never changes sign, because an IRR does not exist for those. */
+function irrOf(flows) {
+  const npvAt = r => flows.reduce((t, cf, i) => t + cf / Math.pow(1 + r, i), 0);
+  let lo = -0.95, hi = 2.0;
+  if (npvAt(lo) * npvAt(hi) > 0) return null;
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2;
+    if (npvAt(lo) * npvAt(mid) <= 0) hi = mid; else lo = mid;
+  }
+  return Math.round(((lo + hi) / 2) * 1000) / 10;
+}
+
+function calcInvestment(d, s, opts) {
+  const K = { ...INVEST, ...(opts || {}) };
+  const v = s.vl || {};
+  const c = projectCosts(d, s);
+  const area = nPositive(v.area_basis_m2) || nPositive(d.area) || 0;
+
+  /* ---- 1. What it should cost to get in ------------------------------- */
+  const asking = nPositive(v.vB) || 0;
+  const omiLow = Array.isArray(v.OMI_range) && v.OMI_range[0] && area
+    ? Math.round(v.OMI_range[0] * area) : 0;
+  const omiHigh = Array.isArray(v.OMI_range) && v.OMI_range[1] && area
+    ? Math.round(v.OMI_range[1] * area) : 0;
+  /* The offer we would defend: the asking price less the achievable haircut.
+     It is deliberately NOT floored at the OMI band, because OMI quotes a
+     generic property in the zone and this is a specific flat — a dated one
+     legitimately transacts below the band bottom. The band is reported
+     beside the offer as a cross-check for the negotiation, not as a
+     constraint on it. */
+  const targetOffer = asking ? Math.round(asking * (1 - K.negotiationPct)) : 0;
+  const omiCheck = !omiLow ? null
+    : targetOffer < omiLow ? 'below the zone band — justified by condition, expect resistance'
+    : targetOffer > omiHigh ? 'above the zone band — the price is rich for this zone'
+    : 'inside the zone band';
+
+  const acquisitionOn = price => {
+    const taxBase = Math.round(price * K.cadastralProxyPct);
+    const registry = Math.max(K.registryMin, Math.round(taxBase * K.registryTaxPct));
+    const agency = Math.round(price * K.agencyBuyPct * (1 + K.agencyVatPct));
+    return { registry, agency, notary: K.notaryFee, total: registry + agency + K.notaryFee };
+  };
+
+  /* ---- 2. What comes back through the tax return ---------------------- */
+  const hasWorks = c.rows.length > 0;
+  const worksEligible = Math.min(c.construction, K.worksDeductionCap);
+  const furnEligible = hasWorks ? Math.min(c.furniture, K.furnitureDeductionCap) : 0;
+  const credit = rate => Math.round(worksEligible * rate) +
+                         Math.round(furnEligible * K.furnitureDeductionRate);
+  const creditTotal = credit(K.worksDeductionRate);
+  const creditTotalMain = credit(K.worksDeductionRateMain);
+  const creditPerYear = Math.round(creditTotal / K.deductionYears);
+
+  /* ---- 3. What comes back as rent ------------------------------------- */
+  /* Net operating income after the deductions the rent model itemises, then
+     after cedolare secca at the ordinary 21%. Deliberately NOT the gross
+     asking rent. */
+  const rentY1 = nPositive(v.rent_after_tax_flat) || 0;
+  const rentY1Concordato = nPositive(v.rent_after_tax_concordato) || 0;
+
+  /* ---- 4. The thirty years -------------------------------------------- */
+  const valueAt = y => Math.round((v.vA || 0) * Math.pow(1 + K.valueGrowthPct, y));
+
+  const runFrom = price => {
+    const acq = acquisitionOn(price);
+    const entry = price + acq.total + c.grand;
+
+    const saleAt = y => {
+      const gross = valueAt(y);
+      const costs = Math.round(gross * K.sellCostPct);
+      /* Plusvalenza applies only inside the exempt window, and its base is
+         the gain over everything documented as spent. */
+      const gain = Math.max(0, gross - costs - entry);
+      const cgt = y < K.capitalGainsExemptYears ? Math.round(gain * K.capitalGainsPct) : 0;
+      return { gross, costs, cgt, net: gross - costs - cgt };
+    };
+
+    const years = [];
+    let cumCash = 0;
+    const flows = [-entry];
+    let breakevenOnRent = null, breakevenOnSale = null;
+
+    /* Year 0 is the flip: works finished, sold immediately. */
+    const flip = saleAt(0);
+    years.push({
+      year: 0, rent: 0, credit: 0, cumCash: 0,
+      value: flip.gross, saleNet: flip.net, position: flip.net - entry
+    });
+    if (flip.net - entry >= 0) breakevenOnSale = 0;
+
+    for (let y = 1; y <= K.horizonYears; y++) {
+      const rent = Math.round(rentY1 * Math.pow(1 + K.rentGrowthPct, y - 1));
+      const cred = y <= K.deductionYears ? creditPerYear : 0;
+      cumCash += rent + cred;
+      flows.push(rent + cred);
+      const sale = saleAt(y);
+      const position = cumCash + sale.net - entry;
+      if (breakevenOnRent === null && cumCash >= entry) breakevenOnRent = y;
+      if (breakevenOnSale === null && position >= 0) breakevenOnSale = y;
+      years.push({
+        year: y, rent, credit: cred, cumCash: Math.round(cumCash),
+        value: sale.gross, saleNet: sale.net, position: Math.round(position)
+      });
+    }
+
+    /* NPV of holding the full horizon and then selling. */
+    let npv = -entry;
+    for (let y = 1; y <= K.horizonYears; y++) {
+      npv += (years[y].rent + years[y].credit) / Math.pow(1 + K.discountRate, y);
+    }
+    const exit = saleAt(K.horizonYears);
+    npv += exit.net / Math.pow(1 + K.discountRate, K.horizonYears);
+
+    const irrFlows = flows.slice();
+    irrFlows[irrFlows.length - 1] += exit.net;
+
+    return {
+      price, acq, entry, years, flip, exit,
+      npv: Math.round(npv),
+      irr: irrOf(irrFlows),
+      breakevenOnRent, breakevenOnSale,
+      totalRent: years.reduce((t, r) => t + r.rent, 0),
+      totalCredit: years.reduce((t, r) => t + r.credit, 0),
+      multiple: entry > 0
+        ? Math.round((years[K.horizonYears].position + entry) / entry * 100) / 100 : null,
+      grossYield: entry > 0 && v.annual_rent
+        ? Math.round((v.annual_rent / entry) * 1000) / 10 : null,
+      netYield: entry > 0 && rentY1
+        ? Math.round((rentY1 / entry) * 1000) / 10 : null
+    };
+  };
+
+  const atTarget = runFrom(targetOffer);
+  const atAsking = asking ? runFrom(asking) : atTarget;
+
+  /* ---- 5. The walk-away price ----------------------------------------- */
+  /* The highest price at which the thirty-year NPV is still zero. Above it
+     the deal destroys value however attractive the flat is. */
+  let maxBid = null;
+  if (asking > 0) {
+    let lo = 0, hi = asking * 2;
+    if (runFrom(lo).npv > 0) {
+      for (let i = 0; i < 60; i++) {
+        const mid = (lo + hi) / 2;
+        if (runFrom(mid).npv > 0) lo = mid; else hi = mid;
+      }
+      maxBid = Math.round(lo / 1000) * 1000;
+    }
+  }
+
+  /* ---- 6. The verdict -------------------------------------------------- */
+  const flipProfit = atTarget.flip.net - atTarget.entry;
+  let verdict, verdictTone, verdictWhy;
+  if (!asking) {
+    verdict = 'Not enough evidence';
+    verdictTone = '#7B8B96';
+    verdictWhy = 'No asking price has been supplied, so there is nothing to test a return against. Paste the listing link or enter the price.';
+  } else if (atTarget.npv > 0 && atTarget.irr != null && atTarget.irr >= K.discountRate * 100) {
+    verdict = 'Worth pursuing as a hold';
+    verdictTone = '#2E7D5B';
+    verdictWhy = 'Over thirty years the rent, the tax instalments and the sale clear the money going in, at a return above the ' +
+      (K.discountRate * 100).toFixed(1) + '% hurdle used here.';
+  } else if (atTarget.npv > 0) {
+    verdict = 'Marginal — depends on the rent holding';
+    verdictTone = '#C0703A';
+    verdictWhy = 'The thirty-year total is positive but the return is at or below the hurdle rate, so it rests on assumptions rather than on margin.';
+  } else {
+    verdict = 'Does not pay at this price';
+    verdictTone = '#B4541E';
+    verdictWhy = 'Even held for thirty years the flat does not return the money going into it at the assumed growth and rent. ' +
+      (maxBid ? 'It would need a purchase price around ' + fmt(maxBid) + '.' : '');
+  }
+
+  return {
+    assumptions: K,
+    area, asking, omiLow, omiHigh, omiCheck, targetOffer,
+    negotiationSaving: asking ? asking - targetOffer : 0,
+    costs: c,
+    credit: {
+      worksEligible, furnEligible, hasWorks,
+      total: creditTotal, totalMain: creditTotalMain,
+      perYear: creditPerYear,
+      rate: K.worksDeductionRate, rateMain: K.worksDeductionRateMain,
+      capped: c.construction > K.worksDeductionCap,
+      furnitureCapped: c.furniture > K.furnitureDeductionCap
+    },
+    rent: {
+      monthlyNet: nPositive(v.monthly_rent_net) || 0,
+      annualNet: nPositive(v.annual_rent_net) || 0,
+      afterTaxFlat: rentY1,
+      afterTaxConcordato: rentY1Concordato,
+      thirtyYear: atTarget.totalRent
+    },
+    uplift: {
+      before: v.vB || 0, after: v.vA || 0,
+      gain: Math.round((v.vA || 0) - (v.vB || 0)),
+      pct: v.vB ? Math.round(((v.vA / v.vB) - 1) * 1000) / 10 : 0
+    },
+    flip: { profit: Math.round(flipProfit), ...atTarget.flip },
+    atTarget, atAsking, maxBid,
+    verdict, verdictTone, verdictWhy
+  };
+}
+
+/* Palette validated for this surface (#F3F7FC) against the six colour
+   checks — lightness band, chroma, CVD separation, normal-vision floor and
+   contrast — so the three scenario lines stay distinguishable. */
+const SCENARIO_COLOR = { Essential: '#3479A8', Balanced: '#C0703A', Premium: '#8E6FBF' };
+
+/* Where you would stand if you sold in year N: the rent and tax instalments
+   banked by then, plus the net sale proceeds, less everything put in. One
+   money axis, so no second scale is needed. */
+function EquityChart({ series, horizon }) {
+  const h = React.createElement;
+  const [hov, setHov] = React.useState(null);
+  if (!series.length) return null;
+
+  const W = 720, H = 300, padL = 66, padR = 86, padT = 16, padB = 32;
+  const pts = series.flatMap(s => s.points.map(p => p.position));
+  const rawMin = Math.min(0, ...pts), rawMax = Math.max(0, ...pts);
+  const pad = (rawMax - rawMin) * 0.08 || 1000;
+  const min = rawMin - pad, max = rawMax + pad;
+
+  const x = y => padL + (y / horizon) * (W - padL - padR);
+  const yPos = v => padT + (1 - (v - min) / (max - min)) * (H - padT - padB);
+
+  const kEur = n => (Math.abs(n) >= 1000 ? Math.round(n / 1000) + 'k' : Math.round(n)) + ' €';
+  const gridVals = [0, 0.25, 0.5, 0.75, 1].map(t => min + t * (max - min));
+
+  const axis = { stroke: '#D8E2EC', strokeWidth: 1 };
+  const label = { fontSize: 10.5, fill: '#7B8B96' };
+
+  return h("div", { style: { marginTop: 10 } },
+    /* Legend — always present for 3 series, and each line is direct-labelled
+       at its end as well, so identity never rests on colour alone. */
+    h("div", { style: { display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 6, fontSize: 11.5 } },
+      series.map(s => h("span", { key: s.name, style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+        h("span", { style: { width: 14, height: 3, borderRadius: 2, background: s.color } }), s.name))),
+
+    h("svg", {
+      viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img',
+      style: { display: 'block', maxWidth: '100%', overflow: 'visible' },
+      onMouseLeave: () => setHov(null)
+    },
+      gridVals.map((gv, i) => h("g", { key: 'g' + i },
+        h("line", { x1: padL, x2: W - padR, y1: yPos(gv), y2: yPos(gv), ...axis }),
+        h("text", { x: padL - 8, y: yPos(gv) + 3.5, textAnchor: 'end', ...label }, kEur(gv)))),
+
+      /* Breakeven is the line that matters, so it is drawn darker. */
+      min < 0 && max > 0 ? h("g", null,
+        h("line", { x1: padL, x2: W - padR, y1: yPos(0), y2: yPos(0), stroke: '#9AA7B2', strokeWidth: 1.5, strokeDasharray: '4 3' }),
+        h("text", { x: W - padR + 4, y: yPos(0) + 3.5, fontSize: 10, fill: '#7B8B96' }, 'break even')) : null,
+
+      [0, 5, 10, 15, 20, 25, 30].filter(t => t <= horizon).map(t =>
+        h("text", { key: 't' + t, x: x(t), y: H - 10, textAnchor: 'middle', ...label },
+          t === 0 ? 'sell now' : 'yr ' + t)),
+
+      series.map(s => h("path", {
+        key: s.name, fill: 'none', stroke: s.color, strokeWidth: 2,
+        strokeLinejoin: 'round', strokeLinecap: 'round',
+        d: s.points.map((p, i) => (i ? 'L' : 'M') + x(p.year) + ' ' + yPos(p.position)).join(' ')
+      })),
+
+      /* Direct label at the end of each line. */
+      series.map(s => {
+        const last = s.points[s.points.length - 1];
+        return h("text", {
+          key: 'l' + s.name, x: x(last.year) + 6, y: yPos(last.position) + 3.5,
+          fontSize: 11, fontWeight: 700, fill: s.color
+        }, s.name);
+      }),
+
+      hov != null ? h("g", null,
+        h("line", { x1: x(hov), x2: x(hov), y1: padT, y2: H - padB, stroke: '#9AA7B2', strokeWidth: 1 }),
+        series.map(s => {
+          const p = s.points.find(q => q.year === hov);
+          return p ? h("circle", {
+            key: 'm' + s.name, cx: x(hov), cy: yPos(p.position), r: 4.5,
+            fill: s.color, stroke: '#FFFFFF', strokeWidth: 2
+          }) : null;
+        })) : null,
+
+      /* Hit targets wider than the marks. */
+      Array.from({ length: horizon + 1 }, (_, t) => h("rect", {
+        key: 'h' + t, x: x(t) - (W - padL - padR) / (horizon * 2), y: padT,
+        width: (W - padL - padR) / horizon, height: H - padT - padB,
+        fill: 'transparent', onMouseEnter: () => setHov(t)
+      }))),
+
+    hov != null ? h("div", {
+      style: {
+        marginTop: 6, fontSize: 12.5, background: '#fff', border: '1px solid #E2DCD2',
+        borderRadius: 6, padding: '8px 10px', display: 'inline-block'
+      }
+    },
+      h("strong", null, hov === 0 ? 'Sell as soon as the works finish' : 'Sell in year ' + hov), ' — ',
+      series.map((s, i) => {
+        const p = s.points.find(q => q.year === hov);
+        return h("span", { key: s.name },
+          i ? ' · ' : '',
+          h("span", { style: { color: s.color, fontWeight: 700 } }, s.name), ' ',
+          p ? fmt(p.position) : '—');
+      })) :
+      h("p", { style: { fontSize: 12, color: '#7B8B96', marginTop: 6 } },
+        'Hover any year to read what you would walk away with if you sold then.'));
+}
+
+function InvestmentCase({ d, s, sols, reportMode }) {
+  const h = React.createElement;
+  let inv;
+  try { inv = calcInvestment(d, s); } catch (err) { inv = null; }
+  if (!inv) return h("section", { className: "basis-card" },
+    h("h3", null, "Investment case"),
+    h("p", null, "The value model has not produced figures for this scenario yet."));
+
+  const K = inv.assumptions;
+  const t = inv.atTarget;
+  const money = n => fmt(n);
+  const pc = n => n == null ? '—' : n + '%';
+
+  const tile = (labelText, value, note, tone) => h("div", null,
+    h("small", null, labelText),
+    h("strong", tone ? { style: { color: tone } } : null, value),
+    note ? h("span", null, note) : null);
+
+  /* Rest args, not a single `body` — several of these sections carry a table
+     AND a note under it, and a fixed third parameter silently swallowed the
+     note. */
+  const section = (title, subtitle, ...body) => h("div", { style: { marginTop: 18 } },
+    h("h4", { style: { fontSize: 15, fontWeight: 700, color: '#3479A8', margin: '0 0 2px' } }, title),
+    subtitle ? h("p", { style: { fontSize: 12.5, color: '#7B8B96', margin: '0 0 8px' } }, subtitle) : null,
+    ...body);
+
+  const row = (labelText, amount, note) => h("tr", { key: labelText },
+    h("td", null, labelText), h("td", null, money(amount)),
+    h("td", { style: { color: '#7B8B96', fontSize: 12.5 } }, note || ''));
+
+  const totalRow = (labelText, amount, note) => h("tr", { key: labelText, style: { fontWeight: 700 } },
+    h("td", null, labelText), h("td", null, money(amount)),
+    h("td", { style: { color: '#7B8B96', fontSize: 12.5, fontWeight: 400 } }, note || ''));
+
+  /* All three scenarios on one axis, so the tab answers "which one" and not
+     only "is this one worth it". */
+  const series = (sols || [s]).map(sc => {
+    let c = null;
+    try { c = calcInvestment(d, sc); } catch (err) { c = null; }
+    return c ? {
+      name: sc.nm, color: SCENARIO_COLOR[sc.nm] || '#7B8B96',
+      points: c.atTarget.years.map(y => ({ year: y.year, position: y.position }))
+    } : null;
+  }).filter(Boolean);
+
+  /* Every fifth year on screen; the full table only in the exported report,
+     where there is room for thirty rows. */
+  const shown = reportMode
+    ? t.years
+    : t.years.filter(y => y.year === 0 || y.year % 5 === 0 || y.year === 1 || y.year === 10);
+
+  return h("section", { className: "basis-card" },
+    h("h3", null, s.nm, " · Return on investment and investment decision"),
+
+    h("div", {
+      style: {
+        marginTop: 10, padding: '12px 14px', borderRadius: 8,
+        background: '#FAFCFE', borderLeft: '4px solid ' + inv.verdictTone
+      }
+    },
+      h("strong", { style: { color: inv.verdictTone, fontSize: 16 } }, inv.verdict),
+      h("p", { style: { margin: '4px 0 0', fontSize: 13.5 } }, inv.verdictWhy)),
+
+    h("div", { className: "area-evidence", style: { marginTop: 14 } },
+      tile('Offer to aim for', money(inv.targetOffer),
+        inv.asking ? money(inv.negotiationSaving) + ' below the ' + money(inv.asking) + ' asking price' : 'no asking price supplied',
+        '#3479A8'),
+      tile('Total money in', money(t.entry),
+        'purchase, taxes and fees, works, furniture'),
+      tile('30-year net present value', money(t.npv),
+        'at a ' + (K.discountRate * 100).toFixed(1) + '% discount rate',
+        t.npv >= 0 ? '#2E7D5B' : '#B4541E'),
+      tile('Annual return', pc(t.irr),
+        t.irr == null ? 'no sign change in the cash flow' : 'IRR over ' + K.horizonYears + ' years',
+        t.irr != null && t.irr >= K.discountRate * 100 ? '#2E7D5B' : '#C0703A')),
+
+    section('1 · Getting in',
+      'What it takes to own the finished flat. The offer is the asking price less the haircut between asking and achievable prices.',
+      h("div", { className: "table-scroll" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "Money in"), h("th", null, "Amount"), h("th", null, "Basis"))),
+          h("tbody", null, [
+            row('Purchase price', inv.targetOffer,
+              inv.asking ? (K.negotiationPct * 100) + '% below the ' + money(inv.asking) + ' announcement' : 'no announcement price'),
+            inv.omiCheck ? row('OMI cross-check', inv.omiLow,
+              'zone band ' + money(inv.omiLow) + ' – ' + money(inv.omiHigh) + ' for ' + inv.area +
+              ' m² · the offer sits ' + inv.omiCheck) : null,
+            row('Imposta di registro', t.acq.registry,
+              (K.registryTaxPct * 100) + '% on a cadastral base proxied at ' + (K.cadastralProxyPct * 100) + '% of price'),
+            row('Agency commission', t.acq.agency,
+              (K.agencyBuyPct * 100) + '% plus ' + (K.agencyVatPct * 100) + '% VAT'),
+            row('Notary', t.acq.notary, 'allowance'),
+            row('Construction works', inv.costs.construction,
+              'works, permits, professional fees, contingency and VAT'),
+            row('Furniture and appliances', inv.costs.furniture,
+              inv.costs.bom.length + ' specified items'),
+            totalRow('Total invested', t.entry, 'the number every return below is measured against')
+          ]))),
+
+      h("p", { style: { fontSize: 12.5, color: '#7B8B96', marginTop: 6 } },
+        inv.maxBid
+          ? 'Walk-away price: above ' + money(inv.maxBid) + ' the thirty-year net present value turns negative, however attractive the flat is.'
+          : 'A walk-away price could not be solved — the deal does not reach a positive net present value at any purchase price under these assumptions.')),
+
+    section('2 · What comes back',
+      'Three separate returns, none of which double counts another.',
+      h("div", { className: "table-scroll" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "Money back"), h("th", null, "Amount"), h("th", null, "Basis"))),
+          h("tbody", null, [
+            row('Value at completion', inv.uplift.after,
+              'up ' + money(inv.uplift.gain) + ' (' + inv.uplift.pct + '%) on ' + money(inv.uplift.before)),
+            row('Net rent, year 1', inv.rent.afterTaxFlat,
+              money(inv.rent.monthlyNet) + '/month after costs, then cedolare secca at 21%'),
+            row('Net rent, 30 years', inv.rent.thirtyYear,
+              'growing ' + (K.rentGrowthPct * 100) + '% a year'),
+            row('Renovation tax credit', inv.credit.total,
+              (inv.credit.rate * 100) + '% of ' + money(inv.credit.worksEligible) +
+              (inv.credit.capped ? ' (capped at ' + money(K.worksDeductionCap) + ')' : '') +
+              (inv.credit.furnEligible ? ' plus bonus mobili on ' + money(inv.credit.furnEligible) : '')),
+            row('Tax credit per year', inv.credit.perYear, 'for ' + K.deductionYears + ' years'),
+            row('Value in year ' + K.horizonYears, t.exit.gross,
+              'growing ' + (K.valueGrowthPct * 100) + '% a year from completion'),
+            totalRow('Net proceeds if sold in year ' + K.horizonYears, t.exit.net,
+              'after ' + (K.sellCostPct * 100) + '% selling costs; no plusvalenza after ' +
+              K.capitalGainsExemptYears + ' years of ownership')
+          ]))),
+
+      h("p", { style: { fontSize: 12.5, color: '#7B8B96', marginTop: 6 } },
+        'The energy saving is deliberately absent from this table. In a let flat the tenant pays the bills, ',
+        'and the saving is already inside the rent and the resale value — counting it again here is how ',
+        'renovation returns get overstated. It is quantified in the energy tabs.')),
+
+    section('3 · Thirty years, and when it turns',
+      'Where you would stand if you sold in any given year: rent and tax instalments banked, plus net sale proceeds, less everything put in.',
+      h(EquityChart, { series, horizon: K.horizonYears })),
+
+    section('4 · Sell now or hold',
+      'The same flat, two exits.',
+      h("div", { className: "area-evidence" },
+        tile('Sell as soon as works finish', money(inv.flip.profit),
+          inv.flip.cgt ? 'after ' + money(inv.flip.cgt) + ' plusvalenza at ' + (K.capitalGainsPct * 100) + '%' : 'no plusvalenza',
+          inv.flip.profit >= 0 ? '#2E7D5B' : '#B4541E'),
+        tile('Hold ' + K.horizonYears + ' years, then sell',
+          money(t.years[K.horizonYears].position),
+          'rent and credits banked plus net sale proceeds',
+          t.years[K.horizonYears].position >= 0 ? '#2E7D5B' : '#B4541E'),
+        tile('Rent alone repays the outlay',
+          t.breakevenOnRent ? 'year ' + t.breakevenOnRent : 'not within ' + K.horizonYears + ' years',
+          'ignoring any sale'),
+        tile('Net yield on total invested', pc(t.netYield),
+          'year-1 net rent after tax over money in'))),
+
+    section('5 · Year by year',
+      reportMode ? 'Every year of the horizon.' : 'Selected years — the exported report carries all thirty.',
+      h("div", { className: "table-scroll" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "Year"), h("th", null, "Net rent"), h("th", null, "Tax credit"),
+            h("th", null, "Banked to date"), h("th", null, "Property value"),
+            h("th", null, "If sold that year"))),
+          h("tbody", null, shown.map(y => h("tr", {
+            key: y.year,
+            style: y.year === t.breakevenOnSale ? { fontWeight: 700, background: '#F2F9F5' } : null
+          },
+            h("td", null, y.year === 0 ? 'At completion' : y.year),
+            h("td", null, y.rent ? money(y.rent) : '—'),
+            h("td", null, y.credit ? money(y.credit) : '—'),
+            h("td", null, money(y.cumCash)),
+            h("td", null, money(y.value)),
+            h("td", { style: { color: y.position >= 0 ? '#2E7D5B' : '#B4541E' } }, money(y.position))))))),
+      t.breakevenOnSale != null
+        ? h("p", { style: { fontSize: 12.5, color: '#7B8B96', marginTop: 6 } },
+            'The highlighted row is the first year in which selling returns more than was put in.')
+        : null),
+
+    h("details", { style: { marginTop: 16 } },
+      h("summary", { style: { cursor: 'pointer', fontWeight: 600, fontSize: 13 } },
+        "Every assumption behind these figures"),
+      h("div", { style: { fontSize: 12.5, color: '#4A5A66', marginTop: 8 } },
+        h("p", null,
+          h("strong", null, "Rates are planning assumptions, not quotations. "),
+          "Confirm the fiscal ones with your commercialista before committing money — the ",
+          "renovation deduction in particular depends on whether the flat becomes your main ",
+          "home and is reset by each budget law."),
+        h("ul", { style: { margin: '6px 0 0 18px' } }, [
+          ['Discount rate', (K.discountRate * 100).toFixed(1) + '% real, applied to real cash flows'],
+          ['Capital growth', (K.valueGrowthPct * 100) + '% a year from completion'],
+          ['Rent growth', (K.rentGrowthPct * 100) + '% a year'],
+          ['Renovation deduction', (K.worksDeductionRate * 100) + '% used here, for a property that is not your main home, capped at ' +
+            money(K.worksDeductionCap) + ' per unit and spread over ' + K.deductionYears + ' years. As a main home it would be ' +
+            (K.worksDeductionRateMain * 100) + '%, worth ' + money(inv.credit.totalMain) + ' instead of ' + money(inv.credit.total) + '.'],
+          ['Bonus mobili', (K.furnitureDeductionRate * 100) + '% of furniture, capped at ' + money(K.furnitureDeductionCap) +
+            ', and only where qualifying works are carried out'],
+          ['Imposta di registro', (K.registryTaxPct * 100) + '% on a cadastral base. The real base is the rendita catastale revalued, which we do not have, so it is proxied at ' +
+            (K.cadastralProxyPct * 100) + '% of the price — check it against the visura.'],
+          ['Purchase costs', (K.agencyBuyPct * 100) + '% agency plus ' + (K.agencyVatPct * 100) + '% VAT, and a ' + money(K.notaryFee) + ' notary allowance'],
+          ['Selling costs', (K.sellCostPct * 100) + '% of the sale price'],
+          ['Plusvalenza', (K.capitalGainsPct * 100) + '% on the gain, applied only to a sale inside ' + K.capitalGainsExemptYears + ' years of purchase'],
+          ['Rent basis', 'net operating income after the itemised deductions, then cedolare secca at 21%. At the 10% canone concordato rate year 1 would be ' + money(inv.rent.afterTaxConcordato) + '.'],
+          ['Excluded', 'mortgage interest, IMU, furnishing replacement, void periods beyond the vacancy allowance already in the rent model, and any renovation overrun beyond the contingency']
+        ].map(([k, vTxt]) => h("li", { key: k, style: { marginBottom: 3 } },
+          h("strong", null, k), ' — ', vTxt))))));
+}
+
+function CostBreakdown({ d, s }) {
+  const h = React.createElement;
+  /* Shared with the investment tab, so the two can never disagree about
+     what this job costs. */
+  const c = projectCosts(d, s);
+  const { rows, bom, worksTotal, labour, materials,
+          permits, fees, contingency, vat, furniture, grand } = c;
 
   const money = n => fmt(n);
   const pct = n => grand > 0 ? ((n / grand) * 100).toFixed(1) + '%' : '—';
