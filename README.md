@@ -54,7 +54,7 @@ browser and never appears in this repository.
    |---|---|---|
    | `GEMINI_API_KEY` | Secret | your key from https://aistudio.google.com/apikey |
    | `ADMIN_SECRET` | Secret | any long random string you invent |
-   | `ALLOWED_ORIGIN` | Variable | *(optional)* your site URL, e.g. `https://iltuoarchitetto.netlify.app` |
+   | `ALLOWED_ORIGIN` | Variable | *(optional)* `https://iltuoarchitetto2dto5d.netlify.app` |
    | `REQUIRE_TOKEN` | Variable | *(optional)* `true` to refuse visitors without an access link |
 
 4. Copy the Worker URL and put it in `assets/js/config.js`:
@@ -225,7 +225,7 @@ Open `admin.html` on your site, enter the Worker URL and your `ADMIN_SECRET`,
 then create a link. You get something like:
 
 ```
-https://your-site.netlify.app/demo.html?token=9f3c1a2b...
+https://iltuoarchitetto2dto5d.netlify.app/standalone.html?token=9f3c1a2b...
 ```
 
 Send that to the customer. The page shows them how many reports remain, and
@@ -256,6 +256,15 @@ You can revoke or reactivate any link from `admin.html`.
    → pick `aniakh/Iltuoarchitetto`, branch `main`.
 2. Build command: **empty**. Publish directory: `.`
 3. **Site configuration → Change site name** to pick your subdomain.
+
+The site is live at **https://iltuoarchitetto2dto5d.netlify.app**:
+
+| Page | What it is |
+|---|---|
+| [`/`](https://iltuoarchitetto2dto5d.netlify.app/) | The bilingual landing page |
+| [`/standalone.html`](https://iltuoarchitetto2dto5d.netlify.app/standalone.html) | The single-file vitrine + planner — this is what you send to clients |
+| [`/demo.html`](https://iltuoarchitetto2dto5d.netlify.app/demo.html) | The same planner, served from `assets/` |
+| `/admin.html` | Private: mint customer links (noindex) |
 
 Pushes to `main` redeploy automatically. The landing page's two contact forms
 use Netlify Forms — enable **Forms** in the site settings to collect them.

@@ -20,7 +20,7 @@
  *      GEMINI_API_KEY   (Secret)    your AIza... key from aistudio.google.com
  *      ADMIN_SECRET     (Secret)    any long random string you invent; it protects
  *                                   the /admin endpoints and the admin page
- *      ALLOWED_ORIGIN   (Variable)  optional, e.g. https://yoursite.netlify.app
+ *      ALLOWED_ORIGIN   (Variable)  optional, e.g. https://iltuoarchitetto2dto5d.netlify.app
  *                                   leave unset to allow all origins
  *      REQUIRE_TOKEN    (Variable)  optional, "true" to refuse visitors who have
  *                                   no access link at all. Default: open demo.
