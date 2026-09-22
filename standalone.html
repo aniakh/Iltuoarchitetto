@@ -1169,12 +1169,14 @@ window.GEMINI_PROXY = "https://iltuoarchitetto-proxy.ania-khodabakhshian.workers
    * level, or null when nothing usable came back.
    */
   var marketCache = {};
-  ITA.marketLookup = function (comune, province) {
+  ITA.marketLookup = function (comune, province, force) {
     if (!PROXY || !comune) return Promise.resolve(null);
     var key = String(comune).toLowerCase() + "|" + (province || "");
-    if (marketCache[key]) return Promise.resolve(marketCache[key]);
+    if (!force && marketCache[key]) return Promise.resolve(marketCache[key]);
+    if (force) delete marketCache[key];
     var qs = "?comune=" + encodeURIComponent(comune) +
-             (province ? "&province=" + encodeURIComponent(province) : "");
+             (province ? "&province=" + encodeURIComponent(province) : "") +
+             (force ? "&refresh=1" : "");
     return fetch(PROXY + "/market-lookup" + qs)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
@@ -1918,6 +1920,431 @@ async function detectBestModels(apiKey) {
   }
   return AI_MODELS;
 }
+/* ── Plan & render prompt engine, ported from the detailed_one build ──────
+
+   The envelope is treated as a hard geometric constraint rather than a
+
+   stylistic preference. Per-scenario clauses control only how much the
+
+   INTERNAL layout may change; the shell is frozen in every scenario. */
+
+const RENDER_REGS_PROMPT = `STRICT ITALIAN BUILDING CODE COMPLIANCE (DM 5/7/1975 + Reg.Ed. Milano + DM 236/1989):
+- Min ceiling 2.70m (2.40m in renovation existing)
+- Living room ≥ 14m² (≥ 17m² if open kitchen), kitchen ≥ 5m²
+- Double bedroom ≥ 14m², single ≥ 9m², bath min side 1.20m
+- Windows openable ≥ 1/10 floor area, illuminating ≥ 1/8 floor area
+- Door clear width ≥ 80cm entrance, ≥ 75cm internal
+- Corridor ≥ 100cm, wheelchair turn 150cm in at least one bathroom
+- Furniture and circulation must respect these — NO undersized rooms or blocked windows`;
+
+const STRICT_BOUNDARY_PROTOCOL = `
+████ STRICT BOUNDARY PROTOCOL — 100% HARD CONSTRAINTS (NON-NEGOTIABLE) ████
+The ORIGINAL uploaded plan is the SOLE source of truth for geometry. Every point
+of the proposal MUST lie inside the original apartment polygon (P_proposed ⊆
+P_original ; ΔBoundary = 0). Proposed net area ≤ original net area
+(A_proposed ≤ A_original). NEVER invent, extend, redraw or generate anything
+outside the original footprint. Blank areas of the drawing are NOT usable space.
+
+IMMUTABLE — reproduce IDENTICALLY from the original (locked elements):
+• external / perimeter walls (position, length, thickness)
+• apartment entrance door — same wall, position, orientation, access side
+• every window and every external / French door / façade opening — same count,
+  position, wall association, sequence along each façade, orientation
+• overall footprint, shape, orientation and proportions.
+
+NEVER (auto-reject if detected):
+• add ANY room, space, balcony, terrace, corridor, storage or technical space
+  outside the original footprint • add floor area • enlarge, shrink, rotate or
+  distort the apartment • move / demolish / shorten / lengthen / reshape an
+  external wall • move the entrance or add a second entrance • add, remove or
+  move a window • convert a window into a door or a door into a window • draw a
+  window on an internal wall • omit an existing external opening • occupy common
+  areas, stairs, shafts or neighbouring units • create hidden or inaccessible
+  rooms • use artistic licence to change geometry.
+
+ALLOWED — ONLY inside the locked boundary:
+• add / remove / move non-load-bearing internal partitions and internal doors
+• split one room into smaller ones • merge rooms • enlarge one room by shrinking
+an adjacent one • reorganise circulation, kitchens, baths, storage • change
+finishes, materials, furniture. A new function (e.g. a study) may be created
+ONLY by carving it out of existing internal area — NEVER as added area.
+
+UNCERTAINTY: if a wall's structural role is unclear, treat it as protected and
+do NOT modify it. If the boundary or an immutable element cannot be read
+confidently, DO NOT invent — preserve the original exactly.
+
+RENDERS: build the 3D view strictly from the approved post-intervention plan —
+same rooms, sequence, adjacencies, wall/door/window positions and entrance.
+Show only what is genuinely visible from the camera; never invent a door, arch,
+opening, window or room, never reorder spaces to look nicer. Geometric accuracy
+always outranks aesthetics. When in doubt, preserve the plan.
+`;
+
+const COMPLIANCE_BRIEF = `
+████ V7 UNIFIED AGENT — ENVELOPE-INVARIANCE HARD GATE ████
+A proposed plan is ACCEPTED only if 100% of the applicable Italian/Lombardy
+rules below hold AND every element of this FROZEN list is IDENTICAL to the
+existing state:
+  • external / perimeter walls (sagoma RET-DTU-18) — position & thickness
+  • main entrance door — position, width, swing
+  • overall apartment shape, footprint & net area (SCOP, VT) — unchanged
+  • ALL exterior openings: windows AND balcony / French doors (porte-finestra
+    verso balconi, logge e terrazzi) — count, position, size, sill all locked
+  • load-bearing structure (muri portanti, pilastri, travi, solai)
+  • plumbing risers (colonne montanti)
+THE ONLY ELEMENTS THAT MAY CHANGE are INTERNAL, NON-STRUCTURAL partitions
+(tramezzi ≤ 60 kg/m²) and INTERNAL doors — add / remove / relocate / resize —
+provided they touch nothing on the FROZEN list. An internal wall that is
+load-bearing stays FROZEN and is flagged "seismic-restricted", never moved.
+ANY deviation from the FROZEN list ⇒ REJECTED — HARD CONSTRAINT VIOLATION ⇒
+the plan must be regenerated. A user preference NEVER overrides a hard
+constraint (v7 §1.1). Never label output "compliant/approved/certified" (v7 §1.7).
+
+████ ITALY + LOMBARDY BUILDING CODE — HARD CONSTRAINTS (DM 5/7/1975 · DM 236/1989 · L.R. 12/2005 · DPR 380/2001 · NTC 2018 · D.Lgs 192/2005 · D.Lgs 42/2004) ████
+
+DIMENSIONS (must hold post-renovation):
+• Habitable rooms ≥ 2.70 m ceiling · Bathrooms/corridors/storage ≥ 2.40 m
+• Single bedroom ≥ 9 m² · Double bedroom ≥ 14 m² · Living ≥ 14 m²
+• Studio ≥ 28 m² (1p) / 38 m² (2p)
+• Every habitable room MUST have an openable window to exterior
+• Window/floor ratio RAI ≥ 1/8 · FLDm ≥ 2% · Bathroom window ≥ 0.50 m² OR mechanical extraction ≥ 6 vol/h
+
+ACCESSIBILITY (DM 236/1989):
+• Main entrance clear ≥ 80 cm · Internal doors clear ≥ 75 cm
+• Corridor width ≥ 100 cm (turning Ø 140 cm if length > 10 m)
+• Accessible bathroom: wheelchair turn Ø 150 cm · WC lateral clear ≥ 80 cm · Washbasin frontal clear ≥ 80 cm
+• Switches/thermostats 40-140 cm height
+
+STRUCTURAL & SEISMIC (L.R. 33/2015 + NTC 2018):
+• Load-bearing walls/columns/beams: UNTOUCHED. Any opening flagged "seismic-restricted"
+• New partitions ≤ 60 kg/m² (lightweight plasterboard) unless slab verified
+• Plumbing risers (colonne montanti): cannot cross slabs
+
+ENERGY (D.Lgs. 192/2005, Lombardy zone E):
+• U_wall ≤ 0.26 · U_roof ≤ 0.22 · U_window ≤ 1.40 W/m²K
+• RES quota ≥ 60% DHW, ≥ 50% total
+• South/west glazing > 25% wall → mandatory external shading
+
+NEVER:
+✗ Place habitable room with no openable exterior window
+✗ Move external walls, entrance door, windows, or balcony/French doors (porte-finestra) by 1cm
+✗ Add, remove, resize or reposition any exterior opening
+✗ Change the overall apartment shape, footprint or net floor area
+✗ Place kitchen/bedroom/living above neighbour's bathroom
+✗ Reduce corridor < 100 cm or door clear < 75 cm
+✗ Reduce habitable ceiling < 2.70 m
+✗ Touch any load-bearing element silently
+✗ Internal bathroom without mechanical extraction
+✗ Bedroom in piano interrato without secondary escape
+
+ONLY internal non-structural partitions and internal doors may be modified.
+
+PERMITS: CILA (non-structural internal partitions/doors) · SCIA (light renovation) · PdC (heavy renovation, load-bearing changes). Heritage: requires Soprintendenza authorization.`;
+
+const PLAN_AGENT_BRIEF = `
+████ YOU ARE A REGULATION-AWARE ITALIAN/LOMBARDY FLOOR-PLAN OPTIMIZER ████
+Modify the EXISTING plan ONLY within the legal envelope below. Treat every
+dimensional, structural, seismic, energy, lighting, ventilation, hygiene and
+planning requirement as a HARD CONSTRAINT. If two rules differ, apply the
+STRICTER one. Never output a layout that violates a hard constraint.
+
+ABSOLUTE NON-MODIFIABLE ELEMENTS (do NOT change — flag HIGH RISK if touched):
+external walls · façade geometry · window position/size/number · balcony &
+French doors / porte-finestra (position/size/number) · main entrance door ·
+building volume/footprint/height · overall apartment net floor area · roof
+geometry · structural columns, beams, load-bearing walls, slabs · stair &
+elevator cores · balconies/terraces · technical/drainage/ventilation/gas shafts
+& risers (colonne montanti) · centralized MEP & envelope insulation layers.
+
+PERMITTED — INTERNAL, NON-STRUCTURAL ONLY (the sole allowed changes):
+move / add / remove / resize lightweight internal partitions (tramezzi
+≤60 kg/m²) · add / remove / relocate / re-hinge INTERNAL doors · merge or split
+rooms WITHIN the fixed envelope · relocate wet rooms ONLY toward existing
+drainage/soil stacks · open kitchen to living by removing a NON-load-bearing
+partition. No exterior opening (window or balcony door) and no perimeter/
+load-bearing wall is ever moved — the envelope stays pixel-identical. NO new
+room, space, balcony, terrace or extension may be added, and nothing may be
+drawn outside the original apartment perimeter — the renovation only
+redistributes the existing internal area.
+
+D.M. 5/7/1975 + RLI Titolo III ROOM MINIMUMS (pass/fail, every habitable room):
+• Habitable ceiling ≥ 2.70 m · accessory (bath/corridor/storage) ≥ 2.40 m
+• Single bedroom ≥ 9 m² (≥24 m³) · double ≥ 14 m² (≥38 m³) · living ≥ 14 m²
+• Monostanza ≥ 28 m² (1 occ.) / ≥ 38 m² (2 occ.); 14 m²/person first 4 occupants
+• Every bedroom/living/kitchen MUST have an openable exterior window
+• Daylight factor ≥ 2% · openable window ≥ 1/8 floor area (RAI) · ventilation ≥ 1/10
+• Bathroom: external openable window ≥ 0.50 m² OR mechanical extraction
+  (≥6 vol/h continuous / ≥12 vol/h intermittent); complete bath ≥ 4.00 m² (RLI)
+• Separate cooking space ≥ 3.00 m²; kitchen needs forced extraction to outside
+• NO blind bedrooms/living rooms · NO bedrooms/living in basement/semi-basement
+• Corridors > 10 m or ≥ 20 m² without openings need ventilation
+
+D.P.R. 380/2001 INTERVENTION CLASS — keep changes within "manutenzione
+straordinaria" (no volume change, same use, no façade/structural/envelope
+change). Anything beyond = SCIA/PdC + HIGH RISK.
+
+L.R. 33/2015 SEISMIC — any opening/removal in load-bearing masonry, new slab
+opening, new internal stair, mezzanine or load increase = "seismic-restricted:
+requires structural project + deposit/authorization". Do NOT auto-apply.
+
+D.Lgs 192/2005 ENERGY — do not create new heated volume, change windows or
+envelope, or relocate/replace heating-cooling-DHW-ventilation without flagging
+an energy-performance check. Works > 25% gross dispersing surface = ristrutturazione
+importante; > 50% + full plant = first-level. U-limits (Lombardy zone E):
+U_wall ≤ 0.26 · U_roof ≤ 0.22 · U_window ≤ 1.40 W/m²K · RES ≥ 50% total.
+
+DRAINAGE FEASIBILITY — every relocated bath/kitchen/laundry must connect by
+gravity to an EXISTING stack; never route drainage through beams/slabs; flag
+macerator/raised-floor/pump needs.
+
+ACCESSIBILITY (D.M. 236/1989) — main door clear ≥ 80 cm · internal ≥ 75 cm ·
+corridor ≥ 100 cm · keep at least visitability; preserve adaptability.
+
+OUTPUT a plan that is "manutenzione straordinaria"-grade: zero-sum internal area
+redistribution within the SAME ${"$"}{1}m² envelope, every room passing the table
+above, wet rooms on existing stacks, no element from the non-modifiable list
+altered. The 2D plan must be IDENTICAL in envelope to the original — only
+internal partitions differ.`;
+
+function renderPrompt(d,sol,room){
+  const th=STYLES[d.style]||STYLES.Japandi;
+  const tier=sol.nm==="Premium"?"high-end finish materials and premium furniture":sol.nm==="Balanced"?"quality mid-range finishes and tasteful furniture":"clean budget-conscious finishes and practical furniture";
+  const base=d.style+" interior design, "+th.desc+", "+th.mat+", "+tier;
+  /* Per-scenario INTERNAL flexibility. The envelope (external walls, entrance,
+     windows, balcony doors, footprint, load-bearing structure, risers) is ALWAYS
+     frozen; only the freedom to change INTERNAL partitions/doors/room-placement
+     grows from Essential → Balanced → Premium. This clause overrides the general
+     "internal partitions may change" rule of the boundary protocol above. */
+  const flexClause = sol.nm==="Essential" ? `
+████ SCENARIO: ESSENZIALE — INTERNAL LAYOUT LOCKED ████
+For THIS scenario the internal layout is IDENTICAL to the original plan. Do NOT add, remove or move ANY internal wall or partition. Do NOT add, remove, relocate, widen or resize ANY door. Every wall, partition and door stays EXACTLY where the original plan shows it. The ONLY changes are finishes, materials, furniture and fittings. (This overrides the general "internal partitions/doors may change" allowance — here nothing structural or spatial moves.)`
+ : sol.nm==="Balanced" ? `
+████ SCENARIO: BILANCIATO — MODERATE INTERNAL CHANGES ████
+For THIS scenario SOME non-load-bearing internal partitions may be moved, added or removed, and SOME internal doors may be relocated, added or removed, to improve the layout — moderate, sensible changes only. You may e.g. widen an opening, shift a partition, open a doorway, or lightly merge/split a space. Do NOT relocate whole rooms (kitchen/living/bedroom keep their identity and approximate positions). Load-bearing walls, risers and the whole envelope stay frozen.`
+ : `
+████ SCENARIO: PREMIUM — FULL INTERNAL REORGANISATION (INSIDE THE BOUNDARY ONLY) ████
+For THIS scenario you may freely add/remove non-load-bearing internal partitions and internal doors, and RELOCATE the kitchen, living and/or bedroom — but ONLY by rearranging space INSIDE the existing apartment perimeter. e.g. create an open-plan kitchen-living, or move the bedroom.
+⛔ CRITICAL: "full flexibility" applies ONLY to the internal arrangement. It does NOT permit adding ANY space, room, corridor, balcony, terrace, extension or annex outside the original apartment boundary, and it does NOT permit enlarging the footprint or the total area. Every relocated or new internal space must fit ENTIRELY within the original perimeter (P_proposed ⊆ P_original) and the total internal area must not increase (A_proposed ≤ A_original). If a desired layout would need more space than the apartment has, you must fit it inside anyway or drop it — you may NEVER expand outward. Wet rooms move ONLY toward an existing drainage stack. Load-bearing walls and risers stay in place; the envelope (external walls, entrance, windows, balcony/French doors, footprint, total area) is NEVER changed.`;
+  const roomData=d.roomDetails||{};
+  const ep=d.extractedPlan;
+  const roomKey=["living","kitchen","bedroom","bathroom","corridor"].includes(room)?room:null;
+  const ex=roomKey?roomData[roomKey]?.extractedData:null;
+
+  /* Precise dimensions from extracted data or manual entry */
+  const dims=(type)=>{
+    const r=roomData[type];
+    const exR=r?.extractedData;
+    const w=exR?.estimatedDimensions?.widthM||parseFloat(r?.width)||null;
+    const l=exR?.estimatedDimensions?.lengthM||parseFloat(r?.length)||null;
+    const ch=exR?.estimatedDimensions?.ceilingHeightM||parseFloat(d.ceiling)||2.7;
+    if(w&&l)return` SURVEYED ROOM DIMENSIONS (authoritative): ${l.toFixed(1)}m long × ${w.toFixed(1)}m wide × ${ch.toFixed(1)}m ceiling. These are real measured dimensions — the render must match them exactly. Room area = ${(w*l).toFixed(1)}m².`;
+    return` Apartment total: ${parseFloat(d.area)||85}m². Use realistic Italian apartment proportions for a ${room} room.`;
+  };
+
+  /* Window constraints from extracted data */
+  const winStr=(type)=>{
+    const exR=roomData[type]?.extractedData;
+    if(!exR?.windows?.length)return"Windows: maintain existing positions exactly as in original photos/plan.";
+    return"WINDOWS — extracted from your photos (positions are LOCKED):\n"+exR.windows.map((w,i)=>`  Window ${i+1}: ${w.wall} wall · ${w.positionOnWall} · ~${w.approximateWidthM||1.2}m wide × ${w.approximateHeightM||1.4}m tall · sill ${w.sillHeightM||0.9}m from floor`).join("\n")+"\nNo new windows. No removed windows. No resized openings.";
+  };
+
+  /* Door constraints — entrance is LOCKED; internal doors MAY be reconfigured */
+  const doorStr=(type)=>{
+    const exR=roomData[type]?.extractedData;
+    if(!exR?.doors?.length)return"Doors: the main entrance stays fixed; internal doors may be added/moved/widened (clear ≥ 75 cm).";
+    return"DOORS — extracted:\n"+exR.doors.map((door,i)=>`  Door ${i+1}: ${door.wall} wall · ${door.positionOnWall} · ${door.widthM||0.9}m wide · swings ${door.swingDirection} · ${(door.type==="entrance")?"MAIN ENTRANCE — LOCKED":"internal — may be reconfigured (keep clear ≥ 75 cm)"}`).join("\n");
+  };
+
+  /* Balcony / French-door constraints — always LOCKED (exterior openings) */
+  const bdStr=(type)=>{
+    const exR=roomData[type]?.extractedData;
+    if(!exR?.balconyDoors?.length)return"Balcony / French doors (porte-finestra): keep every existing one exactly where it is — none added, removed, resized or converted to a window.";
+    return"BALCONY / FRENCH DOORS (porte-finestra — positions are LOCKED, exterior openings):\n"+exR.balconyDoors.map((b,i)=>`  Porta-finestra ${i+1}: ${b.wall} wall · ${b.positionOnWall||"?"} · ~${b.approximateWidthM||0.9}m × ${b.approximateHeightM||2.2}m → ${b.leadsTo||"balcony"}`).join("\n")+"\nNo new, no removed, no resized. Do not turn a porta-finestra into a window or a solid wall.";
+  };
+
+  /* Immovable features */
+  const immStr=(type)=>{
+    const exR=roomData[type]?.extractedData;
+    const all=[...(exR?.immovableFeatures||[]),...(exR?.fixedArchitecturalElements||[])];
+    if(!all.length)return"";
+    return"IMMOVABLE ELEMENTS (surveyed from photos — must appear at exact positions):\n"+all.map(f=>"  • "+f).join("\n");
+  };
+
+  /* Plan-level extracted data */
+  const planStr=ep?`EXTRACTED FLOOR PLAN (authoritative spatial data):
+  Total area: ${ep.totalArea||parseFloat(d.area)||85}m²
+  Shape: ${ep.overallShape||"see plan"}
+  Entrance: ${ep.entranceDoor?`${ep.entranceDoor.wall} wall · ${Math.round((ep.entranceDoor.positionFromLeft||0.5)*100)}% from left · ${ep.entranceDoor.widthM||0.9}m wide — FROZEN`:"as existing — FROZEN"}
+  Balcony / French doors (porte-finestra): ${(ep.balconyDoors&&ep.balconyDoors.length)?ep.balconyDoors.map(b=>`${b.wall||"?"} wall · ${b.room||"?"} · ~${b.widthM||0.9}m → ${b.leadsTo||"balcony"}`).join(" · ")+" — FROZEN":"all exterior openings to balconies/terraces — FROZEN"}
+  Bathroom: ${ep.rooms?.bathroom?.positionInApartment||"as existing"} — FROZEN
+  Kitchen: ${ep.rooms?.kitchen?.positionInApartment||"as existing"} — FROZEN
+  Load-bearing walls: ${(ep.loadBearingWalls||["as surveyed"]).join(" · ")}
+${Object.entries(ep.rooms||{}).filter(([,r])=>r.presentInPlan).map(([k,r])=>`  ${k}: ${r.widthM||"?"}×${r.lengthM||"?"}m · ${r.windowCount||0} window(s) · walls N=${r.wallN||"?"} S=${r.wallS||"?"} E=${r.wallE||"?"} W=${r.wallW||"?"}`).join("\n")}`
+  :`Apartment footprint FIXED at ${parseFloat(d.area)||85}m² — all external walls unchanged.`;
+
+  /* Compile all area sources — listing > plan > manual */
+  const totalAreaM2 = parseFloat(d.listingExtracted?.area||ep?.totalArea||d.area)||85;
+
+  /* Build room area inventory */
+  const roomAreas = Object.entries(roomData)
+    .filter(([,r])=>r?.length&&r?.width)
+    .map(([k,r])=>({key:k, area:(parseFloat(r.length)*parseFloat(r.width)).toFixed(1)}));
+  const sumRoomAreas = roomAreas.reduce((s,r)=>s+parseFloat(r.area),0).toFixed(1);
+
+  const areaConstraints=`
+AREA PRESERVATION — MATHEMATICAL REQUIREMENT:
+• Total apartment net area: EXACTLY ${totalAreaM2}m² (source: ${d.listingExtracted?.area?"listing":ep?.totalArea?"floor plan":"manual entry"})
+• This area is IMMUTABLE — the post-renovation floor plan must sum to EXACTLY ${totalAreaM2}m²
+• No m² can be added or removed — renovations redistribute existing space only
+• Room areas before: ${roomAreas.map(r=>`${r.key}=${r.area}m²`).join(", ")||"to be extracted from plan"}
+• Sum of all rooms after renovation MUST equal ${totalAreaM2}m²
+• External walls define this area — they are FROZEN and cannot move 1mm
+• Any internal space redistribution must be zero-sum (if bedroom grows 2m², another room shrinks 2m²)`;
+
+  const permittedChanges=`
+⛔ ABSOLUTE BOUNDARY RULE: Stay ENTIRELY within the existing apartment perimeter (${totalAreaM2}m²). Do NOT add ANY new room, space, balcony, terrace, extension, annex or corridor that is not already in the original plan. The renovation ONLY redistributes the existing internal area — the SET of spaces and the outer boundary do not grow. Never draw anything outside the original footprint.
+
+PERMITTED OPTIMISATIONS — THE ONLY CHANGES ALLOWED ARE INTERNAL DOORS AND INTERNAL WALLS:
+✓ INTERNAL PARTITIONS (tramezzi, non-load-bearing, ≤60 kg/m²): may be added, removed, relocated or resized anywhere inside the frozen envelope — e.g. merge/split rooms, open the kitchen to the living area, reconfigure a corridor.
+✓ INTERNAL DOORS: may be added, removed, relocated, widened or re-hinged (keep clear width ≥ 75 cm internal / ≥ 80 cm main).
+• Wet rooms may be reconfigured ONLY toward an existing drainage/soil stack; plumbing risers stay put.
+• Any internal wall that turns out to be LOAD-BEARING is treated as FROZEN and flagged "seismic-restricted — requires structural project", never silently altered.
+
+EVERYTHING ELSE IS COMPLETELY FROZEN — DO NOT TOUCH:
+✗ External / perimeter walls: IMMOVABLE (define the ${totalAreaM2}m² envelope)
+✗ Overall apartment shape, footprint & net area: MUST remain EXACTLY ${totalAreaM2}m² — zero tolerance
+✗ Main entrance door: EXACT same position, same width, same orientation/swing
+✗ Windows: EXACT positions/sizes on external walls — no new, no removed, no resized
+✗ Balcony / French doors (porte-finestra verso balconi, logge, terrazzi): EXACT same position, width and opening — no new, no removed, no resized, none converted to/from a window
+✗ Balconies, loggias & terraces: geometry unchanged
+✗ Structural / load-bearing walls, columns, beams, slabs: UNTOUCHED
+✗ Plumbing risers: CANNOT move`;
+
+  const customStyle=d.customStyle?` Style notes: ${d.customStyle}.`:"";
+  const fengshui=d.fengshui?.length?` Feng shui: ${d.fengshui.join(", ")}.`:"";
+  const palette=d.preferredPalette?` Palette: ${d.preferredPalette.name} — ${d.preferredPalette.colors.join(", ")}.`:"";
+  const suffix=customStyle+fengshui+palette;
+  const hasPhotos=ex||Object.values(roomData).some(r=>(r.photos||[]).length>0);
+  const photoNote=hasPhotos?" THIS IS THE CLIENT'S ACTUAL ROOM — the render must look like the same physical space with only finishes and furniture replaced. Match the camera angle, room proportions, and all architectural features exactly.":" Render a realistic renovation of the existing space.";
+
+  /* Per-room client requirements */
+  const roomReq = roomKey ? (roomData[roomKey]?.requirements||"") : "";
+  const reqBlock = roomReq ? `\nCLIENT'S SPECIFIC INSTRUCTIONS FOR THIS ROOM (follow exactly):\n"${roomReq}"\nThese instructions override style defaults but must NOT conflict with the spatial constraints above.` : "";
+
+  const constraints=`${STRICT_BOUNDARY_PROTOCOL}
+${flexClause}
+████████████████████████████████████████████████████████████████████████
+   THIS IS A SPATIAL RENOVATION — NOT A NEW DESIGN
+   The apartment ENVELOPE is IMMUTABLE (external walls, entrance, windows,
+   balcony doors, footprint). Internal freedom depends on the scenario above.
+████████████████████████████████████████████████████████████████████████
+${photoNote}
+
+${planStr}
+
+${areaConstraints}
+
+${permittedChanges}
+${ivBrief(d)}
+${COMPLIANCE_BRIEF}
+
+CROSS-CONSISTENCY: The 2D plan AND every 3D render of this dwelling must depict the SAME post-renovation layout. Rooms shown in the plan must match rooms shown in the renders (same dimensions, same window count, same wall positions, same compliance metrics).
+
+${dims(roomKey||"living")}
+${winStr(roomKey||"living")}
+${bdStr(roomKey||"living")}
+${doorStr(roomKey||"living")}
+${immStr(roomKey||"living")}
+${reqBlock}
+
+HARD REJECTION CRITERIA — if the render violates ANY of these, it is WRONG:
+✗ Different number of windows than original → REJECT
+✗ Windows in different positions or sizes → REJECT
+✗ Any balcony / French door (porta-finestra) added, removed, moved, resized, or converted to/from a window → REJECT
+✗ Bathroom moved, enlarged, or shrunk → REJECT
+✗ Entrance door moved, resized, or reoriented → REJECT
+✗ External / perimeter wall moved or removed → REJECT
+✗ Overall apartment shape or footprint changed → REJECT
+✗ Total floor area differs from ${totalAreaM2}m² → REJECT
+✗ New room added outside the original footprint → REJECT
+✗ ANY room, space, balcony, terrace or extension added that is not in the original plan → REJECT
+✗ Anything drawn beyond the original apartment perimeter → REJECT
+✗ Ceiling height different from ${ex?.estimatedDimensions?.ceilingHeightM||d.ceiling||"2.7"}m → REJECT
+✗ Any structural/load-bearing wall changed → REJECT
+✗ Plumbing riser relocated → REJECT
+
+THE ONLY ACCEPTABLE CHANGES:
+✓ Internal partitions (non-load-bearing): add / remove / relocate / resize within the frozen envelope
+✓ Internal doors: add / remove / relocate / widen / re-hinge (clear ≥ 75 cm)
+✓ Floor: new material, same level
+✓ Walls: new paint, plaster, cladding — on existing surfaces only
+✓ Ceiling: new finish — same height only
+✓ Kitchen: may open to living (internal partition removed) — plumbing stays on same wall
+✓ Bedroom/living: may merge or subdivide — combined area stays the same
+✓ Furniture: IKEA products only, sized to match room dimensions
+✓ Lighting: new fixtures at existing ceiling points
+✓ Kitchen fit-out: new cabinets, countertops, appliances
+✓ Bathroom fit-out: new tiles, sanitaryware, vanity, mirror — same footprint
+
+${RENDER_REGS_PROMPT}`;
+
+  const ikeaDirective=`IKEA ONLY — all furniture must be recognizable IKEA products:
+LIVING: KIVIK/SÖDERHAMN sofa · STOCKHOLM/LACK table · BESTÅ TV unit · KALLAX shelf · HEKTAR pendant · EKEDALEN table · INGOLF/TEODORES chairs
+KITCHEN: METOD+AXSTAD/KUNGSBACKA · KARLBY/EKBACKEN counter · HAVSEN sink · SKÅDIS pegboard · MITTLED LED
+BEDROOM: MALM/HEMNES bed · PAX+AULI wardrobe · NORDLI nightstands · SYMFONISK lamp · MAJVIKEN curtains
+BATHROOM: GODMORGON vanity · ODENSVIK sink · STORJORM mirror · BROGRUND shower · ENHET storage`;
+
+  const v={
+    living:`Photorealistic interior photo — Italian apartment living/dining RENOVATION. ${base}.${dims("living")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA sofa, coffee table, dining set, BESTÅ, rug, pendant, plants, wall art, floor finish, wall paint${roomData.living?.requirements?". CLIENT REQUIREMENTS: "+roomData.living.requirements:""}. Walls/windows/doors: IDENTICAL to original.${suffix}`,
+    kitchen:`Photorealistic interior photo — Italian apartment kitchen RENOVATION. ${base}.${dims("kitchen")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA METOD cabinets, countertop, appliances, SKÅDIS, pendant, floor tiles, backsplash${roomData.kitchen?.requirements?". CLIENT REQUIREMENTS: "+roomData.kitchen.requirements:""}. Room boundary/window/door: IDENTICAL to original.${suffix}`,
+    bedroom:`Photorealistic interior photo — Italian apartment bedroom RENOVATION. ${base}.${dims("bedroom")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA MALM bed, PAX wardrobe, NORDLI nightstands, SYMFONISK lamp, MAJVIKEN curtains, floor finish, wall paint${roomData.bedroom?.requirements?". CLIENT REQUIREMENTS: "+roomData.bedroom.requirements:""}. Window/walls: IDENTICAL to original.${suffix}`,
+    bathroom:`Photorealistic interior photo — Italian apartment bathroom RENOVATION. ${base}.${dims("bathroom")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA GODMORGON vanity, ODENSVIK sink, BROGRUND shower, STORJORM mirror, floor+wall tiles${roomData.bathroom?.requirements?". CLIENT REQUIREMENTS: "+roomData.bathroom.requirements:""}. Footprint/plumbing/window: IDENTICAL to original.${suffix}`,
+    plan:`${ep||d.plans?.length?"You are looking at the original floor plan of this apartment. Generate an updated version of THIS EXACT FLOOR PLAN showing the post-renovation layout. The spatial envelope (${totalAreaM2}m²), all external/perimeter walls, the main entrance door, all windows and all balcony/French doors (porte-finestra) must remain PIXEL-PERFECT identical in count, position and size. The ONLY permitted changes are INTERNAL: non-load-bearing partitions and internal doors may be added, removed, relocated or resized (e.g. open the kitchen to the living area, adjust the bedroom/living partitions). Wet rooms only move toward the existing drainage stack. Show new IKEA furniture silhouettes. Label rooms in Italian. Mark every frozen element as 'invariato'.":"Professional 2D architectural floor plan — RENOVATION."}
+${base} interior. ${totalAreaM2}m², ${d.rooms||3} rooms.
+${constraints}
+${PLAN_AGENT_BRIEF.replace("${1}", String(totalAreaM2))}
+${roomData.living?.requirements?"LIVING: "+roomData.living.requirements:""}
+${roomData.kitchen?.requirements?"KITCHEN: "+roomData.kitchen.requirements:""}
+${roomData.bedroom?.requirements?"BEDROOM: "+roomData.bedroom.requirements:""}
+DRAW: thick outer perimeter (immovable) · structural walls (immovable) · thin internal partitions (may change) · internal doors (may change) · "INGRESSO — invariato" · "BAGNO — posizione fissa" · "CUCINA — può aprirsi al soggiorno" · windows "finestra (invariata)" · balcony doors "porta-finestra (invariata)" · balconies/terraces "invariato" · IKEA furniture · room dimensions${suffix}`,
+  };
+  return v[room]||v.living;
+}
+
+async function comparePlanToRender(planSrc, renderSrc, roomType, apiKey){
+  if(!apiKey) return null;
+  try{
+    const a=await imgPartFromAny(planSrc), b=await imgPartFromAny(renderSrc);
+    if(!a||!b) return null;
+    const res=await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODELS.vision}:generateContent?key=${apiKey}`,
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({contents:[{parts:[
+         {text:`IMAGE 1 = the post-intervention FLOOR PLAN (2D). IMAGE 2 = a 3D photorealistic RENDER of the ${roomType} in that same apartment.`},
+         a,
+         {text:"IMAGE 2 (the 3D render) follows:"},
+         b,
+         {text:`Do a strict 1-to-1 check that the 3D render is DERIVED FROM the approved floor plan for the ${roomType}. The plan (IMAGE 1) is the single source of truth. First infer, from the plan, a plausible camera position/direction inside the ${roomType} that could produce IMAGE 2, then verify EVERYTHING visible against the plan from that viewpoint. Check:
+- Viewpoint & angle: the render must correspond to a real camera position that fits inside this room on the plan; the walls visible must be the walls that would actually be seen from that angle (viewpointValid).
+- Windows / balcony doors (porte-finestra): exact count and position as the plan shows for this room; none added/moved/omitted (unless genuinely out of frame); never a window on an internal wall (windowsConsistent, balconyDoorsConsistent).
+- Walls & internal doors: every wall and door in view matches the plan's positions; no wall or door exists in the render that the plan does not show, and vice-versa (openingsConsistent).
+- Proportions: room width/length ratio and shape match the plan (proportionsConsistent).
+- ADJACENT SPACES: if any neighbouring space is visible from this viewpoint (e.g. an open kitchen seen from the living room, a corridor, a balcony through a porta-finestra), it must be on the CORRECT SIDE relative to this room as the plan shows, with the correct characteristics (right room type, right opening between them, right relative position). Set adjacentSpacesConsistent=false if a visible adjacent space is on the wrong side, is the wrong room, or should not be visible from here.
+- Room sequence: the order/adjacency of spaces matches the plan; no reordering, no invented space (roomSequenceConsistent, noExtraRoom, noInventedElements).
+- FURNITURE placement: furniture is placed sensibly for this room's function and does not contradict the plan (e.g. the kitchen units/appliances sit on the wall the plan assigns to the kitchen; the bed is in the bedroom area; nothing blocks a door or window). Set furniturePlacementConsistent=false if furniture implies a different layout than the plan.
+Compare spatial structure, openings, adjacency and furniture PLACEMENT; ignore only finishes, colours and lighting.
+Return ONLY valid JSON (no markdown):
+{"consistent":true/false,"windowsConsistent":true/false,"balconyDoorsConsistent":true/false,"proportionsConsistent":true/false,"openingsConsistent":true/false,"roomSequenceConsistent":true/false,"adjacentSpacesConsistent":true/false,"furniturePlacementConsistent":true/false,"noExtraRoom":true/false,"noInventedElements":true/false,"viewpointValid":true/false,"overallScore":0-100,"approved":true/false,"mismatches":["list every render-vs-plan inconsistency incl. wrong-side adjacent spaces and misplaced furniture"],"summary":"one line"}
+HARD GATE: if ANY of consistent, windowsConsistent, balconyDoorsConsistent, proportionsConsistent, openingsConsistent, roomSequenceConsistent, adjacentSpacesConsistent, furniturePlacementConsistent, noExtraRoom, noInventedElements, viewpointValid is false → approved:false and overallScore ≤ 45.`}
+       ]}],generationConfig:visionCfg(1400)})
+      }
+    );
+    if(!res.ok) return null;
+    const data=await res.json();
+    return parseJsonLoose(data.candidates?.[0]?.content?.parts?.[0]?.text);
+  }catch(e){ console.warn("Plan-vs-render compare failed:",e); return null; }
+}
+
 const STYLES = {
   Japandi: {
     mat: "light oak, warm white plaster, linen, soft stone, matte finishes",
@@ -9161,7 +9588,11 @@ function SolRenderCard({
       for (let attempt = 0; attempt < 2; attempt++) {
         if (candidate) archiveAsset(record, candidate);
         setActivity(attempt ? 'Correcting the reported plan differences…' : 'Creating the furnished plan…');
-        const prompt = `Redraw the interior of this existing apartment plan. The building shell is FIXED and must be reproduced exactly as drawn. ${(d.extractedPlan?.roomList?.length ? "The original plan contains exactly " + d.extractedPlan.roomList.length + " enclosed spaces. The redrawn plan must contain the SAME NUMBER OR FEWER. Never draw an extra room, alcove, closet, hallway or partitioned nook that is not already in the reference. " : "")}ABSOLUTE CONSTRAINTS, never violate any of them: (1) Do NOT move, extend, shorten, rotate or reshape any external or perimeter wall. The outer boundary outline must match the reference exactly, corner for corner. (2) Do NOT add any room, space, volume or floor area that is not already enclosed by the reference boundary. Total footprint is unchanged. (3) Do NOT move, resize, mirror or remove the entrance door. It stays on the same external wall, at the same position and the same width. (4) Do NOT move, extend, add or remove balconies, loggias or terraces. Their outline, depth and position stay exactly as drawn. (5) Do NOT move, resize, add or remove any window. Every window stays on the same wall segment, at the same position and the same width as the reference. (6) Do NOT alter load-bearing walls, columns, structural cores, stairs or plumbing risers. The ONLY changes you are permitted to make are strictly inside the fixed boundary: reposition, add or remove internal NON-STRUCTURAL partitions; reposition internal doors and internal openings; merge or split internal spaces; change which function an internal space serves; and furnish and finish the interior. If a requested intervention would require touching anything in the ABSOLUTE CONSTRAINTS list, ignore that part of the request and keep the shell as drawn. Keep the original image framing, scale, orientation and north direction. ${x.nm === 'Essential' ? 'Make minimal necessary internal partition changes.' : x.nm === 'Balanced' ? 'Make moderate internal partition changes; rooms retain approximate positions.' : 'Reorganise internal partitions only within the fixed existing boundary.'} Requested work: ${JSON.stringify(x.ch)}. Net area, if measured: ${areaBasis(d).net || "not supplied"} m². Preserve the reference outline; do not infer total dwelling area from the renovation scope. Design style: ${d.style}; ${d.customStyle || ''}. Owner requirements: ${ivBrief(d)}. Budget and unit rates are indicative planning preferences, never a reason to refuse an image or alter dimensions. This is an exploratory design, subject to professional compliance review. Draw source-checked articles to their recorded assembled footprint; unverified items are provisional allowances. Draw every article to its listed footprint, mark its itemId alongside it and preserve a clear door swing/circulation route. Draw only these furniture articles, do not substitute or add unmapped decor. PRODUCT MANIFEST: ${productBrief}. ${candidate?.review?.mismatches?.length ? 'CORRECT THESE ERRORS: ' + JSON.stringify(candidate.review.mismatches) : ''} Before output, verify: the perimeter outline, every window, every balcony and the entrance door are identical to the reference, and no new space has been created outside the original boundary. Output one furnished top-down dimensioned plan, no perspective.`;
+        const prompt = renderPrompt(d, x, 'plan')
+          + ` PRODUCT MANIFEST: ${productBrief}.`
+          + (candidate?.review?.mismatches?.length
+              ? ' CORRECT THESE ERRORS FROM THE PREVIOUS ATTEMPT: ' + JSON.stringify(candidate.review.mismatches)
+              : '');
         const generated = await generateImage([source, {
           text: prompt
         }], apiKey, () => setActivity('Waiting for the image service…'), 'Generate furnished plan with product manifest');
@@ -9278,7 +9709,20 @@ function SolRenderCard({
         camera,
         products: visibleItems.map(productManifest)
       });
-      const constraints = `IMAGE 1 is the ACCEPTED FURNISHED PLAN, the only source for architecture, room sequence, camera placement and furniture location.${roomDimensionBrief(d, room)} Other images are exact product appearance references only. Never copy a photo’s camera or furniture positions. Render the requested rectilinear camera view; do not mirror or move the camera. Every visible door, window, neighbouring space and piece of furniture must project from its mapped coordinates, with identical left-to-right order and near-to-far depth. Only elements in the frustum and not physically occluded should appear: do not force off-camera objects into view. Respect article dimensions, material, colour, quantity, rotation and footprint, with no substitutions. No extra decor, doors or spaces. If measured coordinates are unavailable, derive the named room directly from IMAGE 1 and keep the view conceptual. Never invent rooms. Unverified products are approximate; no exact article match is claimed without a source photograph. Budget, unit rates and preliminary compliance flags are advisory and must not prevent this exploratory image. Manifest: ${manifest}. Style applies only to remaining finishes: ${d.style}; ${d.customStyle || ''}. ${candidate?.review?.mismatches?.length ? 'Correct the previous differences: ' + JSON.stringify(candidate.review.mismatches) : ''} Produce one room image without text labels.`;
+      const roomKey = (function (r) {
+        const k = String(r.kind || r.id || r.label || '').toLowerCase().replace(/-\d+$/, '');
+        if (k.indexOf('kitchen') === 0 || k.indexOf('cucina') === 0) return 'kitchen';
+        if (k.indexOf('bed') === 0 || k.indexOf('camera') === 0) return 'bedroom';
+        if (k.indexOf('bath') === 0 || k.indexOf('bagno') === 0) return 'bathroom';
+        if (k.indexOf('corridor') === 0 || k.indexOf('hall') === 0) return 'corridor';
+        return 'living';
+      })(room);
+      const constraints = renderPrompt(d, x, roomKey)
+        + ` The accepted furnished plan is IMAGE 1 and is the single source of truth for architecture, room sequence and furniture location; the other images are product appearance references only, never a source of camera or layout. Manifest: ${manifest}.`
+        + (candidate?.review?.mismatches?.length
+            ? ' Correct the previous differences: ' + JSON.stringify(candidate.review.mismatches)
+            : '')
+        + ' Produce one room image without text labels.';
       const generated = await generateImage([{
         text: 'IMAGE 1: accepted furnished plan.'
       }, planPart, ...productParts, {
@@ -9301,6 +9745,22 @@ function SolRenderCard({
       };
       setActivity('Checking order, openings, occlusion and article appearance for ' + room.label + '…');
       candidate.review = await checkSceneRender(plan.url, candidate.url, scene, camera, visibleItems, apiKey, productParts);
+      /* Second, independent gate: does this view actually derive from the
+         approved plan (viewpoint, openings, adjacency, furniture placement)? */
+      try {
+        const vsPlan = await comparePlanToRender(plan.url, candidate.url, room.label || roomKey, apiKey);
+        if (vsPlan) {
+          candidate.planCheck = vsPlan;
+          if (vsPlan.consistent === false) {
+            candidate.review = candidate.review || {};
+            candidate.review.mismatches = [].concat(
+              candidate.review.mismatches || [],
+              vsPlan.mismatches || [],
+              vsPlan.notes ? [vsPlan.notes] : []
+            );
+          }
+        }
+      } catch (e) { /* advisory only, never blocks delivery */ }
       candidate.automatedPass = !!scene && referencesComplete && renderEvidenceGate(candidate.review, camera);
       if (candidate.automatedPass) break;
       candidate.error = 'Camera / element / product appearance checks did not fully pass. This image is a draft.';
@@ -18100,159 +18560,112 @@ function downloadEvidence(name, value) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-function EvidenceWorkspace({
-  d,
-  u
-}) {
-  const [page, setPage] = useState('market'),
-    [message, setMessage] = useState(''),
-    [tier, setTier] = useState('Balanced');
-  const m = d.marketInputs || {},
-    ei = d.energyInput || {},
-    es = d.energyScenarios?.[tier] || {};
-  const setM = (k, v) => u(p => ({
-    ...p,
-    marketInputs: {
-      ...p.marketInputs,
-      [k]: v,
-      reviewed: k === 'reviewed' ? v : false,
-      municipalityCode: municipalityFor(p)?.code || ''
-    }
-  }));
-  const setE = (k, v) => u(p => ({
-    ...p,
-    energyInput: {
-      ...p.energyInput,
-      [k]: v
-    }
-  }));
-  const setES = (k, v) => u(p => ({
-    ...p,
-    energyScenarios: {
-      ...p.energyScenarios,
-      [tier]: {
-        ...p.energyScenarios?.[tier],
-        [k]: v
-      }
-    }
-  }));
-  async function importCosts(f) {
+/* The evidence panel used to ask the owner to type market facts, OMI bands,
+   sources and dates. All of that now arrives automatically: property facts from
+   the listing, OMI and rent quotations from the Worker's /market-lookup. What
+   is left is the one number nothing can derive — the annual consumption printed
+   on the owner's own bills — plus a read-only view of what was fetched. */
+function EvidenceWorkspace({ d, u }) {
+  const h = React.createElement;
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const place = typeof municipalityFor === 'function' ? municipalityFor(d) : null;
+  const live = d.marketOverride || {};
+  const listing = d.listingExtracted || {};
+
+  const refresh = async (force) => {
+    const ita = typeof window !== 'undefined' ? window.ITA : null;
+    const city = place?.name || d.city;
+    if (!ita || typeof ita.marketLookup !== 'function' || !city) return;
+    setBusy(true);
+    setNote('');
     try {
-      const rows = validateCostImport(JSON.parse(await f.text()));
-      u(p => ({
-        ...p,
-        costInputs: rows
+      const res = await ita.marketLookup(city, place?.province, force);
+      if (!res) { setNote('No live quotation available for this comune yet.'); return; }
+      u(prev => ({
+        ...prev,
+        marketOverride: {
+          ...(prev.marketOverride || {}),
+          askingSaleSqm: res.askingSaleSqm ?? null,
+          marketRentSqm: res.marketRentSqm ?? null,
+          comparableRenovated: res.comparableRenovated ?? null,
+          omiMin: res.omiMin ?? null,
+          omiMax: res.omiMax ?? null,
+          omiZone: res.omiZone || '',
+          omiSemester: res.omiSemester || '',
+          avgDaysOnMarket: res.avgDaysOnMarket ?? null,
+          source: 'Agenzia delle Entrate OMI + portal asking (live lookup)',
+          url: 'https://www1.agenziaentrate.gov.it/servizi/Consultazione/ricerca.htm',
+          asOf: res.asOf || ''
+        }
       }));
-      setMessage(Object.keys(rows).length + ' sourced items imported. Other rows retain labelled allowances.');
-    } catch (e) {
-      setMessage(e.message);
+      setNote('Updated from OMI and portal data.');
+    } catch (err) {
+      setNote('Lookup unavailable right now — modelled references are being used.');
+    } finally {
+      setBusy(false);
     }
-  }
-  return /*#__PURE__*/React.createElement("section", {
-    className: "basis-card"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "eyebrow"
-  }, "03 · Refine when you are ready"), /*#__PURE__*/React.createElement("h2", null, "The evidence behind your estimates"), /*#__PURE__*/React.createElement("p", null, "Open a card, check the source, and enter the project-specific facts. Empty fields remain unknown."), /*#__PURE__*/React.createElement("div", {
-    className: "basis-tabs",
-    role: "tablist",
-    "aria-label": "Evidence inputs"
-  }, [['market', 'Value & rent'], ['energy', 'Bills & APE'], ['sources', 'Source register']].map(([id, name]) => /*#__PURE__*/React.createElement("button", {
-    role: "tab",
-    "aria-selected": page === id,
-    className: page === id ? 'selected' : '',
-    key: id,
-    onClick: () => setPage(id)
-  }, name))), page === 'market' && /*#__PURE__*/React.createElement("div", {
-    role: "tabpanel"
-  }, /*#__PURE__*/React.createElement(SourceLink, {
-    id: "omi"
-  }), /*#__PURE__*/React.createElement("p", null, "Select this municipality’s zone and the latest published semester. OMI ranges, asking comparables and transaction evidence are different inputs. No city-average price is silently assigned to another municipality."), /*#__PURE__*/React.createElement("div", {
-    className: "basis-grid"
-  }, [['currentSqm', 'Current-condition comparable · €/m²'], ['renovatedSqm', 'Renovated comparable · €/m²'], ['rentSqm', 'Asking rent comparable · €/m²/month'], ['omiMin', 'OMI minimum · €/m²'], ['omiMax', 'OMI maximum · €/m²'], ['vacancyPct', 'Vacancy scenario · %'], ['annualExpenses', 'Annual owner expenses · €'], ['annualTax', 'Annual rental tax provision · €'], ['transactionCosts', 'Purchase + sale cost provision · €']].map(([k, l]) => /*#__PURE__*/React.createElement(Field, {
-    key: k,
-    label: l,
-    value: m[k],
-    onChange: v => setM(k, v)
-  })), [['omiZone', 'OMI zone'], ['omiSemester', 'OMI published semester'], ['omiAreaBasis', 'OMI area basis / type / condition'], ['source', 'Comparable source and matching criteria'], ['url', 'Comparable evidence URL']].map(([k, l]) => /*#__PURE__*/React.createElement(Field, {
-    key: k,
-    label: l,
-    type: k === 'url' ? 'url' : 'text',
-    value: m[k],
-    onChange: v => setM(k, v)
-  })), /*#__PURE__*/React.createElement(Field, {
-    label: "Evidence date",
-    type: "date",
-    value: m.date,
-    onChange: v => setM('date', v)
-  })), /*#__PURE__*/React.createElement("label", null, /*#__PURE__*/React.createElement("input", {
-    type: "checkbox",
-    checked: !!m.reviewed,
-    onChange: e => setM('reviewed', e.target.checked)
-  }), " I matched the municipality, area convention, property type, condition and evidence."), /*#__PURE__*/React.createElement("p", null, "Recorded for ", m.municipalityCode || 'no municipality yet', ". These inputs are user-reviewed, not automatically authenticated by the app. No automatic value uplift or rental tax rate is applied.")), page === 'energy' && /*#__PURE__*/React.createElement("div", {
-    role: "tabpanel"
-  }, /*#__PURE__*/React.createElement(SourceLink, {
-    id: "ape"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "basis-grid"
-  }, /*#__PURE__*/React.createElement(Field, {
-    label: "APE energy index or total",
-    value: d.annualEnergy,
-    onChange: v => u(p => ({
-      ...p,
-      annualEnergy: v
-    }))
-  }), /*#__PURE__*/React.createElement(Field, {
-    label: "Exact APE unit",
-    value: ei.apeUnit || 'unknown',
-    options: [["unknown", "Select printed unit"], ["kWh/m2/year", "kWh/m²/year — specific primary energy"], ["kWh/year", "kWh/year — total primary energy"]],
-    onChange: v => setE('apeUnit', v)
-  })), /*#__PURE__*/React.createElement("p", null, "An APE primary-energy index is not a bill. Enter delivered consumption below. For heat pumps, district heating or PV, enter an engineering forecast for each scenario; the app does not invent fuel conversions."), /*#__PURE__*/React.createElement(Field, {
-    label: "Forecast scenario",
-    value: tier,
-    options: ['Essential', 'Balanced', 'Premium'].map(x => [x, x]),
-    onChange: setTier
-  }), [['electricity', 'Electricity · kWh'], ['gas', 'Gas · Sm³'], ['district', 'District heat · kWh']].map(([key, label]) => {
-    const row = es[key] || {};
-    return /*#__PURE__*/React.createElement("div", {
-      className: "energy-input-row",
-      key: key
-    }, /*#__PURE__*/React.createElement("h4", null, label), /*#__PURE__*/React.createElement("div", {
-      className: "basis-grid"
-    }, [['before', 'Annual current consumption'], ['after', 'Annual forecast consumption'], ['rate', 'Variable tariff · €/unit'], ['fixed', 'Current fixed charges / year · €'], ['fixedAfter', 'Forecast fixed charges / year · €']].map(([k, l]) => /*#__PURE__*/React.createElement(Field, {
-      key: k,
-      label: l,
-      value: row[k],
-      onChange: v => setES(key, {
-        ...row,
-        [k]: v
-      })
-    }))));
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "basis-grid"
-  }, /*#__PURE__*/React.createElement(Field, {
-    label: "Bills / forecast source",
-    type: "text",
-    value: es.source,
-    onChange: v => setES('source', v)
-  }), /*#__PURE__*/React.createElement(Field, {
-    label: "Evidence date",
-    type: "date",
-    value: es.date,
-    onChange: v => setES('date', v)
-  }), /*#__PURE__*/React.createElement(Field, {
-    label: "Forecast assumptions / engineer reference",
-    type: "text",
-    value: es.postBasis,
-    onChange: v => setES('postBasis', v)
-  })), /*#__PURE__*/React.createElement("label", null, /*#__PURE__*/React.createElement("input", {
-    type: "checkbox",
-    checked: !!es.complete,
-    onChange: e => setES('complete', e.target.checked)
-  }), " All applicable energy vectors are included for ", tier, "."), /*#__PURE__*/React.createElement("p", null, /*#__PURE__*/React.createElement(SourceLink, {
-    id: "tariff"
-  }), " · ", /*#__PURE__*/React.createElement(SourceLink, {
-    id: "pv"
-  })), /*#__PURE__*/React.createElement("p", null, "NPV sensitivity: 30 years, 4% discount rate, 3% annual energy-price escalation; no automatic incentives, replacements, maintenance or export revenue. These are explicit model assumptions.")), page === 'sources' && /*#__PURE__*/React.createElement(SourceRegister, null));
+  };
+
+  /* Fetch once, automatically, as soon as a comune is known. */
+  useEffect(() => {
+    if (!d.city) return;
+    if (live.omiMin || live.askingSaleSqm) return;
+    refresh(false);
+  }, [d.city]);
+
+  const fact = (label, value, from) => h("div", null,
+    h("small", null, label),
+    h("strong", null, value == null || value === '' ? '—' : value),
+    h("span", null, from));
+
+  const eur = n => n == null ? null : '€' + Math.round(n).toLocaleString('it-IT');
+
+  return h("section", { className: "basis-card" },
+    h("span", { className: "eyebrow" }, "03 · Where the numbers come from"),
+    h("h2", null, "Fetched automatically"),
+    h("p", null,
+      "Property facts come from the listing you pasted, and the market quotations from the ",
+      "Agenzia delle Entrate OMI archive plus the portals. You do not need to enter any of it."),
+
+    h("div", { className: "area-evidence" },
+      fact('Comune', place?.name || d.city || '—', place?.province ? 'province ' + place.province : 'from your entry'),
+      fact('OMI quotation', live.omiMin && live.omiMax
+        ? eur(live.omiMin) + ' – ' + eur(live.omiMax) + '/m²' : null,
+        live.omiZone ? 'zone ' + live.omiZone + (live.omiSemester ? ' · ' + live.omiSemester : '') : 'Agenzia delle Entrate'),
+      fact('Portal asking', live.askingSaleSqm ? eur(live.askingSaleSqm) + '/m²' : null, 'immobiliare.it / idealista'),
+      fact('Market rent', live.marketRentSqm ? '€' + live.marketRentSqm + '/m²·month' : null, 'local listings'),
+      fact('Announcement price', listing.price ? eur(listing.price) : null,
+        listing.price ? 'used as the pre-renovation value' : 'paste a listing link in step 1'),
+      fact('Energy class', d.eCls || listing.eCls || null, 'from the listing / APE')),
+
+    h("div", { className: "basis-actions", style: { marginTop: 12 } },
+      h("button", {
+        className: "btn btn-g",
+        disabled: busy,
+        onClick: () => refresh(true)
+      }, busy ? 'Checking…' : 'Refresh market data'),
+      note ? h("span", { style: { fontSize: 12.5, color: '#7B8B96', marginLeft: 10 } }, note) : null),
+
+    h("div", { className: "settings-section", style: { marginTop: 20 } },
+      h("h3", { style: { fontSize: 16 } }, "The one thing we cannot read for you"),
+      h("p", null,
+        "Your actual annual energy consumption, from your bills. Leave it blank and the ",
+        "report models it from the energy class instead."),
+      h(Field, {
+        label: "Annual energy consumption · kWh/year",
+        value: d.annualEnergy,
+        onChange: v => u(p => ({
+          ...p,
+          annualEnergy: v,
+          energyInput: { ...(p.energyInput || {}), apeUnit: 'kWh/year' }
+        })),
+        hint: "Sum of the kWh on 12 months of bills. Optional."
+      })),
+
+    h("p", { style: { fontSize: 12, color: '#7B8B96', marginTop: 14 } },
+      "OMI quotations are broad zonal indications and portal figures are asking prices, ",
+      "not transaction prices. Both are labelled as such wherever they appear in the report."));
 }
 function SourceRegister() {
   return /*#__PURE__*/React.createElement("div", {
