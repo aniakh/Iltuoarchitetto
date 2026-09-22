@@ -10,6 +10,8 @@ Architettura Colombo) — Lombardy, Italy.
 | `admin.html` | Private page to mint access links for paying customers |
 | `assets/` | Local fonts, CSS, i18n, `config.js` (proxy URL), `ita-runtime.js` |
 | `worker/gemini-proxy.js` | Cloudflare Worker: Gemini proxy + listing fetcher + access quota |
+| `standalone.html` | **Single self-contained file**: vitrine + planner, no `assets/` needed |
+| `tools/build-standalone.js` | Regenerates `standalone.html` from `demo.html` |
 | `netlify.toml` | Netlify hosting config |
 
 The dashboard has **no external dependencies** — React, the fonts and all data
@@ -106,6 +108,45 @@ municipality table rather than one region-wide average, and the OMI band is
 derived from that local asking reference. The fallback is deliberately
 conservative and cannot tell a large town from a small village — the live
 lookup is what makes it local.
+
+## The single-file standalone page
+
+`standalone.html` is the whole product in one file — the vitrine and the
+planner together, with the fonts, stylesheet and runtime scripts inlined. It
+opens from a static host, a USB stick or a double-click on the file itself,
+with no `assets/` folder beside it.
+
+Rebuild it whenever `demo.html` or anything in `assets/` changes:
+
+```bash
+node tools/build-standalone.js
+```
+
+The build keeps only the latin and latin-ext font subsets and collapses each
+family to a single weight-range face, so the fonts are embedded once rather
+than once per weight — that is the difference between a 2.4 MB page and a
+1.0 MB one.
+
+### What it does NOT inline — and why
+
+The Gemini API key is **not** in the file, and the 3-report counter is **not**
+kept in the browser. Both still live in the Cloudflare Worker:
+
+- a key inside the file would be readable by anyone who opens it;
+- a counter inside the file resets with a cleared cache or an incognito window.
+
+So the standalone page is self-contained in its *assets*, but it still calls
+your Worker for AI and for the quota. That is what makes "3 uses" actually
+mean three uses. Give each customer a link or a copy carrying their token:
+
+```
+standalone.html?token=9f3c1a2b...
+```
+
+> **If you set `ALLOWED_ORIGIN` on the Worker**, a copy opened directly from
+> disk (`file://`, which has a `null` origin) will be refused by CORS and the
+> AI features will not run. Either leave `ALLOWED_ORIGIN` unset, or host the
+> file and hand out the URL rather than the file.
 
 ## Access links — capping reports at 3 per customer
 
