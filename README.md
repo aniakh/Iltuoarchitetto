@@ -13,6 +13,7 @@ Architettura Colombo) — Lombardy, Italy.
 | `standalone.html` | **Single self-contained file**: vitrine + planner, no `assets/` needed |
 | `tools/build-standalone.js` | Regenerates `standalone.html` from `demo.html` |
 | `netlify.toml` | Netlify hosting config |
+| `agent/` | **Mail agent**: reads emailed payment receipts, mints access links on your approval |
 
 The dashboard has **no external dependencies** — React, the fonts and all data
 are local, so it runs anywhere you can serve static files.
@@ -314,6 +315,21 @@ You can revoke or reactivate any link from `admin.html`.
 > counters — fine for one customer clicking a button, but two perfectly
 > simultaneous clicks could in theory read the same counter. Durable Objects
 > would be the fix if you ever need strict accounting.
+
+## Selling it: the receipt-to-access mail agent
+
+`agent/` holds a Google Apps Script that watches the studio inbox. When a
+client emails a payment receipt it reads the receipt with Gemini, emails you a
+summary with an approve link, and on your click mints a 3-report link and
+replies in the client's own thread.
+
+The human click is deliberate: a model reading a receipt image can be fooled
+by a forgery, and this is paid access. The agent does the work and leaves you
+one decision, with everything worth checking listed for you.
+
+It stores no Gemini key — it calls the Worker exactly as the site does, with
+an `X-Admin-Secret` header that exempts it from customer metering. Setup,
+configuration and troubleshooting are in `agent/README.md`.
 
 ## Hosting on Netlify
 

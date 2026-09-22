@@ -10,6 +10,9 @@
  *   GET  /quota                                   How many reports this link has left
  *   POST /consume                                 Burn one report slot -> generationId
  *   POST /admin/token                             Mint a customer link  (admin secret)
+ *
+ *   An X-Admin-Secret header on any Gemini call bypasses metering, so the
+ *   mail agent can read receipts without spending a customer's report slot.
  *   GET  /admin/token?token=XXX                   Inspect a token       (admin secret)
  *   GET  /admin/tokens                            List tokens           (admin secret)
  *
@@ -342,6 +345,14 @@ async function getToken(kv, token) {
  *  - needsGeneration (image call) -> a valid, unexpired generation id is required
  */
 async function checkAccess(request, kv, env, opts) {
+  /* The mail agent calls Gemini as the operator, not as a customer: it reads
+     payment receipts in order to MINT links, so metering it against a
+     customer quota would be backwards. A valid admin secret therefore passes
+     without touching any counter. */
+  const adminSecret = request.headers.get("X-Admin-Secret") || "";
+  if (adminSecret && env.ADMIN_SECRET && adminSecret === env.ADMIN_SECRET) {
+    return { ok: true, admin: true };
+  }
   if (!kv) return { ok: true };
 
   const token = request.headers.get("X-Access-Token") || "";
