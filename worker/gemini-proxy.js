@@ -41,6 +41,14 @@
 
 const UPSTREAM = "https://generativelanguage.googleapis.com";
 const DEFAULT_MAX_USES = 3;
+/* Text models in preference order. The first that does not answer 404 is
+   used, so a model retirement degrades instead of breaking the endpoint. */
+const TEXT_MODELS = [
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash"
+];
 // A started report stays renderable for this long, so a slow session can finish.
 const GENERATION_TTL_SECONDS = 3 * 60 * 60;
 // Hard ceiling of image calls a single report may make. A full report needs
@@ -211,22 +219,31 @@ export default {
           '"submarket":"","confidence":0,"sources":[{"name":"","url":""}],"as_of":"YYYY-MM-DD"}'
         ].join("\n");
 
-        let resp;
-        try {
-          const u = new URL(UPSTREAM + "/v1beta/models/gemini-2.5-flash:generateContent");
-          u.searchParams.set("key", env.GEMINI_API_KEY);
-          resp = await fetch(u.toString(), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              tools: [{ google_search: {} }],
-              generationConfig: { temperature: 0, maxOutputTokens: 2048 }
-            })
-          });
-        } catch (e) {
-          return json({ error: "lookup failed", detail: String(e).slice(0, 200) }, 502, cors);
+        /* Google retires models under accounts that never used them — a name
+           that still appears in /models can answer 404 "no longer available
+           to new users" on a real call. So try the list in order rather than
+           betting the whole endpoint on one name. */
+        let resp = null;
+        for (const model of TEXT_MODELS) {
+          try {
+            const u = new URL(UPSTREAM + "/v1beta/models/" + model + ":generateContent");
+            u.searchParams.set("key", env.GEMINI_API_KEY);
+            resp = await fetch(u.toString(), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                tools: [{ google_search: {} }],
+                generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+              })
+            });
+          } catch (e) {
+            return json({ error: "lookup failed", detail: String(e).slice(0, 200) }, 502, cors);
+          }
+          if (resp.ok) break;
+          if (resp.status !== 404) break;   /* a real failure, not a dead model */
         }
+        if (!resp) return json({ error: "lookup failed", detail: "no usable model" }, 502, cors);
         if (!resp.ok) {
           const t = await resp.text();
           return json({ error: "upstream error", status: resp.status, detail: t.slice(0, 300) }, resp.status, cors);

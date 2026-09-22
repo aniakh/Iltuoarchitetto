@@ -13,6 +13,11 @@
  * Loaded after ita-runtime.js and before the app bundle.
  */
 (function () {
+  /* Preference order for the translation call. A name can still be listed by
+     /models and yet answer 404 on a real call once Google retires it for
+     accounts that never used it, so fall through rather than give up. */
+  var TEXT_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"];
+
   "use strict";
 
   var LANG_KEY = "ita_lang";
@@ -216,15 +221,19 @@
           "Keep numbers, units, product codes and proper nouns unchanged. Keep the same tone (professional, direct, informal 'tu'). " +
           "Do not add or remove punctuation at the ends. If a string is already Italian, return it unchanged.\n\n" +
           JSON.stringify(batch);
-        var res = await fetch(window.ITA.geminiUrl("gemini-2.5-flash", ""), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0, maxOutputTokens: 8192, responseMimeType: "application/json" }
-          })
-        });
-        if (!res.ok) break;
+        var res = null;
+        for (var mi = 0; mi < TEXT_MODELS.length; mi++) {
+          res = await fetch(window.ITA.geminiUrl(TEXT_MODELS[mi], ""), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0, maxOutputTokens: 8192, responseMimeType: "application/json" }
+            })
+          });
+          if (res.ok || res.status !== 404) break;   /* 404 = model retired, try the next */
+        }
+        if (!res || !res.ok) break;
         var data = await res.json();
         var txt = (((data.candidates || [])[0] || {}).content || {}).parts || [];
         txt = txt.map(function (p) { return p.text || ""; }).join("").trim();
