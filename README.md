@@ -161,6 +161,56 @@ compares against their own invoices; the heating-demand cut is reported
 separately, since changing the energy vector moves the bill without changing
 how much heat the flat needs.
 
+## Return on investment: the 30-year investment case
+
+A separate report tab answers the buyer's question rather than the owner's:
+*should I buy this flat, renovate it, and what comes back over thirty years?*
+
+**Money in** is everything it takes to own the finished flat — the purchase
+price, *imposta di registro*, agency commission plus VAT, the notary
+allowance, the construction works with their permits, fees, contingency and
+VAT, and the furniture. The offer to aim for is the asking price less the
+haircut between asking and achievable prices. The OMI band is shown beside it
+as a **cross-check, not a floor**: OMI quotes a generic property in the zone,
+and a dated flat legitimately transacts below the band bottom.
+
+**Money back** comes from three separate places, none of which double counts
+another: the value uplift at completion, the net rent after the itemised
+deductions and *cedolare secca*, and the renovation tax credit spread over ten
+years. The report also solves the **walk-away price** — the highest purchase
+price at which the thirty-year net present value is still zero.
+
+**The energy saving is deliberately excluded from investor cash flow.** In a
+let flat the tenant pays the bills, and the saving is already priced into the
+rent and the resale value. Adding it here is how renovation returns get
+overstated. It stays quantified in the energy tabs.
+
+A chart plots where you would stand if you sold in any given year — rent and
+tax instalments banked, plus net sale proceeds, less everything put in — for
+all three scenarios on one money axis, so the tab answers *which* scenario and
+not only *whether*. Year 0 on that chart is the immediate flip.
+
+All rates are planning assumptions, disclosed on the page, and the report says
+so. The ones that matter most:
+
+| Assumption | Default | Note |
+|---|---|---|
+| Discount rate | 4.5% real | applied to real cash flows |
+| Capital growth | 1.5%/year | from completion |
+| Rent growth | 1.5%/year | |
+| Renovation deduction | 36%, cap €96,000/unit, over 10 years | the main-home rate of 50% is shown alongside |
+| Bonus mobili | 50%, cap €5,000 | only where qualifying works are done |
+| Imposta di registro | 9% | on a cadastral base **proxied** at 60% of price — the real base is the revalued *rendita catastale*, which the report does not have |
+| Purchase costs | 3% agency + 22% VAT, €2,500 notary | |
+| Selling costs | 3% | |
+| Plusvalenza | 26%, only inside 5 years of ownership | |
+
+Excluded and stated as excluded: mortgage interest, IMU, furnishing
+replacement, void periods beyond the vacancy allowance already in the rent
+model, and renovation overrun beyond the contingency. **The fiscal rates turn
+on whether the flat becomes your main home and are reset by each budget law —
+they are planning inputs to confirm with a commercialista, not quotations.**
+
 ## The single-file standalone page
 
 `standalone.html` is the whole product in one file — the vitrine and the
