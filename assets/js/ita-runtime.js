@@ -283,12 +283,14 @@
    * level, or null when nothing usable came back.
    */
   var marketCache = {};
-  ITA.marketLookup = function (comune, province) {
+  ITA.marketLookup = function (comune, province, force) {
     if (!PROXY || !comune) return Promise.resolve(null);
     var key = String(comune).toLowerCase() + "|" + (province || "");
-    if (marketCache[key]) return Promise.resolve(marketCache[key]);
+    if (!force && marketCache[key]) return Promise.resolve(marketCache[key]);
+    if (force) delete marketCache[key];
     var qs = "?comune=" + encodeURIComponent(comune) +
-             (province ? "&province=" + encodeURIComponent(province) : "");
+             (province ? "&province=" + encodeURIComponent(province) : "") +
+             (force ? "&refresh=1" : "");
     return fetch(PROXY + "/market-lookup" + qs)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
