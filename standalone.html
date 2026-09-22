@@ -4699,80 +4699,258 @@ function calcEnergyNPV(investment, taxDeductionRate, annualSaving, years = 30, d
     paybackYears: investment > 0 && annualSaving > 0 ? +(investment * (1 - taxDeductionRate) / annualSaving).toFixed(1) : null
   };
 }
-function runFullEnergyCalc(d, sol){
-  const area = parseFloat(d.area)||85;
-  const cityKey = (d.city||"").toLowerCase().trim();
-  const GG = LOMBARDY_GG[cityKey] || 2404;
-  const S_su_V = 0.65;
-  const EPrif = EPnren_rif(GG, S_su_V);
-  const EP_pre = estimateEPnrenPre(d);
-  const EP_post = applyInterventions(EP_pre, sol.ch);
-  const heatingVector = d.heatingType==="Pompa di calore" ? "elettricita" : d.heatingType==="Centralizzato"?"teleriscaldamento":"gas";
-  const hasPdC_pre = d.heatingType==="Pompa di calore";
-  const hasPdC_post = sol.ch.includes("Heating system") || sol.ch.includes("Complete energy upgrade");
-  const cons_pre = decomposeConsumption(EP_pre, area, heatingVector, hasPdC_pre);
-  let cons_post = decomposeConsumption(EP_post, area, heatingVector, hasPdC_post);
+/* ── Energy model — Lombardy revision spec, 22 Sep 2026 ───────────────────
+   Two rules drive this:
 
-  /* PV self-consumption subtracts from electricity */
-  if(sol.ch.includes("Renewable sources") || sol.ch.includes("Complete energy upgrade")){
-    const kWp = 3, hasBattery = sol.ch.includes("Complete energy upgrade");
-    const pv = pvProduction(kWp, hasBattery);
-    cons_post.elec_kWh = Math.max(0, cons_post.elec_kWh - pv);
+   1. The BEFORE class and consumption are OBSERVATIONS — what the owner
+      declared or what the advertisement stated. They are never remodelled
+      over. Only when nothing was supplied is a screening estimate used, and
+      it is labelled as such.
+
+   2. APE classes are RATIOS to a reference building, not kWh/m² thresholds.
+      A recorded before class therefore implies a ratio INTERVAL, so the
+      post-works class is reported as a BAND propagated through that interval,
+      never as a single certified-looking letter.
+
+   Every constant below is an editable design/occupancy assumption. The
+   tariffs in particular are SENSITIVITY INPUTS, not ARERA quotations — the
+   ARERA landing page does not publish a household's tariff. */
+
+/* Reference-ratio interval implied by each class. Open upper bound for G. */
+const APE_RATIO_BANDS = [
+  ['A4', 0.00, 0.40], ['A3', 0.40, 0.60], ['A2', 0.60, 0.80],
+  ['A1', 0.80, 1.00], ['B',  1.00, 1.20], ['C',  1.20, 1.50],
+  ['D',  1.50, 2.00], ['E',  2.00, 2.60], ['F',  2.60, 3.50],
+  ['G',  3.50, 5.00]
+];
+function ratioIntervalForClass(cls) {
+  const row = APE_RATIO_BANDS.find(r => r[0] === String(cls || '').toUpperCase());
+  return row ? { min: row[1], max: row[2], open: row[0] === 'G' } : null;
+}
+
+/* Non-renewable primary conversion — Regional Annex H, Allegato 2. */
+const F_PNREN_GAS = 1.05;
+const F_PNREN_ELEC = 1.95;
+const F_PNREN_DISTRICT = 1.50;
+
+/* Screening defaults. Design/occupancy assumptions, editable. */
+const ENERGY_DEFAULTS = {
+  gasSeasonalEfficiency: 0.82,
+  scop: 3.2,
+  gasKWhPerM3: 10.5,
+  dhwUsefulPerM2: 20,          /* kWh/m²·year of useful hot-water demand   */
+  applianceElecPerYear: 2200,  /* kWh/year — EXCLUDED from APE primary     */
+  heatingShareOfPrimary: 0.70  /* heating + DHW share; rest held constant  */
+};
+
+/* Sensitivity tariffs — NOT ARERA quotations. */
+const ENERGY_TARIFFS = {
+  elecPerKWh: 0.30, gasPerM3: 1.10, districtPerKWh: 0.12,
+  fixedGasPerYear: 70, fixedElecPerYear: 45
+};
+
+/* Useful-demand reductions: explicit planning assumptions, applied
+   multiplicatively so overlapping measures are not double counted. */
+const DEMAND_REDUCTIONS = {
+  'Transparent envelope': 0.12,
+  'Opaque envelope': 0.22,
+  'Smart controls': 0.05
+};
+
+function heatingVectorOf(d) {
+  if (d.heatingType === 'Pompa di calore') return 'heatpump';
+  if (d.heatingType === 'Centralizzato') return 'district';
+  return 'gas';
+}
+
+function runFullEnergyCalc(d, sol) {
+  const ab = typeof areaBasis === 'function' ? areaBasis(d) : {};
+  const area = nPositive(ab.heated) || parseFloat(d.area) || 85;
+  const GG = LOMBARDY_GG[String(d.city || '').toLowerCase().trim()] || 2404;
+  const EPrif = EPnren_rif(GG, 0.65);
+  const K = ENERGY_DEFAULTS;
+
+  /* ---- BEFORE: observations first ------------------------------------ */
+  const declaredClass = (d.eCls && d.eCls !== 'Unknown') ? String(d.eCls).toUpperCase() : null;
+
+  /* An advertisement almost always publishes EPgl,nren as an INDEX in
+     kWh/m²·year, not a year's consumption. Reading "175" as 175 kWh/year
+     would understate the flat by two orders of magnitude, so resolve the
+     unit before the number is used anywhere. No heated dwelling in Lombardy
+     runs on under 600 kWh in a year, so a figure that small is an index
+     whatever unit was claimed for it. */
+  const apeUnit = d.energyInput?.apeUnit || d.listingExtracted?.energyUnit || 'unknown';
+  const declaredEnergy = nPositive(d.annualEnergy);
+  const isIndex = !!declaredEnergy &&
+    (apeUnit === 'kWh/m2/year' || declaredEnergy < 600);
+  const declaredIndex = isIndex ? declaredEnergy : null;   /* kWh/m²·year, primary */
+  const declaredKWh = isIndex ? null : declaredEnergy;     /* kWh/year, delivered  */
+
+  const band = ratioIntervalForClass(declaredClass) ||
+               ratioIntervalForClass(classFromRatio(
+                 (declaredIndex || estimateEPnrenPre(d)) / EPrif));
+
+  /* A published index pins the reference ratio; a class alone only narrows
+     it to an interval. Where both exist the declared class wins the display,
+     so the index is read inside that class's interval. */
+  const ratioMid = declaredIndex
+    ? Math.min(Math.max(declaredIndex / EPrif, band.min), band.open ? Infinity : band.max)
+    : (band.min + band.max) / 2;
+
+  const classSource = declaredClass
+    ? (d.listingExtracted?.eCls === declaredClass ? 'advertisement' : 'declared by you')
+    : 'screening estimate (no class supplied)';
+
+  /* Primary-energy index implied by the declared class, and its split. */
+  const EP_pre = Math.round(ratioMid * EPrif * 10) / 10;
+  const primaryHeatPre = EP_pre * K.heatingShareOfPrimary;
+
+  const vecPre = heatingVectorOf(d);
+  const fPre = vecPre === 'heatpump' ? F_PNREN_ELEC : vecPre === 'district' ? F_PNREN_DISTRICT : F_PNREN_GAS;
+  const etaPre = vecPre === 'heatpump' ? K.scop : vecPre === 'district' ? 1.0 : K.gasSeasonalEfficiency;
+
+  /* Useful demand: Q_heat = A × EP_H,nd, backed out of the primary index
+     unless the owner gave a measured annual consumption, which wins. */
+  const Q_dhw = area * K.dhwUsefulPerM2;
+  let Q_heat_pre = Math.max(0, (primaryHeatPre / fPre) * etaPre * area - Q_dhw);
+  let consumptionSource = declaredIndex
+    ? 'the EPgl,nren index of ' + declaredIndex + ' kWh/m²·year on the certificate'
+    : 'modelled from the declared class';
+  if (declaredKWh) {
+    /* Measured delivered energy: strip appliances, convert to useful demand. */
+    const deliveredHeat = Math.max(0, declaredKWh - K.applianceElecPerYear);
+    Q_heat_pre = Math.max(0, deliveredHeat * etaPre - Q_dhw);
+    consumptionSource = 'your declared annual consumption';
   }
 
-  const cost_pre = annualCost(cons_pre);
-  const cost_post = annualCost(cons_post);
-  const co2_pre = annualCO2(cons_pre);
-  const co2_post = annualCO2(cons_post);
-  const cls_pre = classFromRatio(EP_pre/EPrif);
-  const cls_post = classFromRatio(EP_post/EPrif);
-  const saving_year = cost_pre - cost_post;
+  /* ---- Delivered quantities and bill, before --------------------------- */
+  const deliver = (Q_heat, vector) => {
+    const useful = Q_heat + Q_dhw;
+    if (vector === 'heatpump') {
+      return { gas_Smc: 0, elec_kWh: Math.round(useful / K.scop + K.applianceElecPerYear), district_kWh: 0, pellet_kg: 0 };
+    }
+    if (vector === 'district') {
+      return { gas_Smc: 0, elec_kWh: K.applianceElecPerYear, district_kWh: Math.round(useful), pellet_kg: 0 };
+    }
+    return {
+      gas_Smc: Math.round(useful / (K.gasSeasonalEfficiency * K.gasKWhPerM3)),
+      elec_kWh: K.applianceElecPerYear, district_kWh: 0, pellet_kg: 0
+    };
+  };
+  const billOf = c => Math.round(
+    c.gas_Smc * ENERGY_TARIFFS.gasPerM3 +
+    c.elec_kWh * ENERGY_TARIFFS.elecPerKWh +
+    c.district_kWh * ENERGY_TARIFFS.districtPerKWh +
+    (c.gas_Smc > 0 ? ENERGY_TARIFFS.fixedGasPerYear : 0) +
+    ENERGY_TARIFFS.fixedElecPerYear);
+  const co2Of = c => Math.round(
+    c.gas_Smc * K.gasKWhPerM3 * F_CO2.gas +
+    c.elec_kWh * F_CO2.elettricita +
+    c.district_kWh * (F_CO2.teleriscaldamento || F_CO2.gas));
 
-  /* Investment subset for energy-only interventions */
-  const energyInterv = ["Opaque envelope","Transparent envelope","Heating system","Cooling system","Renewable sources","Ventilation system","Complete energy upgrade","Smart controls","Other energy interventions"];
-  const investmentEnergy = Math.round(
-    (sol.co.heating||0) + (sol.co.cooling||0) + (sol.co.windows||0) +
-    (sol.co.insulation_int||0) + (sol.co.solar||0) + (sol.co.ventilation||0) +
-    (sol.co.smart||0) + (sol.co.led||0)
-  );
-  const taxRate = 0.50; // Ecobonus primary residence 2026
+  const consPre = deliver(Q_heat_pre, vecPre);
+  const costPre = billOf(consPre);
 
-  const npvResult = calcEnergyNPV(investmentEnergy, taxRate, saving_year, 30, 0.04, 0.03);
+  /* ---- AFTER: demand reduction, then vector ---------------------------- */
+  const works = sol.ch || [];
+  const all = works.includes('Complete energy upgrade');
+  let retained = 1;
+  const applied = [];
+  Object.keys(DEMAND_REDUCTIONS).forEach(k => {
+    if (works.includes(k) || all) { retained *= (1 - DEMAND_REDUCTIONS[k]); applied.push(k); }
+  });
+  const Q_heat_post = Q_heat_pre * retained;
 
-  const rapportoPre = EP_pre/EPrif;
-  const rapportoPost = EP_post/EPrif;
+  const toHeatPump = works.includes('Heating system') || all;
+  const vecPost = toHeatPump ? 'heatpump' : vecPre;
+  const fPost = vecPost === 'heatpump' ? F_PNREN_ELEC : vecPost === 'district' ? F_PNREN_DISTRICT : F_PNREN_GAS;
+  const etaPost = vecPost === 'heatpump' ? K.scop : vecPost === 'district' ? 1.0 : K.gasSeasonalEfficiency;
+
+  let consPost = deliver(Q_heat_post, vecPost);
+  if (works.includes('Renewable sources') || all) {
+    const pv = pvProduction(3, all);                 /* 3 kWp default */
+    consPost.elec_kWh = Math.max(0, consPost.elec_kWh - Math.round(pv * 0.35));
+  }
+  const costPost = billOf(consPost);
+
+  /* ---- Post class as a BAND through the reference-ratio interval ------- */
+  const primaryHeatPost = ((Q_heat_post + Q_dhw) / etaPost) * fPost / area;
+  const heatFactor = primaryHeatPre > 0 ? primaryHeatPost / primaryHeatPre : 1;
+  const scale = r => {
+    const hp = r * K.heatingShareOfPrimary * heatFactor;
+    const op = r * (1 - K.heatingShareOfPrimary);
+    return hp + op;
+  };
+  const postRatioMin = scale(band.min);
+  const postRatioMax = scale(band.max);
+  const postClassBest = classFromRatio(postRatioMin);
+  const postClassWorst = classFromRatio(postRatioMax);
+  const postClassMid = classFromRatio(scale(ratioMid));
+
+  const jumps = (ENERGY_RANK[postClassMid] || 0) - (ENERGY_RANK[declaredClass || band && classFromRatio(ratioMid)] || 0);
+  const saving = costPre - costPost;
+  const stress = Math.round(Math.abs(saving) * 0.35 + 150);
+
+  /* ---- Investment, incentive, NPV -------------------------------------- */
+  const co = sol.co || {};
+  const investment = Math.round(
+    (co.heating || 0) + (co.cooling || 0) + (co.windows || 0) +
+    (co.insulation_int || 0) + (co.solar || 0) + (co.ventilation || 0) +
+    (co.smart || 0) + (co.led || 0));
+  const npv = calcEnergyNPV(investment, 0.50, saving, 30, 0.04, 0.03);
 
   return {
-    GG, EPrif: Math.round(EPrif*10)/10,
+    GG, EPrif: Math.round(EPrif * 10) / 10,
+    provenance: {
+      classSource,
+      consumptionSource,
+      tariffs: 'Sensitivity defaults, not ARERA quotations',
+      reductions: applied.length ? applied.join(', ') : 'no demand-reduction measure selected',
+      vector: vecPre + (vecPost !== vecPre ? ' → ' + vecPost : '')
+    },
+    assumptions: {
+      gasSeasonalEfficiency: K.gasSeasonalEfficiency, scop: K.scop,
+      gasKWhPerM3: K.gasKWhPerM3, dhwUsefulPerM2: K.dhwUsefulPerM2,
+      applianceElecPerYear: K.applianceElecPerYear, tariffs: ENERGY_TARIFFS,
+      reductions: DEMAND_REDUCTIONS
+    },
     ante: {
-      EPnren: Math.round(EP_pre*10)/10,
-      classe: cls_pre,
-      rapporto: Math.round(rapportoPre*100)/100,
-      cons: cons_pre,
-      cost: cost_pre,
-      co2: co2_pre
+      EPnren: EP_pre, classe: declaredClass || classFromRatio(ratioMid),
+      classDeclared: !!declaredClass,
+      rapporto: Math.round(ratioMid * 100) / 100,
+      /* G has no upper bound in the framework; 5.00 is only a working value
+         for the midpoint, so the flag lets the report print "> 3.5". */
+      ratioBand: [band.min, band.max], ratioBandOpen: !!band.open,
+      Q_heat: Math.round(Q_heat_pre), Q_dhw: Math.round(Q_dhw),
+      cons: consPre, cost: costPre, co2: co2Of(consPre)
     },
     post: {
-      EPnren: Math.round(EP_post*10)/10,
-      classe: cls_post,
-      rapporto: Math.round(rapportoPost*100)/100,
-      cons: cons_post,
-      cost: cost_post,
-      co2: co2_post
+      EPnren: Math.round(scale(ratioMid) * EPrif * 10) / 10,
+      classe: postClassMid,
+      classBand: postClassBest === postClassWorst ? [postClassBest] : [postClassBest, postClassWorst],
+      rapporto: Math.round(scale(ratioMid) * 100) / 100,
+      ratioBand: [Math.round(postRatioMin * 100) / 100, Math.round(postRatioMax * 100) / 100],
+      Q_heat: Math.round(Q_heat_post), Q_dhw: Math.round(Q_dhw),
+      cons: consPost, cost: costPost, co2: co2Of(consPost)
     },
     delta: {
-      saving_year,
-      saving_pct: Math.round((1 - EP_post/EP_pre)*1000)/10,
-      co2_kg_saved: co2_pre - co2_post,
-      class_jumps: Math.max(0, (ENERGY_RANK[cls_post]||0) - (ENERGY_RANK[cls_pre]||0))
+      saving_year: saving,
+      saving_range: [saving - stress, saving + stress],
+      /* The headline percentage is the BILL saving, because that is what the
+         reader compares against their own invoices. The demand reduction is
+         reported separately — switching vector changes the bill without
+         changing how much heat the flat needs. */
+      saving_pct: costPre > 0 ? Math.max(0, Math.round((saving / costPre) * 1000) / 10) : 0,
+      demand_reduction_pct: Q_heat_pre > 0 ? Math.round((1 - retained) * 1000) / 10 : 0,
+      kwh_saved: Math.round(Q_heat_pre - Q_heat_post),
+      co2_kg_saved: co2Of(consPre) - co2Of(consPost),
+      class_jumps: Math.max(0, jumps)
     },
     economy: {
-      investment_gross: investmentEnergy,
-      tax_deduction: Math.round(investmentEnergy*taxRate),
-      investment_net: Math.round(investmentEnergy*(1-taxRate)),
-      payback_years: npvResult.paybackYears,
-      npv_30y: npvResult.npv,
-      cashflow: npvResult.cashflow
+      investment_gross: investment,
+      tax_deduction: Math.round(investment * 0.50),
+      investment_net: Math.round(investment * 0.50),
+      payback_years: npv.paybackYears, npv_30y: npv.npv, cashflow: npv.cashflow
     }
   };
 }
@@ -4831,6 +5009,19 @@ function genSols(d) {
       : _modelled;
     s.energy = e;
     try { s.efull = runFullEnergyCalc(ed, s); } catch (err) { s.efull = null; }
+    /* Sync the summary fields off the full calc so the declared before-class
+       cannot be contradicted elsewhere in the report. */
+    if (s.efull) {
+      s.en.bC = s.efull.ante.classe;
+      s.en.bS = s.efull.ante.EPnren;
+      s.en.aC = s.efull.post.classe;
+      s.en.aS = s.efull.post.EPnren;
+      s.en.sp = s.efull.delta.saving_pct;
+      s.sv = {
+        yr: s.efull.delta.saving_year,
+        mo: Math.round(s.efull.delta.saving_year / 12)
+      };
+    }
     s.vl = calcLombardyVal(d, s);
     return s;
   });
@@ -18661,7 +18852,15 @@ function EvidenceWorkspace({ d, u }) {
           energyInput: { ...(p.energyInput || {}), apeUnit: 'kWh/year' }
         })),
         hint: "Sum of the kWh on 12 months of bills. Optional."
-      })),
+      }),
+      /* The commonest mistake here is typing the certificate's kWh/m²·year
+         index instead of the year's total, which is ~100x smaller. */
+      nPositive(d.annualEnergy) && nPositive(d.annualEnergy) < 600
+        ? h("p", { style: { fontSize: 12.5, color: '#B4541E', marginTop: 6 } },
+            "That looks like the kWh/m²·year index from the certificate rather than a ",
+            "year's total — a home this size normally uses several thousand kWh. The ",
+            "report reads it as an index. Enter the sum of 12 months of bills to override it.")
+        : null),
 
     h("p", { style: { fontSize: 12, color: '#7B8B96', marginTop: 14 } },
       "OMI quotations are broad zonal indications and portal figures are asking prices, ",
@@ -18899,33 +19098,30 @@ function EnergySummary({
   detail = false
 }) {
   const h = React.createElement;
-  const scr = s.energy || {};
   const f = s.efull || null;
   const en = s.en || {};
   const clsPre = (f && f.ante.classe) || en.bC || d.eCls || 'Unknown';
   const clsPost = (f && f.post.classe) || en.aC || 'Unknown';
-  const epPre = f ? f.ante.EPnren : en.bS;
-  const epPost = f ? f.post.EPnren : en.aS;
-  const saving = scr.saving != null ? scr.saving : (f ? f.delta.saving_year : (s.sv && s.sv.yr));
-  const jumps = f ? f.delta.class_jumps : null;
   const colour = c => (typeof ENERGY_COLOR !== 'undefined' && ENERGY_COLOR[c]) || '#7B8B96';
   const ladder = ['G','F','E','D','C','B','A1','A2','A3','A4'];
+  const bandArr = (f && f.post.classBand) || [clsPost];
+  const inBand = c => bandArr.indexOf(c) >= 0 ||
+    (bandArr.length === 2 &&
+     ENERGY_RANK[c] >= Math.min(ENERGY_RANK[bandArr[0]], ENERGY_RANK[bandArr[1]]) &&
+     ENERGY_RANK[c] <= Math.max(ENERGY_RANK[bandArr[0]], ENERGY_RANK[bandArr[1]]));
 
-  /* APE ladder: every class, with the before and after positions marked. */
   const scale = h("div", { style: { display: 'flex', gap: 3, margin: '14px 0 6px', flexWrap: 'wrap' } },
     ladder.map(c => {
-      const isPre = c === clsPre, isPost = c === clsPost;
+      const isPre = c === clsPre, isPost = inBand(c);
       return h("div", {
-        key: c,
-        title: c,
+        key: c, title: c,
         style: {
           flex: '1 1 0', minWidth: 34, textAlign: 'center', padding: '7px 2px',
           borderRadius: 5, background: colour(c),
           opacity: isPre || isPost ? 1 : 0.28,
           color: ['A4','A3','G','F'].indexOf(c) >= 0 ? '#fff' : '#1c2733',
           fontWeight: 800, fontSize: 11.5,
-          outline: isPost ? '3px solid #1c2733' : 'none',
-          outlineOffset: 1
+          outline: isPost ? '3px solid #1c2733' : 'none', outlineOffset: 1
         }
       }, c, (isPre || isPost) && h("div", { style: { fontSize: 8.5, fontWeight: 700, marginTop: 2 } },
         isPre && isPost ? 'ora / dopo' : isPre ? 'ora' : 'dopo'));
@@ -18936,28 +19132,36 @@ function EnergySummary({
     h("strong", tone ? { style: { color: tone } } : null, value),
     note ? h("span", null, note) : null);
 
+  const num = (n, unit) => n == null ? '—' : Math.round(n).toLocaleString('it-IT') + (unit ? ' ' + unit : '');
   const consRow = (label, unit, before, after) => {
+    if (!before && !after) return null;
     const saved = before != null && after != null ? before - after : null;
     return h("tr", { key: label },
-      h("td", null, label),
-      h("td", null, before == null ? '—' : Math.round(before).toLocaleString('it-IT') + ' ' + unit),
-      h("td", null, after == null ? '—' : Math.round(after).toLocaleString('it-IT') + ' ' + unit),
-      h("td", null, saved == null ? '—' : (saved > 0 ? '−' : '+') + Math.abs(Math.round(saved)).toLocaleString('it-IT') + ' ' + unit));
+      h("td", null, label), h("td", null, num(before, unit)), h("td", null, num(after, unit)),
+      h("td", null, saved == null ? '—' : (saved >= 0 ? '−' : '+') + num(Math.abs(saved), unit)));
   };
+
+  const bandLabel = bandArr.length === 2 ? bandArr[0] + '–' + bandArr[1] : bandArr[0];
 
   return h("div", { className: "basis-card" },
     h("h3", null, s.nm, " · ", detail ? 'Energy calculation detail' : 'Energy performance'),
     scale,
+
     h("div", { className: "area-evidence" },
       tile('Current APE class', clsPre,
-        shown(epPre, ' kWh/m²/year') + ' · primary energy', colour(clsPre)),
-      tile('APE class after the works', clsPost,
-        shown(epPost, ' kWh/m²/year') + (en.sp ? ' · −' + en.sp + '%' : ''), colour(clsPost)),
-      tile('Class improvement',
-        jumps == null ? '—' : (jumps > 0 ? '+' + jumps + (jumps === 1 ? ' class' : ' classes') : 'no change'),
-        f ? 'EP ratio ' + f.ante.rapporto + ' → ' + f.post.rapporto + ' vs reference building' : null),
-      tile('Estimated annual bill saving', fmt(saving),
-        scr.ready ? 'From your metered forecast' : 'Modelled estimate')),
+        f && f.ante.classDeclared
+          ? 'From ' + f.provenance.classSource
+          : 'Screening estimate — no class supplied',
+        colour(clsPre)),
+      tile('Class after the works', bandLabel,
+        'Indicative band, not a certified APE', colour(bandArr[bandArr.length - 1])),
+      tile('Current consumption',
+        f ? num(f.ante.cons.gas_Smc ? f.ante.cons.gas_Smc : f.ante.cons.elec_kWh,
+                f.ante.cons.gas_Smc ? 'Sm³' : 'kWh') : '—',
+        f ? 'From ' + f.provenance.consumptionSource : null),
+      tile('Estimated annual saving',
+        f ? fmt(f.delta.saving_year) + ' · ' + f.delta.saving_pct + '%' : fmt(s.sv && s.sv.yr),
+        f ? 'range ' + fmt(f.delta.saving_range[0]) + ' – ' + fmt(f.delta.saving_range[1]) : null)),
 
     f && h("div", { className: "table-scroll", style: { marginTop: 14 } },
       h("table", null,
@@ -18967,36 +19171,58 @@ function EnergySummary({
         h("tbody", null, [
           consRow('Natural gas', 'Sm³', f.ante.cons.gas_Smc, f.post.cons.gas_Smc),
           consRow('Electricity', 'kWh', f.ante.cons.elec_kWh, f.post.cons.elec_kWh),
-          f.ante.cons.pellet_kg || f.post.cons.pellet_kg
-            ? consRow('Pellet', 'kg', f.ante.cons.pellet_kg, f.post.cons.pellet_kg) : null,
+          consRow('District heat', 'kWh', f.ante.cons.district_kWh, f.post.cons.district_kWh),
+          h("tr", { key: 'useful' },
+            h("td", null, "Useful heating demand"),
+            h("td", null, num(f.ante.Q_heat, 'kWh')), h("td", null, num(f.post.Q_heat, 'kWh')),
+            h("td", null, "−" + num(f.delta.kwh_saved, 'kWh'))),
           h("tr", { key: 'cost', style: { fontWeight: 700 } },
             h("td", null, "Annual energy bill"),
             h("td", null, fmt(f.ante.cost)), h("td", null, fmt(f.post.cost)),
-            h("td", null, "−" + fmt(Math.max(0, f.ante.cost - f.post.cost)).replace('€', '') + " €")),
+            h("td", null, "−" + fmt(Math.max(0, f.delta.saving_year)).replace('€',''), " €")),
           h("tr", { key: 'co2' },
             h("td", null, "CO₂ emissions"),
-            h("td", null, Math.round(f.ante.co2).toLocaleString('it-IT') + ' kg'),
-            h("td", null, Math.round(f.post.co2).toLocaleString('it-IT') + ' kg'),
-            h("td", null, "−" + Math.round(Math.max(0, f.delta.co2_kg_saved)).toLocaleString('it-IT') + ' kg'))
+            h("td", null, num(f.ante.co2, 'kg')), h("td", null, num(f.post.co2, 'kg')),
+            h("td", null, "−" + num(Math.max(0, f.delta.co2_kg_saved), 'kg')))
         ].filter(Boolean)))),
 
     f && detail && h("div", { className: "area-evidence", style: { marginTop: 14 } },
       tile('Energy works investment', fmt(f.economy.investment_gross), 'Energy interventions only'),
-      tile('Ecobonus deduction', fmt(f.economy.tax_deduction), '50% over 10 years'),
-      tile('Net cost after deduction', fmt(f.economy.investment_net), null),
-      tile('Payback', f.economy.payback_years == null ? 'not reached' : f.economy.payback_years + ' years',
+      tile('Deduction screened', fmt(f.economy.tax_deduction), '50% over 10 years — eligibility not confirmed'),
+      tile('Heating demand cut', f.delta.demand_reduction_pct + '%',
+        f.provenance.reductions),
+      tile('Reference ratio', f.ante.rapporto + ' → ' + f.post.rapporto,
+        'band ' + (f.ante.ratioBandOpen ? '> ' + f.ante.ratioBand[0]
+          : f.ante.ratioBand[0] + '–' + f.ante.ratioBand[1]) +
+        ' → ' + f.post.ratioBand[0] + '–' + f.post.ratioBand[1]),
+      tile('Payback',
+        f.economy.payback_years == null ? 'not reached' : f.economy.payback_years + ' years',
         f.economy.npv_30y == null ? null : 'NPV 30y ' + fmt(f.economy.npv_30y))),
 
-    f && detail && h("p", null,
-      "Heating degree days for ", d.city || 'this comune', ": ", f.GG,
-      ". Reference building EP", h("sub", null, "nren"), ": ", f.EPrif, " kWh/m²/year. ",
-      "The class is the ratio of the property's EP", h("sub", null, "nren"),
-      " to that reference, per DM 26/06/2015."),
+    f && detail && h("details", { style: { marginTop: 12 } },
+      h("summary", { style: { cursor: 'pointer', fontWeight: 600, fontSize: 13 } },
+        "Model assumptions and where each number comes from"),
+      h("p", { style: { fontSize: 12.5, lineHeight: 1.6, marginTop: 8 } },
+        "Before class: ", h("strong", null, f.provenance.classSource), ". ",
+        "Before consumption: ", h("strong", null, f.provenance.consumptionSource), ". ",
+        "Heating vector: ", h("strong", null, f.provenance.vector), ". ",
+        "Demand reductions applied: ", h("strong", null, f.provenance.reductions),
+        " (planning assumptions, multiplied to avoid double counting). ",
+        "Gas seasonal efficiency ", f.assumptions.gasSeasonalEfficiency,
+        ", SCOP ", f.assumptions.scop,
+        ", ", f.assumptions.gasKWhPerM3, " kWh/m³ gas equivalent, ",
+        f.assumptions.dhwUsefulPerM2, " kWh/m²·yr hot water, ",
+        f.assumptions.applianceElecPerYear, " kWh/yr appliances (excluded from the APE primary index). ",
+        "Tariffs €", f.assumptions.tariffs.elecPerKWh, "/kWh electricity and €",
+        f.assumptions.tariffs.gasPerM3, "/m³ gas are ",
+        h("strong", null, "sensitivity inputs, not ARERA quotations"), ". ",
+        "Degree days ", f.GG, ", reference building EP ", f.EPrif, " kWh/m²·yr.")),
 
     h("p", null,
-      "The class after the works is estimated from the energy measures in this scenario over ",
-      shown(scr.area || parseFloat(d.area), ' m²'), " of heated area. It is an indicative projection, ",
-      "not a certified APE — a qualified assessor issues the final certificate."),
+      "APE classes are ratios to a reference building, not fixed kWh/m² thresholds. ",
+      "The recorded class implies a ratio interval, so the result after the works is shown as a ",
+      h("strong", null, "band"), " — an indicative projection, not a certified APE, and not a ",
+      "statistical confidence interval. A qualified assessor issues the actual certificate."),
     h(SourceLink, { id: "ape" }), " · ", h(SourceLink, { id: "tariff" }), " · ", h(SourceLink, { id: "pv" }));
 }
 function ValueSummary({

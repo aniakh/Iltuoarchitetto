@@ -109,6 +109,58 @@ derived from that local asking reference. The fallback is deliberately
 conservative and cannot tell a large town from a small village — the live
 lookup is what makes it local.
 
+## Energy: how the class and consumption are worked out
+
+**The pre-renovation class is never invented.** If the listing carried an APE
+class, or the owner typed one, that class is the "before" class throughout the
+report — summary tile, APE ladder, consumption table and the saving figure all
+read from one engine, so nothing can contradict it. Only when no class exists
+at all does the report fall back to a screening estimate, and it says so on the
+tile.
+
+**The pre-renovation consumption follows the same hierarchy**: a declared
+annual consumption from 12 months of bills wins; failing that the EPgl,nren
+index from the certificate or the advert; failing that the consumption is
+modelled from the declared class. Every tile names which of the three applies.
+
+An advertisement publishes EPgl,nren as an *index* in kWh/m²·year, not a year's
+total, so the unit is resolved before the number is used — a figure under
+600 is read as an index whatever unit was claimed for it, because no heated
+dwelling runs on that in a year.
+
+**The post-renovation class is a band, not a single letter.** APE classes are
+ratios to a reference building (A4 ≤0.4 … F ≤3.5, G open above), not kWh/m²
+thresholds. A recorded before-class therefore only narrows the property to a
+ratio *interval*; the heating scenario is propagated through both ends of that
+interval and the result shown as a band (e.g. "C–D"), explicitly labelled
+indicative and not a certified APE.
+
+The consumption model works in useful heating demand, not a primary index:
+
+```
+Q_heat,post = Q_heat,pre × Π(1 − reduction_i)
+E_gas       = (Q_heat + Q_DHW) / (seasonal_efficiency × gas_kWh_per_m³)
+E_heatpump  = (Q_heat + Q_DHW) / SCOP
+Saving      = Bill_before − Bill_after
+```
+
+Screening defaults: gas seasonal efficiency 0.82, SCOP 3.2, 10.5 kWh/m³ gas,
+20 kWh/m²·year useful hot water, 2,200 kWh/year appliance electricity (excluded
+from the APE primary-energy figure). Non-renewable conversion factors 1.05 gas
+and 1.95 grid electricity, per the regional annex. Demand reductions are
+planning assumptions applied multiplicatively — windows 12%, internal wall
+insulation 22%, controls 5% — **not** values prescribed by CENED.
+
+Tariff defaults (€0.30/kWh electricity, €1.10/m³ gas, €0.12/kWh district heat)
+are **sensitivity inputs, not ARERA quotations**, and the report says so. The
+displayed range is ±35% of the absolute saving plus €150; it is a stress range,
+not a statistical confidence interval.
+
+The headline percentage is the **bill** saving, because that is what a reader
+compares against their own invoices; the heating-demand cut is reported
+separately, since changing the energy vector moves the bill without changing
+how much heat the flat needs.
+
 ## The single-file standalone page
 
 `standalone.html` is the whole product in one file — the vitrine and the
