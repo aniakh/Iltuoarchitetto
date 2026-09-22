@@ -180,10 +180,25 @@ deductions and *cedolare secca*, and the renovation tax credit spread over ten
 years. The report also solves the **walk-away price** — the highest purchase
 price at which the thirty-year net present value is still zero.
 
-**The energy saving is deliberately excluded from investor cash flow.** In a
-let flat the tenant pays the bills, and the saving is already priced into the
-rent and the resale value. Adding it here is how renovation returns get
-overstated. It stays quantified in the energy tabs.
+**The energy saving enters the NPV through an occupancy choice**, because who
+receives it depends entirely on who pays the bills. The tab has three modes and
+shows the NPV of each on its selector:
+
+| Mode | Rent | Energy bill saving |
+|---|---|---|
+| Let — tenant pays the bills *(default)* | full net rent | none to the owner — it arrives as the energy-class premium already inside the rent, quantified on the page |
+| Let with bills included | full net rent | full saving, indexed at 3%/year |
+| Lived in by the owner | none | full saving, indexed at 3%/year |
+
+No mode counts the same improvement twice. The rent model applies an
+energy-class adjustment (F is −3%, C is +1.5%, and so on), so on an ordinary
+let the class change is *already* paid for through the rent; adding the bill
+saving on top would pay the owner twice. Energy prices are indexed at 3%/year
+against 1.5% for rents, so the two use separate escalation rates.
+
+The owner-occupied mode carries a warning on the page: it has no rent coming
+in, but it also ignores the rent you stop paying elsewhere, so it is the cost
+of owning rather than a true own-versus-rent comparison.
 
 A chart plots where you would stand if you sold in any given year — rent and
 tax instalments banked, plus net sale proceeds, less everything put in — for

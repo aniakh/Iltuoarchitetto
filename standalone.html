@@ -3132,6 +3132,7 @@ function rentPropertyFactor(d, statusOverride, eClsOverride) {
   f = Math.max(0.6, Math.min(1.35, f));
   return {
     factor: Math.round(f * 1000) / 1000,
+    enAdj,
     rows
   };
 }
@@ -3432,6 +3433,11 @@ function calcLombardyVal(d, sol, renoCostOverride) {
     rent_asking_pre: askingMonthlyPre,
     rent_size_factor: sizeF,
     rent_factor_post: padjPost.factor,
+    /* How much of the rent is attributed to the energy class, before and
+       after. The investment tab needs this to avoid paying the owner for the
+       same energy improvement twice. */
+    rent_energy_adj_pre: padjPre.enAdj || 0,
+    rent_energy_adj_post: padjPost.enAdj || 0,
     rent_factor_pre: padjPre.factor,
     rent_adjustments: padjPost.rows,
     rent_asking_to_achievable: ASKING_TO_ACHIEVABLE,
@@ -18956,6 +18962,8 @@ const INVEST = {
   discountRate: 0.045,          /* real, applied to real cash flows          */
   valueGrowthPct: 0.015,        /* capital growth per year                   */
   rentGrowthPct: 0.015,
+  energyEscalationPct: 0.03,    /* energy prices rise faster than rents       */
+  occupancy: 'let',             /* 'let' | 'letBillsIncluded' | 'owner'       */
 
   /* Getting in */
   negotiationPct: 0.06,         /* asking → achievable; the same haircut the
@@ -19066,10 +19074,39 @@ function calcInvestment(d, s, opts) {
   const rentY1 = nPositive(v.rent_after_tax_flat) || 0;
   const rentY1Concordato = nPositive(v.rent_after_tax_concordato) || 0;
 
+  /* ---- 3b. What comes back as a lower energy bill ---------------------- */
+  /* Who receives this depends entirely on who pays the bills, so it is
+     attached to an occupancy mode rather than added to every case:
+
+       let                  the tenant pays, so the owner's bill saving is
+                            zero. The improvement still reaches the owner —
+                            as the energy-class premium already inside the
+                            rent, quantified below so it is visible.
+       letBillsIncluded     an all-inclusive rent: the owner pays the bills,
+                            so the saving is real owner cash flow.
+       owner                lived in: the full saving, and no rent.
+
+     Adding the bill saving on top of an ordinary let would pay the owner
+     twice for one improvement. */
+  const energyY1 = nPositive(s.efull && s.efull.delta && s.efull.delta.saving_year)
+    || nPositive(s.sv && s.sv.yr) || 0;
+  /* The slice of rent the rent model attributes to the class change. */
+  const enAdjDelta = (nPositive(v.rent_energy_adj_post) || v.rent_energy_adj_post || 0)
+                   - (nPositive(v.rent_energy_adj_pre) || v.rent_energy_adj_pre || 0);
+  const rentEnergyPremium = v.rent_factor_post
+    ? Math.round(rentY1 * (enAdjDelta / v.rent_factor_post)) : 0;
+
   /* ---- 4. The thirty years -------------------------------------------- */
   const valueAt = y => Math.round((v.vA || 0) * Math.pow(1 + K.valueGrowthPct, y));
 
-  const runFrom = price => {
+  const MODES = {
+    let:              { rent: true,  energy: false, label: 'Let — tenant pays the bills' },
+    letBillsIncluded: { rent: true,  energy: true,  label: 'Let with bills included' },
+    owner:            { rent: false, energy: true,  label: 'Lived in by the owner' }
+  };
+
+  const runFrom = (price, modeKey) => {
+    const mode = MODES[modeKey] || MODES.let;
     const acq = acquisitionOn(price);
     const entry = price + acq.total + c.grand;
 
@@ -19091,22 +19128,26 @@ function calcInvestment(d, s, opts) {
     /* Year 0 is the flip: works finished, sold immediately. */
     const flip = saleAt(0);
     years.push({
-      year: 0, rent: 0, credit: 0, cumCash: 0,
+      year: 0, rent: 0, credit: 0, energy: 0, cumCash: 0,
       value: flip.gross, saleNet: flip.net, position: flip.net - entry
     });
     if (flip.net - entry >= 0) breakevenOnSale = 0;
 
     for (let y = 1; y <= K.horizonYears; y++) {
-      const rent = Math.round(rentY1 * Math.pow(1 + K.rentGrowthPct, y - 1));
+      const rent = mode.rent ? Math.round(rentY1 * Math.pow(1 + K.rentGrowthPct, y - 1)) : 0;
+      /* Energy prices escalate faster than rents, so the saving is indexed
+         on its own rate rather than the rent's. */
+      const energy = mode.energy
+        ? Math.round(energyY1 * Math.pow(1 + K.energyEscalationPct, y - 1)) : 0;
       const cred = y <= K.deductionYears ? creditPerYear : 0;
-      cumCash += rent + cred;
-      flows.push(rent + cred);
+      cumCash += rent + energy + cred;
+      flows.push(rent + energy + cred);
       const sale = saleAt(y);
       const position = cumCash + sale.net - entry;
       if (breakevenOnRent === null && cumCash >= entry) breakevenOnRent = y;
       if (breakevenOnSale === null && position >= 0) breakevenOnSale = y;
       years.push({
-        year: y, rent, credit: cred, cumCash: Math.round(cumCash),
+        year: y, rent, credit: cred, energy, cumCash: Math.round(cumCash),
         value: sale.gross, saleNet: sale.net, position: Math.round(position)
       });
     }
@@ -19114,7 +19155,7 @@ function calcInvestment(d, s, opts) {
     /* NPV of holding the full horizon and then selling. */
     let npv = -entry;
     for (let y = 1; y <= K.horizonYears; y++) {
-      npv += (years[y].rent + years[y].credit) / Math.pow(1 + K.discountRate, y);
+      npv += (years[y].rent + years[y].energy + years[y].credit) / Math.pow(1 + K.discountRate, y);
     }
     const exit = saleAt(K.horizonYears);
     npv += exit.net / Math.pow(1 + K.discountRate, K.horizonYears);
@@ -19123,11 +19164,12 @@ function calcInvestment(d, s, opts) {
     irrFlows[irrFlows.length - 1] += exit.net;
 
     return {
-      price, acq, entry, years, flip, exit,
+      price, acq, entry, years, flip, exit, mode: modeKey, modeLabel: mode.label,
       npv: Math.round(npv),
       irr: irrOf(irrFlows),
       breakevenOnRent, breakevenOnSale,
       totalRent: years.reduce((t, r) => t + r.rent, 0),
+      totalEnergy: years.reduce((t, r) => t + r.energy, 0),
       totalCredit: years.reduce((t, r) => t + r.credit, 0),
       multiple: entry > 0
         ? Math.round((years[K.horizonYears].position + entry) / entry * 100) / 100 : null,
@@ -19138,8 +19180,18 @@ function calcInvestment(d, s, opts) {
     };
   };
 
-  const atTarget = runFrom(targetOffer);
-  const atAsking = asking ? runFrom(asking) : atTarget;
+  const occupancy = MODES[K.occupancy] ? K.occupancy : 'let';
+  const atTarget = runFrom(targetOffer, occupancy);
+  const atAsking = asking ? runFrom(asking, occupancy) : atTarget;
+  /* Every mode costed, so the page can show what the energy saving is worth
+     instead of asserting it. */
+  const byMode = Object.keys(MODES).reduce((acc, k) => {
+    const r = runFrom(targetOffer, k);
+    acc[k] = { label: MODES[k].label, npv: r.npv, irr: r.irr,
+               totalEnergy: r.totalEnergy, totalRent: r.totalRent,
+               breakevenOnSale: r.breakevenOnSale };
+    return acc;
+  }, {});
 
   /* ---- 5. The walk-away price ----------------------------------------- */
   /* The highest price at which the thirty-year NPV is still zero. Above it
@@ -19147,10 +19199,10 @@ function calcInvestment(d, s, opts) {
   let maxBid = null;
   if (asking > 0) {
     let lo = 0, hi = asking * 2;
-    if (runFrom(lo).npv > 0) {
+    if (runFrom(lo, occupancy).npv > 0) {
       for (let i = 0; i < 60; i++) {
         const mid = (lo + hi) / 2;
-        if (runFrom(mid).npv > 0) lo = mid; else hi = mid;
+        if (runFrom(mid, occupancy).npv > 0) lo = mid; else hi = mid;
       }
       maxBid = Math.round(lo / 1000) * 1000;
     }
@@ -19191,6 +19243,16 @@ function calcInvestment(d, s, opts) {
       rate: K.worksDeductionRate, rateMain: K.worksDeductionRateMain,
       capped: c.construction > K.worksDeductionCap,
       furnitureCapped: c.furniture > K.furnitureDeductionCap
+    },
+    occupancy, byMode, modeLabel: (MODES[occupancy] || MODES.let).label,
+    energy: {
+      year1: energyY1,
+      thirtyYear: atTarget.totalEnergy,
+      escalation: K.energyEscalationPct,
+      rentPremium: rentEnergyPremium,
+      classFrom: (s.efull && s.efull.ante && s.efull.ante.classe) || v.energy_pre || null,
+      classTo: (s.efull && s.efull.post && s.efull.post.classe) || v.energy_post || null,
+      inCashflow: (MODES[occupancy] || MODES.let).energy
     },
     rent: {
       monthlyNet: nPositive(v.monthly_rent_net) || 0,
@@ -19315,8 +19377,11 @@ function EquityChart({ series, horizon }) {
 
 function InvestmentCase({ d, s, sols, reportMode }) {
   const h = React.createElement;
+  /* Who pays the energy bills decides whether the saving is the owner's cash
+     flow at all, so it is a choice on the page, not a buried constant. */
+  const [occ, setOcc] = React.useState('let');
   let inv;
-  try { inv = calcInvestment(d, s); } catch (err) { inv = null; }
+  try { inv = calcInvestment(d, s, { occupancy: occ }); } catch (err) { inv = null; }
   if (!inv) return h("section", { className: "basis-card" },
     h("h3", null, "Investment case"),
     h("p", null, "The value model has not produced figures for this scenario yet."));
@@ -19351,7 +19416,7 @@ function InvestmentCase({ d, s, sols, reportMode }) {
      only "is this one worth it". */
   const series = (sols || [s]).map(sc => {
     let c = null;
-    try { c = calcInvestment(d, sc); } catch (err) { c = null; }
+    try { c = calcInvestment(d, sc, { occupancy: occ }); } catch (err) { c = null; }
     return c ? {
       name: sc.nm, color: SCENARIO_COLOR[sc.nm] || '#7B8B96',
       points: c.atTarget.years.map(y => ({ year: y.year, position: y.position }))
@@ -19376,6 +19441,35 @@ function InvestmentCase({ d, s, sols, reportMode }) {
       h("strong", { style: { color: inv.verdictTone, fontSize: 16 } }, inv.verdict),
       h("p", { style: { margin: '4px 0 0', fontSize: 13.5 } }, inv.verdictWhy)),
 
+    h("div", { style: { marginTop: 14 } },
+      h("small", { style: { fontSize: 12, color: '#7B8B96', display: 'block', marginBottom: 6 } },
+        "Who pays the energy bills — this decides whether the saving is your cash flow"),
+      h("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+        Object.keys(inv.byMode).map(k => h("button", {
+          key: k, type: 'button', onClick: () => setOcc(k),
+          style: {
+            fontFamily: 'inherit', fontSize: 12.5, padding: '7px 11px', borderRadius: 6,
+            cursor: 'pointer', border: '1px solid ' + (k === occ ? '#3479A8' : '#E2DCD2'),
+            background: k === occ ? '#3479A8' : '#fff',
+            color: k === occ ? '#fff' : '#4A5A66', fontWeight: k === occ ? 700 : 400
+          }
+        }, inv.byMode[k].label, ' · ', money(inv.byMode[k].npv)))),
+      occ === 'owner' ? h("p", {
+        style: { fontSize: 12.5, color: '#B4541E', margin: '7px 0 0' }
+      },
+        'Read this mode with care: living in the flat means no rent comes in, but it also means you stop ',
+        'paying rent somewhere else. That avoided rent is not counted here, so the figure below is the ',
+        'cost of owning, not the true comparison against renting. Around ',
+        money(inv.rent.afterTaxFlat), ' a year of avoided rent would be the missing side of it.') : null,
+      h("p", { style: { fontSize: 12.5, color: '#7B8B96', margin: '7px 0 0' } },
+        inv.energy.inCashflow
+          ? 'The ' + money(inv.energy.year1) + ' a year energy saving is in the cash flow below, indexed at ' +
+            (inv.energy.escalation * 100) + '% a year — ' + money(inv.energy.thirtyYear) + ' over ' +
+            K.horizonYears + ' years.'
+          : 'On an ordinary let the tenant pays the bills, so the ' + money(inv.energy.year1) +
+            ' a year saving is not your cash flow. It reaches you as the ' + money(inv.energy.rentPremium) +
+            ' a year the rent model already attributes to the energy class — counting the bill saving too would pay you twice for one improvement.')),
+
     h("div", { className: "area-evidence", style: { marginTop: 14 } },
       tile('Offer to aim for', money(inv.targetOffer),
         inv.asking ? money(inv.negotiationSaving) + ' below the ' + money(inv.asking) + ' asking price' : 'no asking price supplied',
@@ -19383,7 +19477,7 @@ function InvestmentCase({ d, s, sols, reportMode }) {
       tile('Total money in', money(t.entry),
         'purchase, taxes and fees, works, furniture'),
       tile('30-year net present value', money(t.npv),
-        'at a ' + (K.discountRate * 100).toFixed(1) + '% discount rate',
+        (K.discountRate * 100).toFixed(1) + '% discount · ' + inv.modeLabel.toLowerCase(),
         t.npv >= 0 ? '#2E7D5B' : '#B4541E'),
       tile('Annual return', pc(t.irr),
         t.irr == null ? 'no sign change in the cash flow' : 'IRR over ' + K.horizonYears + ' years',
@@ -19431,6 +19525,17 @@ function InvestmentCase({ d, s, sols, reportMode }) {
               money(inv.rent.monthlyNet) + '/month after costs, then cedolare secca at 21%'),
             row('Net rent, 30 years', inv.rent.thirtyYear,
               'growing ' + (K.rentGrowthPct * 100) + '% a year'),
+            inv.energy.inCashflow
+              ? row('Energy bill saving, year 1', inv.energy.year1,
+                  (inv.energy.classFrom || '?') + ' → ' + (inv.energy.classTo || '?') +
+                  ', you pay the bills so the saving is yours')
+              : row('Energy premium inside the rent', inv.energy.rentPremium,
+                  (inv.energy.classFrom || '?') + ' → ' + (inv.energy.classTo || '?') +
+                  ', the tenant pays the bills so it reaches you as rent'),
+            inv.energy.inCashflow
+              ? row('Energy saving, 30 years', inv.energy.thirtyYear,
+                  'indexed at ' + (inv.energy.escalation * 100) + '% a year')
+              : null,
             row('Renovation tax credit', inv.credit.total,
               (inv.credit.rate * 100) + '% of ' + money(inv.credit.worksEligible) +
               (inv.credit.capped ? ' (capped at ' + money(K.worksDeductionCap) + ')' : '') +
@@ -19444,9 +19549,13 @@ function InvestmentCase({ d, s, sols, reportMode }) {
           ]))),
 
       h("p", { style: { fontSize: 12.5, color: '#7B8B96', marginTop: 6 } },
-        'The energy saving is deliberately absent from this table. In a let flat the tenant pays the bills, ',
-        'and the saving is already inside the rent and the resale value — counting it again here is how ',
-        'renovation returns get overstated. It is quantified in the energy tabs.')),
+        inv.energy.inCashflow
+          ? 'The rent here still carries the energy-class premium the rent model applies, so the ' +
+            money(inv.energy.rentPremium) + ' of it attributable to the class change overlaps with the bill ' +
+            'saving above. Treat the two together as a range, not a sum.'
+          : 'The bill saving is excluded from this table on purpose — the tenant pays the bills. Switch ' +
+            'the occupancy above to see what it is worth when you pay them. It is quantified in full in ' +
+            'the energy tabs either way.')),
 
     section('3 · Thirty years, and when it turns',
       'Where you would stand if you sold in any given year: rent and tax instalments banked, plus net sale proceeds, less everything put in.',
@@ -19473,7 +19582,8 @@ function InvestmentCase({ d, s, sols, reportMode }) {
       h("div", { className: "table-scroll" },
         h("table", null,
           h("thead", null, h("tr", null,
-            h("th", null, "Year"), h("th", null, "Net rent"), h("th", null, "Tax credit"),
+            h("th", null, "Year"), h("th", null, "Net rent"), h("th", null, "Energy saving"),
+            h("th", null, "Tax credit"),
             h("th", null, "Banked to date"), h("th", null, "Property value"),
             h("th", null, "If sold that year"))),
           h("tbody", null, shown.map(y => h("tr", {
@@ -19482,6 +19592,7 @@ function InvestmentCase({ d, s, sols, reportMode }) {
           },
             h("td", null, y.year === 0 ? 'At completion' : y.year),
             h("td", null, y.rent ? money(y.rent) : '—'),
+            h("td", null, y.energy ? money(y.energy) : '—'),
             h("td", null, y.credit ? money(y.credit) : '—'),
             h("td", null, money(y.cumCash)),
             h("td", null, money(y.value)),
@@ -19504,6 +19615,12 @@ function InvestmentCase({ d, s, sols, reportMode }) {
           ['Discount rate', (K.discountRate * 100).toFixed(1) + '% real, applied to real cash flows'],
           ['Capital growth', (K.valueGrowthPct * 100) + '% a year from completion'],
           ['Rent growth', (K.rentGrowthPct * 100) + '% a year'],
+          ['Energy price escalation', (K.energyEscalationPct * 100) + '% a year, applied to the bill saving. ' +
+            'Energy prices are indexed faster than rents, which is why the two use different rates.'],
+          ['Who pays the bills', 'On an ordinary Italian let the tenant does, so the bill saving is not the ' +
+            'owner\'s cash flow — it reaches the owner as the energy-class premium in the rent (' +
+            money(inv.energy.rentPremium) + ' a year here). The other two modes assume the owner pays, and ' +
+            'then the saving is counted directly. No mode counts both in full.'],
           ['Renovation deduction', (K.worksDeductionRate * 100) + '% used here, for a property that is not your main home, capped at ' +
             money(K.worksDeductionCap) + ' per unit and spread over ' + K.deductionYears + ' years. As a main home it would be ' +
             (K.worksDeductionRateMain * 100) + '%, worth ' + money(inv.credit.totalMain) + ' instead of ' + money(inv.credit.total) + '.'],
