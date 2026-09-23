@@ -162,6 +162,71 @@ compares against their own invoices; the heating-demand cut is reported
 separately, since changing the energy vector moves the bill without changing
 how much heat the flat needs.
 
+## Plan and render fidelity
+
+The proposal has to be *this* apartment after the work, not a nice picture of
+a different one. Four things enforce that.
+
+**Every room gets a size, even when the plan prints none.** The plan reader
+refuses to invent metres — correct for evidence, but it leaves rooms
+dimensionless and then the renders pick whatever scale looks comfortable.
+`calibratePlanScale` closes the gap without inventing anything: the model is
+asked only for proportions it can see (each room's share of the interior, its
+aspect ratio), and the metres are computed **in code** by distributing the
+known net area across those shares. Printed dimensions always win and are
+marked as plan evidence; derived ones are labelled a proportional estimate and
+never promoted to a measurement. Balconies and loggias stay outside the
+interior and cannot be absorbed into a room.
+
+**The envelope is frozen and only internal walls and doors may move.** External
+walls, the entrance, every window and every balcony door keep their position
+and size; no space may be added that is not already in the plan; the total area
+is a zero-sum constraint. Scenario flexibility applies to internal partitions
+only — Essential locks the layout entirely, Premium may reorganise freely but
+strictly inside the existing perimeter.
+
+**Renders are taken from where the client stood.** The client's own photograph
+of the room is passed to the image model as the authority for the camera —
+same standing point, height, direction and lens width — and for every
+immovable feature. Where photograph and plan disagree about walls or openings,
+the plan wins, because it is the state after the work. Walls, windows,
+doorways, radiators, columns and what is visible *through* each opening must
+appear in the same left-to-right order the client sees. A more flattering
+angle is a defect: it makes the before/after comparison impossible.
+
+**The furniture schedule is a closed list.** Every visible piece must be an
+article from the furniture tab, at its real centimetres and in its stated
+colour and material, with the product photograph supplied as reference. No
+substitutions, no invented extras, no rescaling to fill a gap — if a piece will
+not fit, the render shows fewer pieces rather than a larger room.
+
+### Furniture you already own
+
+Tick what you are keeping, room by room, in step 2. Kept pieces are drawn back
+into the renders as your photographs show them and are **dropped from the
+shopping list**, so the same sofa is never billed twice. Free text covers
+anything the categories miss ("grandmother's walnut dresser against the left
+wall").
+
+### Does it comply?
+
+After the plan is generated it is read against the Italian and Lombardy rules —
+envelope invariance, DM 5/7/1975 dimensions and daylight, DM 236/1989
+accessibility, NTC 2018 structure, riser and wet-room positions — and the
+result appears in the Compliance tab with the likely permit route (CILA / SCIA
+/ PdC). A blocking finding fails the plan and triggers a regeneration.
+
+A check the drawings cannot settle is reported as **unsettled, never as
+passed**. This is a reading of two drawings, not a professional assessment, and
+the tab says so.
+
+### Product links
+
+Each article links straight to its product page where one has been confirmed.
+Where none has, the row links to a retailer search and **says that is what it
+is** — the tab counts how many of each, so a list you cannot order from is
+visible at a glance rather than discovered at checkout.
+
 ## Return on investment: the 30-year investment case
 
 A separate report tab answers the buyer's question rather than the owner's:
