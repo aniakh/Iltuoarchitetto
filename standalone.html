@@ -2050,6 +2050,34 @@ ONLY internal non-structural partitions and internal doors may be modified.
 
 PERMITS: CILA (non-structural internal partitions/doors) · SCIA (light renovation) · PdC (heavy renovation, load-bearing changes). Heritage: requires Soprintendenza authorization.`;
 
+/* The image model gets the rules it can actually draw. U-values, RES quotas
+   and permit routes cannot be rendered into a picture, and putting 3.4k
+   characters of them in front of an image model only dilutes the rules that
+   do affect pixels. The full catalogue still applies — it is enforced by
+   verifyLombardyConformity, which reads the finished drawing, which is where
+   a legal check can actually be made. */
+const COMPLIANCE_DRAWABLE = `
+████ ITALIAN / LOMBARDY RULES THAT MUST BE VISIBLE IN THE DRAWING ████
+FROZEN — identical to the existing state, no exception:
+  external walls · main entrance (position, width, swing) · every window ·
+  every balcony / French door (porta-finestra) · balcony and terrace geometry ·
+  overall shape, footprint and net area · load-bearing structure · plumbing risers
+Only INTERNAL non-load-bearing partitions (tramezzi) and INTERNAL doors may be
+added, removed, moved or resized. A load-bearing internal wall stays frozen.
+
+DIMENSIONS the drawing must satisfy:
+  habitable ceiling ≥ 2.70 m · bathroom / corridor ≥ 2.40 m
+  single bedroom ≥ 9 m² · double bedroom ≥ 14 m² · living ≥ 14 m²
+  every habitable room has an openable window on an external wall
+  glazing ≥ 1/8 of floor area · bathroom window ≥ 0.50 m² or mechanical extraction
+  main entrance clear ≥ 80 cm · internal doors clear ≥ 75 cm · corridor ≥ 100 cm
+  wet rooms only move toward an existing drainage stack
+
+NEVER: a habitable room without an exterior window · an exterior opening added,
+removed, resized or moved · a room, balcony, terrace or extension that is not in
+the original plan · a corridor under 100 cm or a door under 75 cm clear.
+Never label the output compliant, approved or certified.`;
+
 const PLAN_AGENT_BRIEF = `
 ████ YOU ARE A REGULATION-AWARE ITALIAN/LOMBARDY FLOOR-PLAN OPTIMIZER ████
 Modify the EXISTING plan ONLY within the legal envelope below. Treat every
@@ -2388,7 +2416,7 @@ async function verifyLombardyConformity(originalPlan, proposedUrl, apiKey) {
         contents: [{ parts: [
           { text: 'IMAGE 1 - the original plan.' }, a,
           { text: 'IMAGE 2 - the proposed post-renovation plan.' }, b,
-          { text: CONFORMITY_CONFIRMATION_PROMPT }
+          { text: COMPLIANCE_BRIEF + '\n\n' + CONFORMITY_CONFIRMATION_PROMPT }
         ] }],
         generationConfig: visionCfg(1800)
       }
@@ -2592,7 +2620,7 @@ ${areaConstraints}
 
 ${permittedChanges}
 ${ivBrief(d)}
-${COMPLIANCE_BRIEF}
+${COMPLIANCE_DRAWABLE}
 
 CROSS-CONSISTENCY: The 2D plan AND every 3D render of this dwelling must depict the SAME post-renovation layout. Rooms shown in the plan must match rooms shown in the renders (same dimensions, same window count, same wall positions, same compliance metrics).
 
@@ -7030,6 +7058,21 @@ async function imgPartFromAny(src) {
   };
   return null;
 }
+/* Every await in the generation pipeline is a place the run can stop dead.
+   A verification step that never answers used to leave the card spinning
+   with no image and no error, which is indistinguishable from a hang. Each
+   optional step now loses its race instead. */
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, rej) => {
+      timer = setTimeout(() => rej(Error((label || 'This step') + ' did not answer within ' +
+        Math.round(ms / 1000) + 's')), ms);
+    })
+  ]);
+}
+
 async function imgPartDownscaled(src, maxPx) {
   maxPx = maxPx || 768;
   try {
@@ -7042,13 +7085,16 @@ async function imgPartDownscaled(src, maxPx) {
     } else if (typeof src === "string" && src) {
       url = src;
     } else return imgPartFromAny(src);
-    const img = await new Promise((res, rej) => {
+    /* An image that neither loads nor errors would hang the whole run, so
+       the load is raced against a clock and falls back to the full-size
+       part rather than stopping. */
+    const img = await withTimeout(new Promise((res, rej) => {
       const im = new Image();
       im.crossOrigin = "anonymous";
       im.onload = () => res(im);
-      im.onerror = rej;
+      im.onerror = () => rej(Error('Image could not be decoded.'));
       im.src = url;
-    });
+    }), 15000, 'Downscaling the image');
     const iw = img.naturalWidth || img.width,
       ih = img.naturalHeight || img.height;
     const scale = Math.min(1, maxPx / Math.max(iw, ih || 1));
@@ -8347,7 +8393,21 @@ function Results({
     }, /*#__PURE__*/React.createElement("th", null, k), sols.map(s => /*#__PURE__*/React.createElement("td", {
       key: s.nm
     }, f(s))))))))),
-    renders: () => tierForRenders === 'paid' ? /*#__PURE__*/React.createElement("div", null, sols.filter((x, i) => !reportMode || i === si).map(x => /*#__PURE__*/React.createElement(SolRenderCard, {
+    renders: () => tierForRenders === 'paid' ? /*#__PURE__*/React.createElement("div", null,
+      /* The report compares three alternatives, so producing all three is the
+         normal action. Image calls are already serialised, so the three cards
+         queue behind one another rather than competing. */
+      !reportMode && React.createElement("div", { className: "basis-card", style: { marginBottom: 12 } },
+        React.createElement("h3", null, "Plans and room views for all three alternatives"),
+        React.createElement("p", { style: { fontSize: 13 } },
+          "Each alternative gets its own furnished plan and a photorealistic view of every room. ",
+          "They are produced one after another — a full set takes several minutes, and every image ",
+          "appears as soon as it is ready rather than at the end."),
+        React.createElement("button", {
+          className: "btn btn-p",
+          onClick: () => window.dispatchEvent(new CustomEvent('ita-generate-all'))
+        }, "Generate all three alternatives")),
+      sols.filter((x, i) => !reportMode || i === si).map(x => /*#__PURE__*/React.createElement(SolRenderCard, {
       key: x.nm,
       x: x,
       d: d,
@@ -10177,7 +10237,7 @@ function SolRenderCard({
           const photo = (rd.photos || []).find(f => f instanceof File);
           if (!photo || rd.extractedData) continue;
           setActivity('Measuring ' + key + ' from your photo…');
-          const geo = await analyzeRoomPhoto(photo, key, apiKey);
+          const geo = await withTimeout(analyzeRoomPhoto(photo, key, apiKey), 60000, 'Measuring ' + key);
           if (!geo) continue;
           rd.extractedData = geo;
           const dim = geo.estimatedDimensions || {};
@@ -10199,7 +10259,9 @@ function SolRenderCard({
           setActivity('Measuring the plan and scaling it to the real area…');
           const planFile = (d.plans || []).find(f => f instanceof File && f.type.startsWith('image/'));
           const net = areaBasis(d).net || areaBasis(d).works;
-          const scale = planFile ? await calibratePlanScale(planFile, net, apiKey) : null;
+          const scale = planFile
+            ? await withTimeout(calibratePlanScale(planFile, net, apiKey), 60000, 'Measuring the plan')
+            : null;
           if (scale) { p.planScale = scale; touchProject(p); }
         } catch (err) { /* proportional scaling is best effort, never blocks */ }
       }
@@ -10207,12 +10269,10 @@ function SolRenderCard({
          so the plan is measured once per property, not once per click. */
       if (p.planScale) d.planScale = p.planScale;
 
-      const productBrief = JSON.stringify(items.map(productManifest));
       for (let attempt = 0; attempt < 2; attempt++) {
         if (candidate) archiveAsset(record, candidate);
         setActivity(attempt ? 'Correcting the reported plan differences…' : 'Creating the furnished plan…');
         const prompt = renderPrompt(d, x, 'plan')
-          + ` PRODUCT MANIFEST: ${productBrief}.`
           + (candidate?.review?.mismatches?.length
               ? ' CORRECT THESE ERRORS FROM THE PREVIOUS ATTEMPT: ' + JSON.stringify(candidate.review.mismatches)
               : '');
@@ -10230,11 +10290,20 @@ function SolRenderCard({
           automatedPass: false,
           accepted: false
         };
+        /* The drawing is the deliverable. Commit it now, before any optional
+           check runs, so a verifier that fails or stalls can never cost the
+           client the thing they actually paid for. The checks below refine
+           this same record in place. */
+        candidate.accepted = true;
+        commit(candidate, 'plan');
+
         setActivity('Comparing the complete plan to your original…');
         let review = null;
         const warnings = [];
         try {
-          review = await comparePlanToOriginal(original, candidate.url, d.extractedPlan, apiKey, x.nm);
+          review = await withTimeout(
+            comparePlanToOriginal(original, candidate.url, d.extractedPlan, apiKey, x.nm),
+            90000, 'The plan comparison');
         } catch (e) {
           warnings.push('Plan comparison unavailable: ' + e.message);
         }
@@ -10243,13 +10312,15 @@ function SolRenderCard({
         setActivity('Mapping walls, openings, furniture and camera positions…');
         let geometryOK = false;
         try {
-          candidate.scene = await measureScene(candidate.url, items, apiKey);
+          candidate.scene = await withTimeout(measureScene(candidate.url, items, apiKey),
+            90000, 'The camera map');
           candidate.scene.aspect = await imageAspect(candidate.url);
         } catch (e) {
           warnings.push('Measured camera map unavailable: ' + e.message);
         }
         try {
-          candidate.geometry = await extractProposedPlan(candidate.url, apiKey);
+          candidate.geometry = await withTimeout(extractProposedPlan(candidate.url, apiKey),
+            90000, 'The dimension check');
           const boundary = checkPlanBoundary({
             ...d.extractedPlan,
             totalArea: areaBasis(d).net
@@ -10264,7 +10335,9 @@ function SolRenderCard({
            and, just as usefully, what it cannot settle. */
         try {
           setActivity('Checking the proposal against Italian and Lombardy rules…');
-          candidate.conformity = await verifyLombardyConformity(original, candidate.url, apiKey);
+          candidate.conformity = await withTimeout(
+            verifyLombardyConformity(original, candidate.url, apiKey),
+            90000, 'The conformity review');
           if (candidate.conformity && candidate.conformity.blockingCount > 0) {
             warnings.push(...candidate.conformity.violations
               .filter(v => v.severity === 'blocking')
@@ -10276,13 +10349,14 @@ function SolRenderCard({
         candidate.automatedPass = !!candidate.scene && geometryOK && conformityOK && allChecked && strictBooleanGate(review, PLAN_HARD_FIELDS);
         if (!allChecked) warnings.push('Furniture is provisional until article sources are checked.');
         candidate.error = warnings.join(' ');
+        commit(candidate, 'plan');            /* refresh with the review results */
         if (candidate.automatedPass) break;
       }
       if (productRevision(allBOMItems(generateBOM(x, d))) !== revision) {
         candidate.error = 'Product selection changed during generation. Regenerate the plan.';
         candidate.automatedPass = false;
       }
-      if (candidate) { candidate.accepted = true; commit(candidate, 'plan'); }
+      if (candidate && record.plan?.id !== candidate.id) { candidate.accepted = true; commit(candidate, 'plan'); }
     } catch (e) {
       record.error = e.message;
       if (candidate) {
@@ -10341,11 +10415,11 @@ function SolRenderCard({
     for (let attempt = 0; attempt < 2; attempt++) {
       if (candidate) archiveAsset(record, candidate);
       setActivity((attempt ? 'Correcting the camera view for ' : 'Rendering ') + room.label + '…');
-      const manifest = JSON.stringify({
-        scene,
-        camera,
-        products: visibleItems.map(productManifest)
-      });
+      /* Scene and camera only — the articles are already stated, with their
+         codes, dimensions, colours and materials, in the furniture schedule
+         inside the prompt. Sending them again as JSON just doubled the
+         instruction length. */
+      const manifest = JSON.stringify({ scene, camera });
       const roomKey = (function (r) {
         const k = String(r.kind || r.id || r.label || '').toLowerCase().replace(/-\d+$/, '');
         if (k.indexOf('kitchen') === 0 || k.indexOf('cucina') === 0) return 'kitchen';
@@ -10398,12 +10472,25 @@ function SolRenderCard({
         automatedPass: false,
         accepted: false
       };
+      /* Same rule as the plan: the picture is the deliverable. */
+      candidate.accepted = true;
+      commit(candidate, targetKey);
+
       setActivity('Checking order, openings, occlusion and article appearance for ' + room.label + '…');
-      candidate.review = await checkSceneRender(plan.url, candidate.url, scene, camera, visibleItems, apiKey, productParts);
+      try {
+        candidate.review = await withTimeout(
+          checkSceneRender(plan.url, candidate.url, scene, camera, visibleItems, apiKey, productParts),
+          90000, 'The view check');
+      } catch (e) {
+        candidate.review = null;
+        candidate.error = 'View check unavailable: ' + e.message;
+      }
       /* Second, independent gate: does this view actually derive from the
          approved plan (viewpoint, openings, adjacency, furniture placement)? */
       try {
-        const vsPlan = await comparePlanToRender(plan.url, candidate.url, room.label || roomKey, apiKey);
+        const vsPlan = await withTimeout(
+          comparePlanToRender(plan.url, candidate.url, room.label || roomKey, apiKey),
+          90000, 'The plan-versus-view check');
         if (vsPlan) {
           candidate.planCheck = vsPlan;
           if (vsPlan.consistent === false) {
@@ -10426,6 +10513,19 @@ function SolRenderCard({
     }
     commit(candidate, targetKey);
   }
+  /* Answer the "all three" button. Each card produces its own scenario; the
+     guard keeps a second click, or a card that is already working, from
+     starting the same run twice. */
+  useEffect(() => {
+    const go = () => {
+      if (locked || record.busy) return;
+      if (record.plan && planIsCurrent(record, items)) { makeAllRenders(); return; }
+      makePlan();
+    };
+    window.addEventListener('ita-generate-all', go);
+    return () => window.removeEventListener('ita-generate-all', go);
+  });
+
   async function makeAllRenders() {
     const livePlan = record.plan;
     if (locked || !livePlan) return;
