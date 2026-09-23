@@ -2115,6 +2115,334 @@ above, wet rooms on existing stacks, no element from the non-modifiable list
 altered. The 2D plan must be IDENTICAL in envelope to the original — only
 internal partitions differ.`;
 
+/* ══ PLAN METROLOGY ═══════════════════════════════════════════════════════
+   The plan reader refuses to invent metres, which is right for EVIDENCE but
+   leaves every room dimensionless when the plan carries no printed figures —
+   and then the renders are scaled by whatever looks comfortable.
+
+   This closes that gap without inventing anything. The model is asked ONLY
+   for proportions it can actually see: each room's share of the interior and
+   its aspect ratio. The metres are then computed here, in code, by
+   distributing the KNOWN total area over those shares. Printed dimensions
+   always win; derived ones are labelled a proportional estimate and never
+   promoted to a measurement. */
+const PLAN_METROLOGY_PROTOCOL = `You are measuring PROPORTIONS on an architectural floor plan. You are NOT estimating metres — metres are computed from the known total area afterwards, so a wrong proportion is the only way to be wrong here.
+
+For the plan image:
+1. Trace the INTERIOR face of the perimeter. Everything inside it is the apartment. Balconies, loggias and terraces are OUTSIDE it — report them separately and never in the interior shares.
+2. For every enclosed space, measure its footprint as a FRACTION of that total interior area. The fractions of all interior spaces must sum to 1.0 (walls and partitions included in the nearest space).
+3. For each space give its aspect ratio as long side ÷ short side, measured on the drawing.
+4. Record where each exterior opening sits, as a fraction along the wall it is on, measured from the left end of that wall as the plan is drawn.
+
+Read only what is drawn. Do not use furniture size, typical Italian room sizes, or the apparent scale of the printout. If a space is unreadable, give null rather than a guess.
+
+Return ONLY this JSON:
+{"interiorShares":[{"id":"bedroom-1","type":"living|kitchen|bedroom|bathroom|corridor|entrance|storage|other","name":"<printed label or null>","areaFraction":<0-1>,"aspectRatio":<number>,"longSideRuns":"north-south|east-west","printedDimensions":"<exact printed text or null>","adjacentTo":["<ids>"]}],
+ "sharesSumTo":<number>,
+ "outsideInterior":[{"kind":"balcony|loggia|terrace","areaFractionOfInterior":<number>,"attachedToRoom":"<id>","wall":"image-top|right|bottom|left"}],
+ "perimeter":{"aspectRatio":<number>,"shape":"<rectangle|L|irregular>"},
+ "openings":[{"kind":"entrance|window|balcony-door","wall":"image-top|right|bottom|left","fractionAlongWall":<0-1>,"widthFractionOfWall":<number>,"servesRoom":"<id>"}],
+ "loadBearingEvidence":"<what in the drawing indicates structure, or null>",
+ "unreadable":["<what could not be measured>"]}`;
+
+/**
+ * Turns plan proportions into metres using the one number we actually know:
+ * the apartment's net area. Nothing here is a measurement, and the result
+ * says so — it exists to stop renders inventing their own scale.
+ */
+async function calibratePlanScale(planFile, totalAreaM2, apiKey) {
+  const area = nPositive(totalAreaM2);
+  if (!area) return null;
+  const p = await geminiVision(planFile, PLAN_METROLOGY_PROTOCOL, apiKey, 'Measure plan proportions');
+  const shares = Array.isArray(p?.interiorShares) ? p.interiorShares : [];
+  if (!shares.length) return null;
+
+  /* Normalise: the model's fractions rarely sum to exactly 1, and forcing
+     them to is what keeps the derived areas adding up to the real total. */
+  const sum = shares.reduce((t, r) => t + (nPositive(r.areaFraction) || 0), 0);
+  if (!(sum > 0)) return null;
+
+  const rooms = shares.map(r => {
+    const frac = (nPositive(r.areaFraction) || 0) / sum;
+    const roomArea = Math.round(frac * area * 10) / 10;
+    const ratio = Math.min(4, Math.max(1, nPositive(r.aspectRatio) || 1.3));
+    const short = Math.sqrt(roomArea / ratio);
+    return {
+      id: r.id || r.type || 'space',
+      type: String(r.type || 'other').toLowerCase(),
+      name: r.name || null,
+      areaM2: roomArea,
+      shortSideM: Math.round(short * 10) / 10,
+      longSideM: Math.round(short * ratio * 10) / 10,
+      aspectRatio: Math.round(ratio * 100) / 100,
+      areaFraction: Math.round(frac * 1000) / 1000,
+      printedDimensions: r.printedDimensions || null,
+      /* A printed dimension is evidence; a share of the total is not. */
+      provenance: r.printedDimensions ? PROV.PLAN : PROV.ESTIMATED,
+      adjacentTo: Array.isArray(r.adjacentTo) ? r.adjacentTo : []
+    };
+  });
+
+  return {
+    method: 'Room shares read off the plan, multiplied by the declared net area',
+    totalAreaM2: area,
+    sharesSumTo: p.sharesSumTo ?? null,
+    normalisedFrom: Math.round(sum * 1000) / 1000,
+    rooms,
+    outsideInterior: Array.isArray(p.outsideInterior) ? p.outsideInterior : [],
+    perimeter: p.perimeter || null,
+    openings: Array.isArray(p.openings) ? p.openings : [],
+    loadBearingEvidence: p.loadBearingEvidence || null,
+    unreadable: Array.isArray(p.unreadable) ? p.unreadable : [],
+    derivedAt: new Date().toISOString()
+  };
+}
+
+/** The derived geometry, written for the image model. */
+function planScaleBrief(d, roomKey) {
+  let ps = d.planScale;
+  if (!ps) { try { ps = projectRecord(d).planScale; } catch (e) { ps = null; } }
+  if (!ps || !ps.rooms || !ps.rooms.length) return '';
+  const line = r => '  • ' + (r.name || r.id) + ' — ' + r.areaM2 + ' m² (' +
+    r.shortSideM + ' m × ' + r.longSideM + ' m, ratio ' + r.aspectRatio + ')' +
+    (r.printedDimensions ? ' — PRINTED ON THE PLAN: ' + r.printedDimensions : ' — derived from its share of the plan');
+  const mine = roomKey ? ps.rooms.filter(r => r.type === roomKey || String(r.id).indexOf(roomKey) === 0) : [];
+  return `
+DERIVED ROOM GEOMETRY — every space measured off THIS plan and scaled to the real ${ps.totalAreaM2} m²:
+${ps.rooms.map(line).join('\n')}
+Sum of the spaces = ${ps.totalAreaM2} m², which is the apartment's actual net area. These are the sizes the post-renovation plan and every render must depict.
+${mine.length ? 'THIS VIEW SHOWS: ' + mine.map(r => (r.name || r.id) + ' at ' + r.shortSideM + ' m × ' + r.longSideM + ' m × ceiling ' + (nPositive(d.ceiling) || 2.7) + ' m' ).join('; ') + '.' : ''}
+${ps.openings && ps.openings.length ? 'EXTERIOR OPENINGS, positioned as a fraction along their wall (all FROZEN):\n' + ps.openings.map(o => '  • ' + o.kind + ' on the ' + o.wall + ' wall at ' + Math.round((o.fractionAlongWall || 0) * 100) + '% along it, ' + Math.round((o.widthFractionOfWall || 0) * 100) + '% of that wall wide, serving ' + (o.servesRoom || '?')).join('\n') : ''}
+${ps.outsideInterior && ps.outsideInterior.length ? 'OUTSIDE the interior and unchangeable: ' + ps.outsideInterior.map(b => b.kind + ' on the ' + b.wall + ' side off ' + (b.attachedToRoom || '?')).join(', ') + '. These are NOT interior area and must not be absorbed into a room.' : ''}
+${ps.unreadable && ps.unreadable.length ? 'NOT READABLE on the plan, so do not invent it: ' + ps.unreadable.join('; ') + '.' : ''}
+These figures come from the drawing's own proportions, not from a survey. Treat them as the intended sizes; do not round a room up to make furniture fit.`;
+}
+
+/* ══ WHAT THE OWNER IS KEEPING ════════════════════════════════════════════
+   Furniture the client keeps has to appear in the render and must NOT appear
+   in the shopping list — it is already theirs. Both halves matter: listing it
+   would bill them twice, omitting it from the render would show a room they
+   will not recognise. */
+function retainedFurniture(d, roomKey) {
+  const rd = (d.roomDetails || {})[roomKey] || {};
+  const raw = rd.keepExisting;
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean).map(String);
+  return String(raw).split(/[\n;]+/).map(s => s.trim()).filter(Boolean);
+}
+
+/** Every category the client is keeping, across the flat, for the BOM to skip. */
+function retainedCategories(d) {
+  const out = new Set();
+  Object.values(d.roomDetails || {}).forEach(rd => {
+    (Array.isArray(rd?.keepCategories) ? rd.keepCategories : []).forEach(c => out.add(c));
+  });
+  return out;
+}
+
+function retainedBrief(d, roomKey) {
+  const keep = retainedFurniture(d, roomKey);
+  if (!keep.length) return '';
+  return `
+FURNITURE THE CLIENT IS KEEPING — these pieces are already in the room and stay:
+${keep.map(k => '  • ' + k).join('\n')}
+Reproduce each of them as it appears in the client's photograph: same piece, same colour, same wear, same position unless the new layout makes that impossible. They are NOT in the purchase list and must not be replaced by a catalogue lookalike. New articles have to work around them — if a new piece would not fit alongside what is being kept, leave the new piece out.`;
+}
+
+/* ══ EXACT ARTICLES ═══════════════════════════════════════════════════════ */
+/* The room view speaks of "living" and "bedroom"; the procurement catalogue
+   keys the same spaces as "living_room" and "bedroom_master". Without this
+   bridge the schedule filters down to nothing and the model is handed no
+   furniture at all. */
+const BOM_ROOMS_FOR = {
+  living: ['living_room', 'textiles_accessories'],
+  kitchen: ['kitchen'],
+  bedroom: ['bedroom_master', 'bedroom_single', 'textiles_accessories'],
+  bathroom: ['bathroom', 'laundry'],
+  corridor: ['entrance', 'corridor']
+};
+function bomRoomsFor(roomKey) {
+  return BOM_ROOMS_FOR[roomKey] || (roomKey ? [roomKey] : []);
+}
+function furnitureFidelityBrief(items, d, roomKey) {
+  const wanted = bomRoomsFor(roomKey);
+  const list = (items || []).filter(it => !roomKey || !it.room || wanted.indexOf(it.room) >= 0);
+  if (!list.length) return retainedBrief(d, roomKey);
+  const row = it => '  • ' + (it.name || it.expectedName) +
+    (it.articleCode ? ' [' + it.articleCode + ']' : '') +
+    ' ×' + (it.qty || 1) +
+    ' — ' + [it.w, it.d, it.h].map(x => x == null ? '?' : x).join(' × ') + ' cm' +
+    (it.colour ? ', ' + it.colour : '') +
+    (it.material ? ', ' + it.material : '') +
+    (it.productStatus === 'source-checked' ? '' : ' (catalogue allowance, not yet source-checked)');
+  return `
+THE FURNITURE SCHEDULE — this is a closed list, not a suggestion:
+${list.map(row).join('\n')}
+Every piece of furniture visible in this image must be one of the articles above, drawn at the stated dimensions and in the stated colour and material. The reference photographs supplied with this request show exactly what each one looks like.
+⛔ Do not substitute a similar piece. Do not add a single item that is not on this list. Do not change a colour or a finish to suit the composition. Do not scale a piece up or down to fill a gap — the centimetres above are the real product dimensions and are what make the room read at its true size.
+If an article will not fit where the plan puts it, show fewer pieces. An honest half-empty room is correct; an invented sofa is not.
+${retainedBrief(d, roomKey)}`;
+}
+
+/* ══ RENDER FIDELITY ══════════════════════════════════════════════════════
+   The render's job is to show the client THEIR room after the work, from
+   where they stood to photograph it. Anything that makes it a prettier
+   picture of a different room is a defect. */
+const RENDER_FIDELITY_PROTOCOL = `
+████ THIS IS THE CLIENT'S OWN ROOM, PHOTOGRAPHED AFTER THE WORK ████
+Not an interior-design illustration. The test the image has to pass: the owner
+stands where they took their photograph, looks up, and sees this.
+
+CAMERA — match the client's photograph
+• Stand where their camera stood. Same corner of the room, same height (about
+  1.5 m unless the photo says otherwise), same direction of view, same lens
+  width. The same wall fills the frame, the same window sits in the same part
+  of the picture.
+• If several photographs exist, use the one that shows most of the room.
+• Keep the framing even when a different angle would flatter the design. A
+  matched angle is what lets the client compare before and after; a new angle
+  makes the comparison impossible and the image worthless to them.
+• Only if no photograph exists: take the viewpoint from the plan, standing in
+  the doorway looking into the room.
+
+WHAT MUST BE IN THE SAME ORDER, LEFT TO RIGHT, AS THE CLIENT SEES IT
+• Walls, corners, and the angles between them.
+• Every window and balcony door, in the same order along the same wall, at the
+  same height, the same width, with the same view through the glass.
+• Every doorway, in the same order, opening to the same space beyond.
+• Radiators, columns, beams, niches, steps, risers, meter cupboards — an
+  immovable thing is immovable in the picture too.
+• What is visible THROUGH each opening: the same next room, the same balcony,
+  the same outlook. A door that led to a corridor still leads to a corridor.
+• Furniture in the order the plan places it along that sightline, each piece
+  occluding what the plan says is behind it.
+
+FIDELITY TO THE APPROVED PLAN
+• The plan supplied with this request is the authority for every wall, every
+  opening and every furniture position. Where the photograph and the plan
+  disagree, the plan wins — it is the state after the work.
+• A wall the plan removed is gone, and what is now visible beyond it is what
+  the plan puts there.
+• A wall the plan keeps is in the picture, at the plan's thickness.
+• Room proportions follow the derived geometry given above, not what looks
+  comfortable.
+
+REALISM
+• Real photograph, not a rendering: daylight from the actual window positions
+  at the stated orientation, a plausible time of day, shadows consistent with
+  one light direction, and the artificial lights either off or warm.
+• Materials read as materials — grain in the wood, grout between tiles, weave
+  in the textile, a skirting board where floor meets wall, sockets and
+  switches at Italian heights, a visible door architrave.
+• Italian residential construction: plastered masonry, internal doors flush
+  with their frames, tapparelle or persiane at the windows where the original
+  has them.
+• Slight imperfection beats showroom sterility — a room that looks lived in is
+  more useful to the client than one that looks rendered.
+• No text, no labels, no dimension lines, no watermark, no people.`;
+
+/* ══ CONFORMITY CONFIRMATION ══════════════════════════════════════════════ */
+const CONFORMITY_CONFIRMATION_PROMPT = `Compare the ORIGINAL plan (image 1) with the PROPOSED post-renovation plan (image 2) and check the proposal against Italian and Lombardy residential rules.
+
+Check each of these and answer with evidence from the drawings, not from assumption. Where the drawings do not show enough to judge, say so rather than passing it.
+
+ENVELOPE — any single failure invalidates the proposal:
+  perimeterUnchanged, entranceUnchanged, windowsUnchanged, balconyDoorsUnchanged,
+  balconyGeometryUnchanged, footprintUnchanged, noRoomAddedOutside, noNewSpaceInvented
+
+DIMENSIONS (DM 5/7/1975):
+  habitableCeiling270, bathroomCeiling240, singleBedroom9m2, doubleBedroom14m2,
+  living14m2, everyHabitableRoomHasExteriorWindow, windowFloorRatioOneEighth
+
+ACCESSIBILITY (DM 236/1989):
+  entranceClear80, internalDoorsClear75, corridorWidth100
+
+STRUCTURE AND SERVICES (NTC 2018 · L.R. 33/2015):
+  loadBearingUntouched, partitionsNonStructural, risersUnmoved,
+  wetRoomsNearExistingStack, internalBathroomHasExtraction
+
+Return ONLY this JSON:
+{"envelope":{"<check>":true|false|null},
+ "dimensions":{"<check>":true|false|null},
+ "accessibility":{"<check>":true|false|null},
+ "structure":{"<check>":true|false|null},
+ "violations":[{"rule":"<which>","what":"<what the drawing shows>","severity":"blocking|significant|minor"}],
+ "undeterminable":["<what the drawings do not show well enough to judge>"],
+ "permitPath":"CILA|SCIA|PdC|none-required|cannot-determine",
+ "permitReason":"<why>",
+ "summary":"<two sentences for the owner>"}
+
+Use null for a check the drawings cannot settle. Never report a check as passed because nothing contradicts it. Do not call the result compliant, approved or certified — this is a drawing review, not a professional assessment.`;
+
+async function verifyLombardyConformity(originalPlan, proposedUrl, apiKey) {
+  if (!apiKey) return null;
+  let parsed = null;
+  try {
+    const a = await imgPartFromAny(originalPlan), b = await imgPartFromAny(proposedUrl);
+    if (!a || !b) return null;
+    const res = await trackedGeminiRequest({
+      operation: 'Confirm Italian and Lombardy conformity',
+      model: AI_MODELS.vision,
+      apiKey,
+      body: {
+        contents: [{ parts: [
+          { text: 'IMAGE 1 - the original plan.' }, a,
+          { text: 'IMAGE 2 - the proposed post-renovation plan.' }, b,
+          { text: CONFORMITY_CONFIRMATION_PROMPT }
+        ] }],
+        generationConfig: visionCfg(1800)
+      }
+    });
+    if (!res.ok) return null;
+    parsed = parseJsonLoose(res.data?.candidates?.[0]?.content?.parts?.[0]?.text);
+  } catch (e) { return null; }
+  if (!parsed) return null;
+  const blocking = (parsed.violations || []).filter(v => v && v.severity === 'blocking');
+  const failed = ['envelope', 'dimensions', 'accessibility', 'structure'].flatMap(g =>
+    Object.entries(parsed[g] || {}).filter(([, v]) => v === false).map(([k]) => g + '.' + k));
+  return {
+    ...parsed,
+    failedChecks: failed,
+    blockingCount: blocking.length,
+    /* Unknown is not the same as compliant, and is never reported as one. */
+    envelopeHeld: Object.values(parsed.envelope || {}).every(v => v === true),
+    checkedAt: new Date().toISOString()
+  };
+}
+
+/* ══ PRODUCT LINKS ════════════════════════════════════════════════════════
+   A furniture list whose links land on a search page is a list the client
+   cannot buy from. This separates a real product page from everything else
+   so the table can say which is which instead of implying they are equal. */
+function productLinkFor(it) {
+  const rec = it.sourceRecord;
+  const url = (rec && rec.url) || it.productUrl || '';
+  if (url && safeProductURL(it.provider, url)) {
+    return {
+      href: url, direct: true,
+      label: it.productStatus === 'source-checked' ? 'Open the product page' : 'Product page — verify before ordering',
+      status: it.productStatus === 'source-checked' ? 'ok' : 'stale'
+    };
+  }
+  return {
+    href: mkSearchUrl(it.provider, it.expectedName || it.name),
+    direct: false,
+    label: 'Find it on ' + ((PROVIDERS[it.provider] || {}).name || 'the retailer'),
+    status: 'search'
+  };
+}
+
+function auditProductLinks(items) {
+  let direct = 0, search = 0, stale = 0;
+  (items || []).forEach(it => {
+    const l = productLinkFor(it);
+    if (!l.direct) search++;
+    else if (l.status === 'stale') stale++;
+    else direct++;
+  });
+  return { total: (items || []).length, direct, stale, search, allDirect: search === 0 };
+}
+
 function renderPrompt(d,sol,room){
   const th=STYLES[d.style]||STYLES.Japandi;
   const tier=sol.nm==="Premium"?"high-end finish materials and premium furniture":sol.nm==="Balanced"?"quality mid-range finishes and tasteful furniture":"clean budget-conscious finishes and practical furniture";
@@ -2240,6 +2568,14 @@ EVERYTHING ELSE IS COMPLETELY FROZEN — DO NOT TOUCH:
   const roomReq = roomKey ? (roomData[roomKey]?.requirements||"") : "";
   const reqBlock = roomReq ? `\nCLIENT'S SPECIFIC INSTRUCTIONS FOR THIS ROOM (follow exactly):\n"${roomReq}"\nThese instructions override style defaults but must NOT conflict with the spatial constraints above.` : "";
 
+  /* The furniture schedule and the client's retained pieces are part of the
+     spatial brief, not decoration: they set the scale of the room. */
+  const bomItems = (() => {
+    try { return allBOMItems(generateBOM(sol, d)); } catch (e) { return []; }
+  })();
+  const fidelity = furnitureFidelityBrief(bomItems, d, roomKey);
+  const derived = planScaleBrief(d, roomKey);
+
   const constraints=`${STRICT_BOUNDARY_PROTOCOL}
 ${flexClause}
 ████████████████████████████████████████████████████████████████████████
@@ -2250,6 +2586,7 @@ ${flexClause}
 ${photoNote}
 
 ${planStr}
+${derived}
 
 ${areaConstraints}
 
@@ -2264,6 +2601,7 @@ ${winStr(roomKey||"living")}
 ${bdStr(roomKey||"living")}
 ${doorStr(roomKey||"living")}
 ${immStr(roomKey||"living")}
+${fidelity}
 ${reqBlock}
 
 HARD REJECTION CRITERIA — if the render violates ANY of these, it is WRONG:
@@ -2304,10 +2642,11 @@ BEDROOM: MALM/HEMNES bed · PAX+AULI wardrobe · NORDLI nightstands · SYMFONISK
 BATHROOM: GODMORGON vanity · ODENSVIK sink · STORJORM mirror · BROGRUND shower · ENHET storage`;
 
   const v={
-    living:`Photorealistic interior photo — Italian apartment living/dining RENOVATION. ${base}.${dims("living")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA sofa, coffee table, dining set, BESTÅ, rug, pendant, plants, wall art, floor finish, wall paint${roomData.living?.requirements?". CLIENT REQUIREMENTS: "+roomData.living.requirements:""}. Walls/windows/doors: IDENTICAL to original.${suffix}`,
-    kitchen:`Photorealistic interior photo — Italian apartment kitchen RENOVATION. ${base}.${dims("kitchen")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA METOD cabinets, countertop, appliances, SKÅDIS, pendant, floor tiles, backsplash${roomData.kitchen?.requirements?". CLIENT REQUIREMENTS: "+roomData.kitchen.requirements:""}. Room boundary/window/door: IDENTICAL to original.${suffix}`,
-    bedroom:`Photorealistic interior photo — Italian apartment bedroom RENOVATION. ${base}.${dims("bedroom")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA MALM bed, PAX wardrobe, NORDLI nightstands, SYMFONISK lamp, MAJVIKEN curtains, floor finish, wall paint${roomData.bedroom?.requirements?". CLIENT REQUIREMENTS: "+roomData.bedroom.requirements:""}. Window/walls: IDENTICAL to original.${suffix}`,
-    bathroom:`Photorealistic interior photo — Italian apartment bathroom RENOVATION. ${base}.${dims("bathroom")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA GODMORGON vanity, ODENSVIK sink, BROGRUND shower, STORJORM mirror, floor+wall tiles${roomData.bathroom?.requirements?". CLIENT REQUIREMENTS: "+roomData.bathroom.requirements:""}. Footprint/plumbing/window: IDENTICAL to original.${suffix}`,
+    /* Room views answer to the client's own photograph; the plan does not. */
+    living:`Photorealistic interior photo — Italian apartment living/dining RENOVATION. ${base}.${dims("living")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA sofa, coffee table, dining set, BESTÅ, rug, pendant, plants, wall art, floor finish, wall paint${roomData.living?.requirements?". CLIENT REQUIREMENTS: "+roomData.living.requirements:""}. Walls/windows/doors: IDENTICAL to original.${suffix} ${RENDER_FIDELITY_PROTOCOL}`,
+    kitchen:`Photorealistic interior photo — Italian apartment kitchen RENOVATION. ${base}.${dims("kitchen")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA METOD cabinets, countertop, appliances, SKÅDIS, pendant, floor tiles, backsplash${roomData.kitchen?.requirements?". CLIENT REQUIREMENTS: "+roomData.kitchen.requirements:""}. Room boundary/window/door: IDENTICAL to original.${suffix} ${RENDER_FIDELITY_PROTOCOL}`,
+    bedroom:`Photorealistic interior photo — Italian apartment bedroom RENOVATION. ${base}.${dims("bedroom")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA MALM bed, PAX wardrobe, NORDLI nightstands, SYMFONISK lamp, MAJVIKEN curtains, floor finish, wall paint${roomData.bedroom?.requirements?". CLIENT REQUIREMENTS: "+roomData.bedroom.requirements:""}. Window/walls: IDENTICAL to original.${suffix} ${RENDER_FIDELITY_PROTOCOL}`,
+    bathroom:`Photorealistic interior photo — Italian apartment bathroom RENOVATION. ${base}.${dims("bathroom")} ${constraints} ${ikeaDirective} PERMITTED NEW ELEMENTS: IKEA GODMORGON vanity, ODENSVIK sink, BROGRUND shower, STORJORM mirror, floor+wall tiles${roomData.bathroom?.requirements?". CLIENT REQUIREMENTS: "+roomData.bathroom.requirements:""}. Footprint/plumbing/window: IDENTICAL to original.${suffix} ${RENDER_FIDELITY_PROTOCOL}`,
     plan:`${ep||d.plans?.length?"You are looking at the original floor plan of this apartment. Generate an updated version of THIS EXACT FLOOR PLAN showing the post-renovation layout. The spatial envelope (${totalAreaM2}m²), all external/perimeter walls, the main entrance door, all windows and all balcony/French doors (porte-finestra) must remain PIXEL-PERFECT identical in count, position and size. The ONLY permitted changes are INTERNAL: non-load-bearing partitions and internal doors may be added, removed, relocated or resized (e.g. open the kitchen to the living area, adjust the bedroom/living partitions). Wet rooms only move toward the existing drainage stack. Show new IKEA furniture silhouettes. Label rooms in Italian. Mark every frozen element as 'invariato'.":"Professional 2D architectural floor plan — RENOVATION."}
 ${base} interior. ${totalAreaM2}m², ${d.rooms||3} rooms.
 ${constraints}
@@ -6185,6 +6524,7 @@ function generateBOMBase(sol, d) {
   const area = areaBasis(d).net || areaBasis(d).works || 85;
   const rooms = parseInt(d.rooms) || 3;
   const selectedByRoom = {};
+  const keptCats = (typeof retainedCategories === 'function') ? retainedCategories(d) : new Set();
   Object.entries(PROCUREMENT_CATALOG).forEach(([roomKey, items]) => {
     selectedByRoom[roomKey] = [];
     const byCat = {};
@@ -6211,6 +6551,10 @@ function generateBOMBase(sol, d) {
         if (bPref === -1) return -1;
         return aPref - bPref;
       });
+      /* A piece the client is keeping must not appear on their bill. The
+         render still shows it — retainedBrief() puts it back into the
+         image brief — but they are not asked to buy it twice. */
+      if (keptCats.has(cat)) return;
       const pick = candidates[0];
       let qty = 1;
       if (cat === "bedside" || cat === "dining_chairs") qty = 1;
@@ -7084,6 +7428,25 @@ function S1({
     u: u
   }));
 }
+/* What people realistically keep, by room. The category ids match the
+   procurement catalogue, so ticking one removes exactly that line. */
+const KEEPABLE_BY_ROOM = {
+  living: [{ cat: 'sofa', label: 'Sofa' }, { cat: 'coffee_table', label: 'Coffee table' },
+           { cat: 'tv_unit', label: 'TV unit' }, { cat: 'rug', label: 'Rug' },
+           { cat: 'floor_lamp', label: 'Floor lamp' }, { cat: 'curtains', label: 'Curtains' },
+           { cat: 'dining_table', label: 'Dining table' }, { cat: 'dining_chairs', label: 'Dining chairs' }],
+  kitchen: [{ cat: 'kitchen_system', label: 'Kitchen units' }, { cat: 'fridge', label: 'Fridge' },
+            { cat: 'oven', label: 'Oven' }, { cat: 'hob', label: 'Hob' },
+            { cat: 'dishwasher', label: 'Dishwasher' }, { cat: 'hood', label: 'Extractor hood' }],
+  bedroom: [{ cat: 'bed', label: 'Bed' }, { cat: 'mattress', label: 'Mattress' },
+            { cat: 'wardrobe', label: 'Wardrobe' }, { cat: 'bedside', label: 'Bedside tables' },
+            { cat: 'bedside_lamp', label: 'Bedside lamps' }],
+  bathroom: [{ cat: 'vanity', label: 'Vanity' }, { cat: 'mirror', label: 'Mirror' },
+             { cat: 'washer', label: 'Washing machine' }, { cat: 'dryer', label: 'Dryer' }],
+  corridor: [{ cat: 'shoe_cabinet', label: 'Shoe cabinet' }, { cat: 'coat_rack', label: 'Coat rack' },
+             { cat: 'console_table', label: 'Console table' }, { cat: 'mirror', label: 'Mirror' }],
+  balcony: []
+};
 function S2({
   d,
   u,
@@ -7210,7 +7573,38 @@ function S2({
     type: "checkbox",
     checked: !!r.measurementConfirmed,
     onChange: e => roomSet('measurementConfirmed', e.target.checked)
-  }), " I checked these entries against a measurement or dimensioned survey."), /*#__PURE__*/React.createElement("p", null, /*#__PURE__*/React.createElement("label", {
+  }), " I checked these entries against a measurement or dimensioned survey."),
+
+  /* Anything kept stays in the renders and drops off the shopping list. */
+  React.createElement("div", { style: { marginTop: 14, padding: '12px 14px', background: '#F7FAFD', borderRadius: 8 } },
+    React.createElement("strong", { style: { fontSize: 13.5 } }, "Furniture you are keeping in this room"),
+    React.createElement("p", { style: { fontSize: 12, color: '#52677E', margin: '3px 0 9px', lineHeight: 1.5 } },
+      "Tick what stays. Kept pieces are drawn back into the renders exactly as your photos show them, ",
+      "and are left off the shopping list so you are not asked to buy them again."),
+    React.createElement("div", { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+      (KEEPABLE_BY_ROOM[active] || []).map(function (c) {
+        const on = (r.keepCategories || []).indexOf(c.cat) >= 0;
+        return React.createElement("button", {
+          key: c.cat, type: "button",
+          onClick: function () {
+            const cur = r.keepCategories || [];
+            roomSet('keepCategories', on ? cur.filter(function (x) { return x !== c.cat; }) : cur.concat([c.cat]));
+          },
+          style: {
+            fontFamily: 'inherit', fontSize: 12, padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid ' + (on ? '#3479A8' : '#CBD8E6'),
+            background: on ? '#3479A8' : '#fff', color: on ? '#fff' : '#52677E', fontWeight: on ? 700 : 400
+          }
+        }, on ? '✓ ' : '', c.label);
+      })),
+    React.createElement(Field, {
+      label: "Anything else you are keeping — describe it so we can draw it",
+      value: r.keepExisting || '',
+      onChange: function (v) { roomSet('keepExisting', v); },
+      hint: "e.g. grandmother's walnut dresser against the left wall; the green velvet armchair"
+    })),
+
+  /*#__PURE__*/React.createElement("p", null, /*#__PURE__*/React.createElement("label", {
     className: "btn btn-g"
   }, "Add room photos", /*#__PURE__*/React.createElement("input", {
     className: "visually-hidden",
@@ -9796,6 +10190,23 @@ function SolRenderCard({
         }
       } catch (err) { /* photo measurement is best-effort, never blocks the plan */ }
 
+      /* Derive every room's metres from its share of the plan and the known
+         net area, so the proposal and the renders are held to this
+         apartment's real proportions instead of inventing a comfortable
+         scale. Printed dimensions still win wherever they exist. */
+      if (!p.planScale) {
+        try {
+          setActivity('Measuring the plan and scaling it to the real area…');
+          const planFile = (d.plans || []).find(f => f instanceof File && f.type.startsWith('image/'));
+          const net = areaBasis(d).net || areaBasis(d).works;
+          const scale = planFile ? await calibratePlanScale(planFile, net, apiKey) : null;
+          if (scale) { p.planScale = scale; touchProject(p); }
+        } catch (err) { /* proportional scaling is best effort, never blocks */ }
+      }
+      /* renderPrompt reads it off d; the record is what survives a re-render
+         so the plan is measured once per property, not once per click. */
+      if (p.planScale) d.planScale = p.planScale;
+
       const productBrief = JSON.stringify(items.map(productManifest));
       for (let attempt = 0; attempt < 2; attempt++) {
         if (candidate) archiveAsset(record, candidate);
@@ -9848,7 +10259,21 @@ function SolRenderCard({
         } catch (e) {
           warnings.push('Dimension check unavailable: ' + e.message);
         }
-        candidate.automatedPass = !!candidate.scene && geometryOK && allChecked && strictBooleanGate(review, PLAN_HARD_FIELDS);
+        /* A drawing review against the Italian and Lombardy rules. It does
+           not certify anything — it tells the owner what the drawing shows
+           and, just as usefully, what it cannot settle. */
+        try {
+          setActivity('Checking the proposal against Italian and Lombardy rules…');
+          candidate.conformity = await verifyLombardyConformity(original, candidate.url, apiKey);
+          if (candidate.conformity && candidate.conformity.blockingCount > 0) {
+            warnings.push(...candidate.conformity.violations
+              .filter(v => v.severity === 'blocking')
+              .map(v => v.rule + ': ' + v.what));
+          }
+        } catch (e) { warnings.push('Conformity review unavailable: ' + e.message); }
+
+        const conformityOK = !candidate.conformity || candidate.conformity.blockingCount === 0;
+        candidate.automatedPass = !!candidate.scene && geometryOK && conformityOK && allChecked && strictBooleanGate(review, PLAN_HARD_FIELDS);
         if (!allChecked) warnings.push('Furniture is provisional until article sources are checked.');
         candidate.error = warnings.join(' ');
         if (candidate.automatedPass) break;
@@ -9929,15 +10354,33 @@ function SolRenderCard({
         if (k.indexOf('corridor') === 0 || k.indexOf('hall') === 0) return 'corridor';
         return 'living';
       })(room);
+      /* The client's own photograph of this room, so the render can be taken
+         from where they stood. Without it the model invents a viewpoint and
+         the before/after pair cannot be compared. */
+      const ownPhotos = ((d.roomDetails || {})[roomKey] || {}).photos || [];
+      const ownPhotoParts = [];
+      for (const f of ownPhotos.slice(0, 2)) {
+        try {
+          const part = await imgPartFromAny(f);
+          if (part) ownPhotoParts.push(
+            { text: 'CLIENT PHOTOGRAPH of this same room BEFORE the work — match its camera position, height, direction and lens width, and keep every immovable feature it shows:' },
+            part);
+        } catch (e) { /* a photo that will not load simply is not used */ }
+      }
+
       const constraints = renderPrompt(d, x, roomKey)
-        + ` The accepted furnished plan is IMAGE 1 and is the single source of truth for architecture, room sequence and furniture location; the other images are product appearance references only, never a source of camera or layout. Manifest: ${manifest}.`
+        + ` The accepted furnished plan is IMAGE 1 and is the single source of truth for architecture, room sequence and furniture location; the other images are product appearance references only, never a source of camera or layout.`
+        + (ownPhotoParts.length
+            ? ` A photograph of this room before the work is also supplied: it is the source of truth for the CAMERA — same standing point, same height, same direction, same framing — and for every immovable feature. Where the photograph and the plan disagree about walls or openings, the plan wins, because it shows the state after the work.`
+            : ` No photograph of this room exists, so take the viewpoint from the plan, standing in the doorway looking in.`)
+        + ` Manifest: ${manifest}.`
         + (candidate?.review?.mismatches?.length
             ? ' Correct the previous differences: ' + JSON.stringify(candidate.review.mismatches)
             : '')
         + ' Produce one room image without text labels.';
       const generated = await generateImage([{
         text: 'IMAGE 1: accepted furnished plan.'
-      }, planPart, ...productParts, {
+      }, planPart, ...ownPhotoParts, ...productParts, {
         text: constraints
       }], apiKey, () => setActivity('Waiting for the image service…'), 'Render exact plan camera and selected articles');
       candidate = {
@@ -20038,9 +20481,70 @@ function ComplianceSummary({
   d,
   s
 }) {
+  /* What the drawing review of the generated plan actually found. It is a
+     reading of two drawings, not a professional assessment, and the wording
+     below never lets it be mistaken for one. */
+  const conf = (function () {
+    try { return scenarioRecord(projectRecord(d), s.nm)?.plan?.conformity || null; }
+    catch (e) { return null; }
+  })();
+  const groups = { envelope: 'Envelope', dimensions: 'Dimensions', accessibility: 'Accessibility', structure: 'Structure & services' };
+  const pretty = k => k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()).toLowerCase();
+
   return /*#__PURE__*/React.createElement("div", {
     className: "basis-card"
-  }, /*#__PURE__*/React.createElement("h3", null, "Local checks · ", d.city), /*#__PURE__*/React.createElement("p", null, "Technical and planning review is still required. This screen does not issue an approval or block concept images."), /*#__PURE__*/React.createElement("div", {
+  },
+  conf ? React.createElement("div", { style: { marginBottom: 18 } },
+    React.createElement("h3", null, "Italian & Lombardy rules · the generated plan"),
+    React.createElement("div", {
+      style: {
+        padding: '11px 13px', borderRadius: 8, marginBottom: 12,
+        background: conf.blockingCount ? '#FDF6F2' : conf.envelopeHeld ? '#F2F9F5' : '#F7FAFD',
+        borderLeft: '4px solid ' + (conf.blockingCount ? '#B4541E' : conf.envelopeHeld ? '#2E7D5B' : '#7B8B96')
+      }
+    },
+      React.createElement("strong", null, conf.blockingCount
+        ? conf.blockingCount + ' blocking issue' + (conf.blockingCount > 1 ? 's' : '') + ' in the proposed plan'
+        : conf.envelopeHeld ? 'The envelope is unchanged in the proposed plan'
+        : 'The drawings do not settle every envelope check'),
+      React.createElement("p", { style: { margin: '4px 0 0', fontSize: 13 } }, conf.summary || ''),
+      conf.permitPath ? React.createElement("p", { style: { margin: '6px 0 0', fontSize: 12.5, color: '#52677E' } },
+        'Likely permit route: ', React.createElement("strong", null, conf.permitPath),
+        conf.permitReason ? ' — ' + conf.permitReason : '') : null),
+
+    (conf.violations || []).length ? React.createElement("ul", { style: { margin: '0 0 12px 18px', fontSize: 13 } },
+      conf.violations.map((v, i) => React.createElement("li", { key: i, style: { marginBottom: 3 } },
+        React.createElement("strong", null, v.rule), ' (', v.severity, ') — ', v.what))) : null,
+
+    React.createElement("div", { className: "table-scroll" },
+      React.createElement("table", null,
+        React.createElement("thead", null, React.createElement("tr", null,
+          React.createElement("th", null, "Group"), React.createElement("th", null, "Held"),
+          React.createElement("th", null, "Failed"), React.createElement("th", null, "Drawings cannot say"))),
+        React.createElement("tbody", null, Object.keys(groups).map(g => {
+          const e = Object.entries(conf[g] || {});
+          const held = e.filter(([, v]) => v === true).length;
+          const bad = e.filter(([, v]) => v === false);
+          const unk = e.filter(([, v]) => v === null);
+          return React.createElement("tr", { key: g },
+            React.createElement("td", null, groups[g]),
+            React.createElement("td", null, held + ' / ' + e.length),
+            React.createElement("td", { style: { color: bad.length ? '#B4541E' : '#7B8B96' } },
+              bad.length ? bad.map(([k]) => pretty(k)).join(', ') : 'none'),
+            React.createElement("td", { style: { color: '#7B8B96' } },
+              unk.length ? unk.map(([k]) => pretty(k)).join(', ') : '—'));
+        })))),
+
+    (conf.undeterminable || []).length ? React.createElement("p", {
+      style: { fontSize: 12.5, color: '#7B8B96', marginTop: 8 }
+    }, 'The drawings are not detailed enough to judge: ', conf.undeterminable.join('; '), '.') : null,
+
+    React.createElement("p", { style: { fontSize: 12, color: '#7B8B96', marginTop: 8 } },
+      'This is a reading of two drawings against the published rules. It is not a compliance certificate, ',
+      'and a check it could not settle is reported as unsettled rather than passed. A qualified ',
+      'professional must verify the project before any work is commissioned.')) : null,
+
+  /*#__PURE__*/React.createElement("h3", null, "Local checks · ", d.city), /*#__PURE__*/React.createElement("p", null, "Technical and planning review is still required. This screen does not issue an approval or block concept images."), /*#__PURE__*/React.createElement("div", {
     className: "table-scroll"
   }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Discipline"), /*#__PURE__*/React.createElement("th", null, "What must be established"), /*#__PURE__*/React.createElement("th", null, "Basis"))), /*#__PURE__*/React.createElement("tbody", null, [['Architecture / hygiene', 'Surveyed net room areas, heights, daylight and ventilation; applicable exceptions', 'National framework + municipality’s current building/hygiene regulation'], ['Structure / seismic', 'Lawful existing structure, actual structural effect of each alteration', 'Engineer’s survey and design; applicable national/regional procedure'], ['MEP / acoustics / accessibility', 'Electrical and plumbing design, DiCo/DiRi applicability, accessibility and acoustic requirements', 'Intervention-specific technical assessment'], ['Planning / permits', 'Lawful existing state, PGT, heritage/landscape constraints, SUE route and fees', 'Current DPR 380/2001 + regional and municipal rules'], ['Energy', 'APE evidence, intervention category, envelope/system requirements and commissioning', 'CENED regional framework and competent energy professional'], ['Site safety / condominium', 'Contractors, person-days, hazards, shared systems, façade/roof rights and resolutions', 'Actual site organisation and ownership; not the count of selected work categories']].map(([k, v, b]) => /*#__PURE__*/React.createElement("tr", {
     key: k
@@ -20062,19 +20566,38 @@ function CompactProductReport({
 }) {
   const bom = generateBOM(s, d),
     items = allBOMItems(bom);
+  const links = auditProductLinks(items);
+  const kept = Object.entries(d.roomDetails || {})
+    .flatMap(([room, rd]) => (rd?.keepCategories || []).map(c => ({ room, cat: c }))
+      .concat(retainedFurniture(d, room).map(t => ({ room, text: t }))));
   return /*#__PURE__*/React.createElement("section", {
     className: "basis-card compact-products"
-  }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · Furniture & materials"), /*#__PURE__*/React.createElement("p", null, "Checked subtotal: ", fmt(bom.verifiedSubtotal), ". Combined article/delivery/installation allowance: ", fmt(bom.grandTotal), ". ", bom.pendingCount, " articles need checking. Delivery is estimated at 4%; selected installation categories at 12%. Reconcile construction-package overlaps."), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Room / article"), /*#__PURE__*/React.createElement("th", null, "Size / finish"), /*#__PURE__*/React.createElement("th", null, "Quantity / cost"), /*#__PURE__*/React.createElement("th", null, "Source / status"))), /*#__PURE__*/React.createElement("tbody", null, items.map(it => {
+  }, /*#__PURE__*/React.createElement("h3", null, s.nm, " · Furniture & materials"),
+
+  React.createElement("p", {
+    style: { fontSize: 12.5, color: links.allDirect ? '#2E7D5B' : '#B4541E', margin: '0 0 8px' }
+  }, links.direct + ' of ' + links.total + ' articles link straight to their product page' +
+     (links.search ? '; ' + links.search + ' have no confirmed page yet and link to a search on the retailer instead' : '') +
+     (links.stale ? '; ' + links.stale + ' have a page that needs re-checking before ordering' : '') + '.'),
+
+  kept.length ? React.createElement("p", {
+    style: { fontSize: 12.5, color: '#52677E', margin: '0 0 8px' }
+  }, 'Kept and therefore not listed below: ' +
+     kept.map(k => (k.text || String(k.cat).replace(/_/g, ' ')) + ' (' + k.room + ')').join(', ') +
+     '. These appear in the renders as your photographs show them.') : null, /*#__PURE__*/React.createElement("p", null, "Checked subtotal: ", fmt(bom.verifiedSubtotal), ". Combined article/delivery/installation allowance: ", fmt(bom.grandTotal), ". ", bom.pendingCount, " articles need checking. Delivery is estimated at 4%; selected installation categories at 12%. Reconcile construction-package overlaps."), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Room / article"), /*#__PURE__*/React.createElement("th", null, "Size / finish"), /*#__PURE__*/React.createElement("th", null, "Quantity / cost"), /*#__PURE__*/React.createElement("th", null, "Source / status"))), /*#__PURE__*/React.createElement("tbody", null, items.map(it => {
     const r = it.sourceRecord;
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: it.itemId
-    }, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", null, it.name), /*#__PURE__*/React.createElement("br", null), it.room, " · ", PROVIDERS[it.provider]?.name, /*#__PURE__*/React.createElement("br", null), r?.articleCode || 'No checked SKU'), /*#__PURE__*/React.createElement("td", null, [it.w, it.d, it.h].map(x => x ?? '—').join(' × '), " cm", /*#__PURE__*/React.createElement("br", null), it.material || 'Material unconfirmed', " · ", it.colour || 'Colour unconfirmed'), /*#__PURE__*/React.createElement("td", null, it.qty, " selling units × ", fmt(it.price), /*#__PURE__*/React.createElement("br", null), "Line: ", fmt(it.lineTotal), /*#__PURE__*/React.createElement("br", null), "Delivery ", fmt(it.delivery), "; installation ", fmt(it.install), /*#__PURE__*/React.createElement("br", null), r?.unitsPerPack ?? '—', " pieces/pack; VAT ", r?.vatIncluded === true ? 'included' : 'unconfirmed'), /*#__PURE__*/React.createElement("td", null, it.productStatus, /*#__PURE__*/React.createElement("br", null), r?.checkedAt || 'No verification date', /*#__PURE__*/React.createElement("br", null), r?.url && safeEvidenceURL(r.url) ? /*#__PURE__*/React.createElement("a", {
-      href: r.url
-    }, it.productStatus === 'source-checked' ? 'Exact selected article' : 'Candidate source — not current') : /*#__PURE__*/React.createElement("a", {
-      href: mkSearchUrl(it.provider, it.expectedName || it.name),
-      target: "_blank",
-      rel: "noopener noreferrer"
-    }, "Search on " + (PROVIDERS[it.provider]?.name || "the official retailer")), /*#__PURE__*/React.createElement("br", null), r?.availability || 'Availability unconfirmed')), r && /*#__PURE__*/React.createElement("tr", {
+    }, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", null, it.name), /*#__PURE__*/React.createElement("br", null), it.room, " · ", PROVIDERS[it.provider]?.name, /*#__PURE__*/React.createElement("br", null), r?.articleCode || 'No checked SKU'), /*#__PURE__*/React.createElement("td", null, [it.w, it.d, it.h].map(x => x ?? '—').join(' × '), " cm", /*#__PURE__*/React.createElement("br", null), it.material || 'Material unconfirmed', " · ", it.colour || 'Colour unconfirmed'), /*#__PURE__*/React.createElement("td", null, it.qty, " selling units × ", fmt(it.price), /*#__PURE__*/React.createElement("br", null), "Line: ", fmt(it.lineTotal), /*#__PURE__*/React.createElement("br", null), "Delivery ", fmt(it.delivery), "; installation ", fmt(it.install), /*#__PURE__*/React.createElement("br", null), r?.unitsPerPack ?? '—', " pieces/pack; VAT ", r?.vatIncluded === true ? 'included' : 'unconfirmed'), /*#__PURE__*/React.createElement("td", null, it.productStatus, /*#__PURE__*/React.createElement("br", null), r?.checkedAt || 'No verification date', /*#__PURE__*/React.createElement("br", null),
+      /* One link per row, always opening in a new tab, and always saying
+         whether it lands on the product itself or only on a search. */
+      (function () {
+        const link = productLinkFor(it);
+        return React.createElement("a", {
+          href: link.href, target: "_blank", rel: "noopener noreferrer",
+          style: { color: link.direct ? '#3479A8' : '#B4541E', fontWeight: link.direct ? 600 : 400 }
+        }, link.label);
+      })(), /*#__PURE__*/React.createElement("br", null), r?.availability || 'Availability unconfirmed')), r && /*#__PURE__*/React.createElement("tr", {
       className: "product-evidence"
     }, /*#__PURE__*/React.createElement("td", {
       colSpan: "4"
