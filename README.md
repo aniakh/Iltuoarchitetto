@@ -200,6 +200,42 @@ colour and material, with the product photograph supplied as reference. No
 substitutions, no invented extras, no rescaling to fill a gap — if a piece will
 not fit, the render shows fewer pieces rather than a larger room.
 
+### The run always produces something
+
+Generation used to be all-or-nothing: the drawing was committed only after
+every verification step had returned. One stalled check therefore cost the
+client the image they had paid for, and the card span with no result and no
+error — indistinguishable from a hang.
+
+Now the image is committed the moment it comes back, and the checks refine
+that same record in place. Every optional step also runs against a clock
+(`withTimeout`), so a verifier that never answers degrades to a warning
+instead of stopping the run. The image load inside `imgPartDownscaled` was the
+one await in the pipeline with no timeout **and** no error path — a picture
+that neither loaded nor failed hung the run forever; it now falls back to the
+full-size image after 15 seconds.
+
+**Generate all three alternatives** with one button. Image calls are
+serialised, so the three scenarios queue rather than compete, and each image
+appears as it is ready.
+
+### Prompt budget
+
+Image models follow short, concrete instructions far better than long ones,
+and the plan prompt had grown to ~7,800 tokens. Two things were wrong with it:
+
+- the **full Italian legal catalogue** was being sent to an image model, which
+  cannot render a U-value or a permit route. The rules that *do* show in a
+  drawing — frozen envelope, ceiling heights, minimum room areas, door and
+  corridor clear widths, a window in every habitable room — stay in the image
+  prompt. The rest moved to `verifyLombardyConformity`, which reads the
+  finished drawing, and is where a legal check can actually be made.
+- the **product list was sent twice**, once as the readable furniture schedule
+  and again as raw JSON.
+
+The plan prompt is now ~5,200 tokens and the room prompts ~4,100, with every
+constraint still enforced — just in the place where it works.
+
 ### Furniture you already own
 
 Tick what you are keeping, room by room, in step 2. Kept pieces are drawn back
