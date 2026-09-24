@@ -346,6 +346,27 @@ family to a single weight-range face, so the fonts are embedded once rather
 than once per weight — that is the difference between a 2.4 MB page and a
 1.0 MB one.
 
+### Diagnosing the Worker: the self-test build
+
+When the planner fails and it is not clear whether the fault is the page, the
+Worker or the Google account, build a copy with the proxy switched off:
+
+```bash
+node tools/build-standalone.js
+sed 's#window.GEMINI_PROXY = "[^"]*"#window.GEMINI_PROXY = ""#' \
+    standalone.html > standalone-selftest.html
+```
+
+With no proxy set the page asks the operator for a Google AI Studio key and
+calls Google directly, so it isolates the Worker out of the path. If the
+self-test works, the fault is in the Worker hop; if it fails, the error comes
+straight from Google with its HTTP status.
+
+It is **git-ignored on purpose**. It holds no secret — it asks for a key — but
+it also has **no 3-report cap**, and Netlify publishes this directory, so
+committing it would put an unmetered copy of the product on the public site.
+Never send it to a client.
+
 ### What it does NOT inline — and why
 
 The Gemini API key is **not** in the file, and the 3-report counter is **not**
