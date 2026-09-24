@@ -863,16 +863,27 @@ const ACCESS_HINTS = {
   no_generation: 'Start a report before generating images.',
   expired_generation: 'The report session expired. Start the report again.'
 };
-function modelErrorMessage(data, status, fallback) {
+function modelErrorMessage(data, status, fallback, raw) {
   const e = data && data.error;
   let msg = typeof e === 'string' ? e
     : (e && typeof e.message === 'string') ? e.message
     : (data && typeof data.message === 'string') ? data.message : '';
   const detail = data && typeof data.detail === 'string' ? data.detail : '';
   if (detail && detail !== msg) msg = msg ? msg + ' — ' + detail : detail;
-  if (!msg) msg = fallback || ('HTTP ' + (status || '?'));
+  /* A body that is not JSON at all — a Cloudflare or gateway error page, an
+     HTML challenge — parses to {} and would otherwise vanish, leaving a bare
+     "<operation> failed". Show the first line of whatever actually arrived. */
+  if (!msg && typeof raw === 'string' && raw.trim()) {
+    const line = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+    if (line) msg = 'The service replied with something unreadable: ' + line;
+  }
+  if (!msg) msg = fallback || 'The request failed';
   const hint = data && ACCESS_HINTS[data.code];
-  return hint ? msg + ' ' + hint : msg;
+  if (hint) msg += ' ' + hint;
+  /* The status is what distinguishes "no credit" from "wrong key" from "the
+     Worker is down", so it is always on the end. */
+  if (status) msg += ' (HTTP ' + status + ')';
+  return msg;
 }
 const AI_MODELS = {
   vision: "gemini-3.1-flash-lite",
@@ -1086,7 +1097,7 @@ async function trackedGeminiRequest({
       durationMs: performance.now() - started,
       isImage,
       grounded,
-      error: res.ok ? "" : modelErrorMessage(data, res.status, raw.slice(0, 180))
+      error: res.ok ? "" : modelErrorMessage(data, res.status, "", raw)
     }));
     return {
       ok: res.ok,
@@ -6146,7 +6157,7 @@ async function geminiVision(file, textPrompt, apiKey, operation = "Extract spati
       apiKey,
       body
     });
-    if (!res.ok) throw new Error(modelErrorMessage(res.data, res.status, "Gemini " + res.status));
+    if (!res.ok) throw new Error(modelErrorMessage(res.data, res.status, "Gemini rejected the request", res.text));
     const data = res.data;
     const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     return JSON.parse(txt.replace(/```json|```/g, "").trim());
@@ -7518,7 +7529,7 @@ function MarketFetchBtn({
         body,
         grounded: true
       });
-      if (!res.ok) throw new Error(modelErrorMessage(res.data, res.status, "Live market lookup failed"));
+      if (!res.ok) throw new Error(modelErrorMessage(res.data, res.status, "Live market lookup failed", res.text));
       const data = res.data;
       const txt = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
       const match = txt.match(/\{[\s\S]*?\}/);
@@ -8718,7 +8729,7 @@ async function strictModelJSON(parts, apiKey, operation, maxTokens = 8192, tools
     body,
     grounded: !!toolsSpec
   });
-  if (!r.ok) throw Error(modelErrorMessage(r.data, r.status, operation + ' failed'));
+  if (!r.ok) throw Error(modelErrorMessage(r.data, r.status, operation + ' failed', r.text));
   const candidate = r.data.candidates?.[0];
   if (candidate?.finishReason && candidate.finishReason !== 'STOP') throw Error('Incomplete verification response: ' + candidate.finishReason);
   const text = (candidate?.content?.parts || []).map(p => p.text || '').join('');
