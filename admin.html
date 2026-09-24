@@ -205,9 +205,11 @@ function renderList(tokens){
       '<td>' + pill(t) + '</td>' +
       '<td style="color:#7B8B96;font-size:12.5px">' + (t.created ? new Date(t.created).toLocaleDateString('it-IT') : '—') + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="btn-g btn-sm" data-copy="' + base + '/demo.html?token=' + t.token + '">Copia</button> ' +
+        '<button class="btn-g btn-sm" data-copy="' + base + '/standalone.html?token=' + t.token + '">Copia</button> ' +
         '<button class="btn-g btn-sm" data-toggle="' + t.token + '" data-active="' + (t.active !== false) + '">' +
-          (t.active === false ? 'Riattiva' : 'Revoca') + '</button>' +
+          (t.active === false ? 'Riattiva' : 'Revoca') + '</button> ' +
+        '<button class="btn-g btn-sm" data-reset="' + t.token + '" title="Rimette il contatore a zero">Azzera</button> ' +
+        '<button class="btn-g btn-sm" data-add="' + t.token + '" data-max="' + t.max + '" title="Aggiunge 3 report a questo link">+3</button>' +
       '</td></tr>'
     ).join('') + '</tbody></table>';
 
@@ -220,6 +222,28 @@ function renderList(tokens){
         token: b.dataset.toggle, active: b.dataset.active !== 'true'
       })});
       msg('Aggiornato.','ok'); refresh();
+    } catch (e) { msg('Errore: ' + e.message, 'err'); }
+  });
+
+  /* Put a spent link back to zero used. The Worker has always supported this;
+     there was simply no button for it, so a link that ran out could only be
+     replaced. */
+  el.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
+    try {
+      await api('/admin/token', { method:'PUT', body: JSON.stringify({
+        token: b.dataset.reset, resetUsed: true, active: true
+      })});
+      msg('Contatore azzerato: il link torna utilizzabile.','ok'); refresh();
+    } catch (e) { msg('Errore: ' + e.message, 'err'); }
+  });
+
+  /* Add three more reports without losing the history of what was used. */
+  el.querySelectorAll('[data-add]').forEach(b => b.onclick = async () => {
+    try {
+      await api('/admin/token', { method:'PUT', body: JSON.stringify({
+        token: b.dataset.add, max: (parseInt(b.dataset.max, 10) || 3) + 3, active: true
+      })});
+      msg('Tre report aggiunti.','ok'); refresh();
     } catch (e) { msg('Errore: ' + e.message, 'err'); }
   });
 }

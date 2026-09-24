@@ -429,7 +429,25 @@ once the third one is used the unlock button is refused with a clear message.
 - A single report may make at most 60 image calls, which bounds replay of an
   old `generationId` inside its 3-hour window.
 
-You can revoke or reactivate any link from `admin.html`.
+### Managing a link afterwards
+
+`admin.html` lists every link with how many reports it has used, and each row
+carries four actions:
+
+| Action | What it does |
+|---|---|
+| **Copia** | copies `standalone.html?token=…` for that customer |
+| **Revoca / Riattiva** | switches the link off or back on |
+| **Azzera** | puts the counter back to zero — a spent link works again |
+| **+3** | adds three more reports, keeping the usage history |
+
+**Azzera** is the one to reach for when testing: a link that has run out can be
+reset instead of replaced, so the same URL keeps working.
+
+To lift the cap entirely for a while — for your own testing — unbind the
+`QUOTA` KV namespace on the Worker. Without that binding the Worker runs in
+open mode: everything works, nothing is metered. Re-bind it to switch metering
+back on; the stored counters survive.
 
 > **Note on KV limits.** Cloudflare's free KV tier allows 1,000 writes/day.
 > A full report uses roughly 25 writes, so ~40 reports/day. Paid KV is $5/mo
