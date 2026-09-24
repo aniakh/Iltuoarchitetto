@@ -1645,6 +1645,31 @@ window.GEMINI_PROXY = "https://iltuoarchitetto-proxy.ania-khodabakhshian.workers
   useCallback,
   useEffect
 } = React;
+/* Two different services answer these calls and they disagree about what an
+   error looks like. Google sends {error:{message}}; the Cloudflare Worker
+   sends {error:"...", detail, code}. Reading only Google's shape turned every
+   Worker refusal — no access link, quota spent, KV unbound, stale key — into
+   a bare "<operation> failed", which tells the owner nothing about what to
+   fix. This reads both, and turns the Worker's codes into an instruction. */
+const ACCESS_HINTS = {
+  no_token: 'This copy needs a personal access link — open the link you were sent, or ask for one.',
+  invalid_token: 'That access link is not recognised. Check it was copied in full.',
+  revoked: 'That access link has been switched off.',
+  exhausted: 'All the reports on this link have been used.',
+  no_generation: 'Start a report before generating images.',
+  expired_generation: 'The report session expired. Start the report again.'
+};
+function modelErrorMessage(data, status, fallback) {
+  const e = data && data.error;
+  let msg = typeof e === 'string' ? e
+    : (e && typeof e.message === 'string') ? e.message
+    : (data && typeof data.message === 'string') ? data.message : '';
+  const detail = data && typeof data.detail === 'string' ? data.detail : '';
+  if (detail && detail !== msg) msg = msg ? msg + ' — ' + detail : detail;
+  if (!msg) msg = fallback || ('HTTP ' + (status || '?'));
+  const hint = data && ACCESS_HINTS[data.code];
+  return hint ? msg + ' ' + hint : msg;
+}
 const AI_MODELS = {
   vision: "gemini-3.1-flash-lite",
   image: "gemini-3.1-flash-image",
@@ -1779,7 +1804,7 @@ function buildUsageRecord({
     estimated: !actual && !!ok,
     rateEstimated: !!rates.estimated,
     grounded: !!grounded,
-    error: error || data?.error?.message || "",
+    error: error || (data && data.error ? modelErrorMessage(data, null, "") : ""),
     pricingDate: "2026-07-30"
   };
 }
@@ -1857,7 +1882,7 @@ async function trackedGeminiRequest({
       durationMs: performance.now() - started,
       isImage,
       grounded,
-      error: res.ok ? "" : data?.error?.message || raw.slice(0, 180)
+      error: res.ok ? "" : modelErrorMessage(data, res.status, raw.slice(0, 180))
     }));
     return {
       ok: res.ok,
@@ -6917,7 +6942,7 @@ async function geminiVision(file, textPrompt, apiKey, operation = "Extract spati
       apiKey,
       body
     });
-    if (!res.ok) throw new Error(res.data?.error?.message || "Gemini " + res.status);
+    if (!res.ok) throw new Error(modelErrorMessage(res.data, res.status, "Gemini " + res.status));
     const data = res.data;
     const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     return JSON.parse(txt.replace(/```json|```/g, "").trim());
@@ -6991,7 +7016,7 @@ async function callImageModelOnce(model, parts, apiKey, operation = "Generate im
   }));
   if (!res.ok) {
     const e = res.data || {};
-    const msg = e.error?.message || "HTTP " + res.status;
+    const msg = modelErrorMessage(e, res.status);
     const err = new Error(msg);
     err.overloaded = res.status === 503 || res.status === 429 || res.status === 500 || _OVERLOAD_RE.test(msg);
     err.status = res.status;
@@ -8289,7 +8314,7 @@ function MarketFetchBtn({
         body,
         grounded: true
       });
-      if (!res.ok) throw new Error(res.data?.error?.message || "Live market lookup failed");
+      if (!res.ok) throw new Error(modelErrorMessage(res.data, res.status, "Live market lookup failed"));
       const data = res.data;
       const txt = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
       const match = txt.match(/\{[\s\S]*?\}/);
@@ -9489,7 +9514,7 @@ async function strictModelJSON(parts, apiKey, operation, maxTokens = 8192, tools
     body,
     grounded: !!toolsSpec
   });
-  if (!r.ok) throw Error(r.data?.error?.message || operation + ' failed');
+  if (!r.ok) throw Error(modelErrorMessage(r.data, r.status, operation + ' failed'));
   const candidate = r.data.candidates?.[0];
   if (candidate?.finishReason && candidate.finishReason !== 'STOP') throw Error('Incomplete verification response: ' + candidate.finishReason);
   const text = (candidate?.content?.parts || []).map(p => p.text || '').join('');
