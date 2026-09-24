@@ -1,0 +1,14 @@
+# The self-test build is generated on demand for diagnosing the Worker: it has
+# no proxy configured, so it asks the operator for their own API key and calls
+# Google directly. It contains no secret, but it also has NO 3-report cap —
+# and Netlify publishes this directory, so committing it would put an
+# unmetered copy of the product on the public site.
+#
+# Rebuild it when needed:
+#   node tools/build-standalone.js
+#   then set window.GEMINI_PROXY = "" in a copy named standalone-selftest.html
+standalone-selftest.html
+
+# Local scratch
+*.local.html
+.DS_Store
